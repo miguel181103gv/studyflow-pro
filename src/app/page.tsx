@@ -45,6 +45,7 @@ interface PciConcurso {
   uf?: string;
   vagas?: string | number;
   salario?: string;
+  vagas_salario?: string;
   cargos?: string[];
   datas?: {
     aberto?: boolean;
@@ -162,8 +163,10 @@ export default function ProfileSelectorPage() {
     setPciMessage(null);
   }
 
-  async function handlePciSearch() {
-    if (!pciQuery.trim()) return;
+  async function handlePciSearch(listAll = false) {
+    if (!listAll && !pciQuery.trim()) {
+      listAll = true;
+    }
     setPciLoading(true);
     setPciMessage(null);
     setPciResults([]);
@@ -171,14 +174,21 @@ export default function ProfileSelectorPage() {
       const res = await fetch('/api/pci', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'pesquisar', termo: pciQuery, uf: pciUf }),
+        body: JSON.stringify(
+          listAll
+            ? { action: 'listar' }
+            : { action: 'pesquisar', termo: pciQuery, uf: pciUf }
+        ),
       });
       const json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao buscar no PCI.');
-      const list: PciConcurso[] = json.data?.concursos || json.data?.resultados || [];
+      const list: PciConcurso[] =
+        json.data?.data || json.data?.concursos || json.data?.resultados || [];
       setPciResults(list);
       if (list.length === 0) {
-        setPciMessage(json.data?.message || 'Nenhum concurso aberto encontrado para esse termo.');
+        setPciMessage(
+          json.data?.message || 'Nenhum concurso aberto encontrado com esse termo no momento.'
+        );
       }
     } catch (err) {
       setPciMessage(err instanceof Error ? err.message : 'Erro ao consultar PCI.');
@@ -188,10 +198,10 @@ export default function ProfileSelectorPage() {
   }
 
   async function applyPciConcurso(c: PciConcurso) {
-    const organ = c.orgao || c.titulo || '';
+    const organ = c.titulo || c.orgao || '';
     setPendingOrgan(organ);
     setName(organ);
-    setSalaryBase(c.salario || '');
+    setSalaryBase(c.salario || c.vagas_salario || '');
     setStatusText(
       c.datas?.aberto
         ? `Inscrições abertas até ${c.datas.fim || 'breve'}`
@@ -724,11 +734,19 @@ export default function ProfileSelectorPage() {
                   />
                   <button
                     type="button"
-                    onClick={handlePciSearch}
+                    onClick={() => handlePciSearch(false)}
                     disabled={pciLoading}
-                    className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-60"
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-60"
                   >
                     {pciLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Buscar'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePciSearch(true)}
+                    disabled={pciLoading}
+                    className="px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold shrink-0"
+                  >
+                    Ver Abertos
                   </button>
                 </div>
 
@@ -744,8 +762,7 @@ export default function ProfileSelectorPage() {
                         <p className="font-semibold text-sm truncate">{c.orgao || c.titulo}</p>
                         <p className="text-slate-300 mt-0.5">
                           {c.uf ? `${c.uf} • ` : ''}
-                          {c.vagas ? `${c.vagas} vagas • ` : ''}
-                          {c.salario || ''}
+                          {c.vagas_salario || `${c.vagas ? `${c.vagas} vagas • ` : ''}${c.salario || ''}`}
                         </p>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
