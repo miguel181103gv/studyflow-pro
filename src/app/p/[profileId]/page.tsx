@@ -1,6 +1,5 @@
 'use client';
 
-import { useState } from 'react';
 import Link from 'next/link';
 import { useProfile } from '@/components/ProfileProvider';
 import {
@@ -19,10 +18,11 @@ import {
   Calendar,
   Flame,
   Play,
-  Plus,
   Sparkles,
   ArrowRight,
   Star,
+  Layers,
+  ListChecks,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -42,16 +42,12 @@ export default function DashboardPage() {
     studyLogs,
     reviews,
     errors,
-    addStudyLog,
+    flashcards,
     startStopwatch,
     completeReview,
   } = useProfile();
 
   const today = todayISO();
-  const [quickSubject, setQuickSubject] = useState('');
-  const [quickTotal, setQuickTotal] = useState('10');
-  const [quickCorrect, setQuickCorrect] = useState('8');
-  const [quickSaving, setQuickSaving] = useState(false);
 
   const totalSecondsAll = studyLogs.reduce((acc, l) => acc + l.duration_seconds, 0);
   const todaySeconds = studyLogs
@@ -68,7 +64,17 @@ export default function DashboardPage() {
     : 0;
 
   const dueReviews = reviews.filter((r) => !r.completed && r.due_date <= today);
+  const dueFlashcards = flashcards.filter((c) => c.due_date <= today);
   const daysToExam = profile?.exam_date ? daysBetween(today, profile.exam_date) : null;
+
+  // Sequência de dias estudando (Streak)
+  const studyDateSet = new Set(studyLogs.map((l) => l.study_date));
+  let streakDays = 0;
+  let cursorDate = studyDateSet.has(today) ? today : addDaysISO(today, -1);
+  while (studyDateSet.has(cursorDate) && streakDays < 365) {
+    streakDays++;
+    cursorDate = addDaysISO(cursorDate, -1);
+  }
 
   // 7-day chart data
   const last7Days = Array.from({ length: 7 }, (_, i) => {
@@ -105,35 +111,23 @@ export default function DashboardPage() {
 
   const todayLogs = studyLogs.filter((l) => l.study_date === today);
 
-  async function handleQuickQuestion(e: React.FormEvent) {
-    e.preventDefault();
-    const subId = quickSubject || subjects[0]?.id;
-    if (!subId) return;
-    setQuickSaving(true);
-    await addStudyLog({
-      subject_id: subId,
-      topic_id: null,
-      duration_seconds: 0,
-      study_date: today,
-      period: 'Rápido',
-      method: 'Questões',
-      questions_total: Number(quickTotal) || 0,
-      questions_correct: Math.min(Number(quickTotal) || 0, Number(quickCorrect) || 0),
-      stop_point: '',
-      notes: 'Lançamento rápido no painel',
-    });
-    setQuickSaving(false);
-  }
-
   return (
     <div className="space-y-6">
-      {/* Hero Greeting + Raio-X Motivacional */}
+      {/* Hero Greeting + Streak + Raio-X Motivacional */}
       <div className="rounded-3xl bg-gradient-to-r from-slate-900 via-blue-950 to-indigo-950 text-white p-6 shadow-xl border border-white/10">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 text-xs font-medium text-blue-200">
-              <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-              <span>{profile?.status_text || 'Foco total na aprovação'}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 text-xs font-medium text-blue-200">
+                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                {profile?.status_text || 'Foco total na aprovação'}
+              </span>
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-500/20 border border-orange-400/30 text-xs font-bold text-orange-300">
+                <Flame className="w-3.5 h-3.5 text-orange-400" />
+                {streakDays === 0
+                  ? 'Comece sua sequência hoje'
+                  : `${streakDays} ${streakDays === 1 ? 'dia seguido' : 'dias seguidos'}`}
+              </span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
               {getGreeting()}, Miguel!
@@ -179,21 +173,45 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* 4 KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="card-surface rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-medium text-muted-theme">Estudado Hoje</span>
-            <div className="w-9 h-9 rounded-xl bg-blue-500/15 text-blue-600 flex items-center justify-center">
-              <Clock className="w-4 h-4" />
-            </div>
+      {/* Placar Acumulado em Destaque: Horas Estudadas & Questões Resolvidas */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="card-surface rounded-2xl p-5 shadow-sm flex items-center justify-between gap-4 border-l-4 border-l-blue-600">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-theme">
+              Horas Estudadas (Total)
+            </p>
+            <p className="text-3xl font-extrabold mt-1 text-blue-600">
+              {formatDurationHM(totalSecondsAll)}
+            </p>
+            <p className="text-xs text-muted-theme mt-1">
+              Hoje: <strong>{formatDurationHM(todaySeconds)}</strong> de {profile?.daily_hours_goal || 4}h
+            </p>
           </div>
-          <p className="text-2xl font-bold">{formatDurationHM(todaySeconds)}</p>
-          <p className="text-xs text-muted-theme mt-1">
-            Meta diária: {profile?.daily_hours_goal || 4}h • Total: {formatDurationHM(totalSecondsAll)}
-          </p>
+          <div className="w-12 h-12 rounded-2xl bg-blue-600/15 text-blue-600 flex items-center justify-center shrink-0">
+            <Clock className="w-6 h-6" />
+          </div>
         </div>
 
+        <div className="card-surface rounded-2xl p-5 shadow-sm flex items-center justify-between gap-4 border-l-4 border-l-emerald-600">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-theme">
+              Questões Resolvidas (Total)
+            </p>
+            <p className="text-3xl font-extrabold mt-1 text-emerald-600">
+              {totalQuestions.toLocaleString('pt-BR')}
+            </p>
+            <p className="text-xs text-muted-theme mt-1">
+              {totalCorrect.toLocaleString('pt-BR')} acertos · <strong>{accuracy}%</strong> (Meta: {profile?.target_accuracy || 80}%)
+            </p>
+          </div>
+          <div className="w-12 h-12 rounded-2xl bg-emerald-600/15 text-emerald-600 flex items-center justify-center shrink-0">
+            <ListChecks className="w-6 h-6" />
+          </div>
+        </div>
+      </div>
+
+      {/* 4 KPI Cards Secundários */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <div className="card-surface rounded-2xl p-5 shadow-sm">
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-medium text-muted-theme">Taxa de Acertos</span>
@@ -203,7 +221,7 @@ export default function DashboardPage() {
           </div>
           <p className="text-2xl font-bold">{accuracy}%</p>
           <p className="text-xs text-muted-theme mt-1">
-            {totalCorrect} de {totalQuestions} questões (Meta: {profile?.target_accuracy || 80}%)
+            Meta do concurso: {profile?.target_accuracy || 80}%
           </p>
         </div>
 
@@ -226,7 +244,10 @@ export default function DashboardPage() {
           </p>
         </div>
 
-        <div className="card-surface rounded-2xl p-5 shadow-sm">
+        <Link
+          href={`/p/${profile?.id}/revisoes`}
+          className="card-surface rounded-2xl p-5 shadow-sm hover:opacity-90 transition block"
+        >
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-medium text-muted-theme">Revisões Pendentes</span>
             <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-600 flex items-center justify-center">
@@ -237,14 +258,28 @@ export default function DashboardPage() {
           <p className="text-xs text-muted-theme mt-1">
             {errors.length} erros no caderno
           </p>
-        </div>
+        </Link>
+
+        <Link
+          href={`/p/${profile?.id}/flashcards`}
+          className="card-surface rounded-2xl p-5 shadow-sm hover:opacity-90 transition block"
+        >
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs font-medium text-muted-theme">Flashcards Hoje</span>
+            <div className="w-9 h-9 rounded-xl bg-sky-500/15 text-sky-600 flex items-center justify-center">
+              <Layers className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="text-2xl font-bold">{dueFlashcards.length}</p>
+          <p className="text-xs text-muted-theme mt-1">
+            {flashcards.length} cards no total
+          </p>
+        </Link>
       </div>
 
-      {/* Main Grid: Cycle + Today + Chart + Quick Log */}
+      {/* Main Grid: Chart + Cycle + Reviews + Priorities */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 cols */}
         <div className="lg:col-span-2 space-y-6">
-          {/* 7-day Questions Chart */}
           <div className="card-surface rounded-2xl p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <div>
@@ -272,12 +307,13 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Hoje no Ciclo */}
           <div className="card-surface rounded-2xl p-5 shadow-sm">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="font-bold text-base">Próximas Matérias do Ciclo</h2>
-                <p className="text-xs text-muted-theme">Dê play direto para iniciar o cronômetro</p>
+                <p className="text-xs text-muted-theme">
+                  Dê play para iniciar e registre suas questões no Ciclo de Estudos
+                </p>
               </div>
               <Link
                 href={`/p/${profile?.id}/ciclo`}
@@ -319,61 +355,8 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Right Col: Quick Question + Due Reviews + Top 5 Priorities */}
+        {/* Right Col */}
         <div className="space-y-6">
-          {/* Lançamento Rápido */}
-          <div className="card-surface rounded-2xl p-5 shadow-sm">
-            <h2 className="font-bold text-base mb-1 flex items-center gap-2">
-              <Flame className="w-4 h-4 text-orange-500" />
-              Lançamento Rápido
-            </h2>
-            <p className="text-xs text-muted-theme mb-3">Registre uma bateria de questões em 5s</p>
-            <form onSubmit={handleQuickQuestion} className="space-y-3">
-              <select
-                value={quickSubject || subjects[0]?.id || ''}
-                onChange={(e) => setQuickSubject(e.target.value)}
-                className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
-              >
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[11px] text-muted-theme">Total</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={quickTotal}
-                    onChange={(e) => setQuickTotal(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-muted-theme">Acertos</label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={quickCorrect}
-                    onChange={(e) => setQuickCorrect(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                disabled={quickSaving}
-                className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition"
-              >
-                <Plus className="w-4 h-4" />
-                {quickSaving ? 'Salvando...' : 'Salvar Questões'}
-              </button>
-            </form>
-          </div>
-
-          {/* Revisões Pendentes */}
           <div className="card-surface rounded-2xl p-5 shadow-sm">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-bold text-base flex items-center gap-2">
@@ -420,7 +403,6 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Top 5 Prioridades */}
           <div className="card-surface rounded-2xl p-5 shadow-sm">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-bold text-base flex items-center gap-2">
@@ -436,7 +418,7 @@ export default function DashboardPage() {
             </div>
             {priorityTopics.length === 0 ? (
               <p className="text-xs text-muted-theme">
-                Marque estrelas (★) nos tópicos mais importantes ou registre questões para ver o ranking.
+                Marque estrelas (★) nos tópicos mais importantes ou registre questões no Ciclo para ver o ranking.
               </p>
             ) : (
               <div className="space-y-2">
@@ -454,7 +436,6 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Estudado Hoje */}
           {todayLogs.length > 0 && (
             <div className="card-surface rounded-2xl p-5 shadow-sm">
               <h2 className="font-bold text-base mb-3">Estudado Hoje</h2>
@@ -462,7 +443,10 @@ export default function DashboardPage() {
                 {todayLogs.slice(0, 4).map((l) => {
                   const s = subjects.find((sb) => sb.id === l.subject_id);
                   return (
-                    <div key={l.id} className="text-xs flex justify-between items-center py-1 border-b border-theme last:border-0">
+                    <div
+                      key={l.id}
+                      className="text-xs flex justify-between items-center py-1 border-b border-theme last:border-0"
+                    >
                       <span className="font-medium truncate">{s?.name}</span>
                       <span className="text-muted-theme shrink-0">
                         {formatDurationHM(l.duration_seconds)}

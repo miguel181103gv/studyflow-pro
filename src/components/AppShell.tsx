@@ -28,6 +28,7 @@ import {
   Pause,
   Play,
   Palette,
+  Layers,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -37,6 +38,7 @@ const NAV_ITEMS = [
   { href: '/estudos', label: 'Progresso do Edital', icon: CheckSquare },
   { href: '/revisoes', label: 'Revisões (1/7/30d)', icon: Clock },
   { href: '/materias', label: 'Matérias e PDFs', icon: BookOpen },
+  { href: '/flashcards', label: 'Flashcards', icon: Layers },
   { href: '/erros', label: 'Caderno de Erros', icon: AlertTriangle },
   { href: '/evolucao', label: 'Minha Evolução', icon: TrendingUp },
   { href: '/relatorios', label: 'Mentor Gemini AI', icon: FileBarChart2 },

@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
-import { Check, Star, ChevronDown, ChevronRight } from 'lucide-react';
+import { getYouTubeSearchUrl } from '@/lib/utils';
+import { Check, Star, ChevronDown, ChevronRight, Youtube } from 'lucide-react';
 
 export default function ProgressoEditalPage() {
   const { subjects, topics, toggleTopicStudied, toggleTopicPriority } = useProfile();
@@ -132,20 +133,36 @@ export default function ProgressoEditalPage() {
                         </span>
                       </button>
 
-                      <button
-                        onClick={() => toggleTopicPriority(topic)}
-                        title="Marcar prioridade"
-                        className={`p-1.5 rounded-lg transition shrink-0 ${
-                          topic.is_priority
-                            ? 'text-amber-500 bg-amber-500/15'
-                            : 'text-muted-theme hover:text-amber-500'
-                        }`}
-                      >
-                        <Star
-                          className="w-4 h-4"
-                          fill={topic.is_priority ? 'currentColor' : 'none'}
-                        />
-                      </button>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <a
+                          href={topic.video_url || getYouTubeSearchUrl(sub.name, topic.title)}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={topic.video_url ? 'Abrir vídeo salvo' : 'Buscar aula no YouTube'}
+                          className={`p-1.5 rounded-lg transition ${
+                            topic.video_url
+                              ? 'text-red-500 bg-red-500/15'
+                              : 'text-muted-theme hover:text-red-500'
+                          }`}
+                        >
+                          <Youtube className="w-4 h-4" />
+                        </a>
+
+                        <button
+                          onClick={() => toggleTopicPriority(topic)}
+                          title="Marcar prioridade"
+                          className={`p-1.5 rounded-lg transition ${
+                            topic.is_priority
+                              ? 'text-amber-500 bg-amber-500/15'
+                              : 'text-muted-theme hover:text-amber-500'
+                          }`}
+                        >
+                          <Star
+                            className="w-4 h-4"
+                            fill={topic.is_priority ? 'currentColor' : 'none'}
+                          />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

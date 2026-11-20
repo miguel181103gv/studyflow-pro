@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { createClient } from '@/lib/supabase/client';
+import { getYouTubeEmbedUrl, getYouTubeSearchUrl } from '@/lib/utils';
 import {
   Plus,
   Upload,
@@ -12,7 +13,17 @@ import {
   Loader2,
   ExternalLink,
   X,
+  Youtube,
+  Save,
+  Sparkles,
+  RefreshCw,
 } from 'lucide-react';
+
+interface FoundVideo {
+  videoId: string;
+  url: string;
+  embedUrl: string;
+}
 
 export default function MateriasPage() {
   const {
@@ -23,6 +34,7 @@ export default function MateriasPage() {
     highlights,
     addTopic,
     updateTopicPdf,
+    updateTopicVideo,
     addHighlight,
     deleteHighlight,
   } = useProfile();
@@ -30,15 +42,22 @@ export default function MateriasPage() {
   const [selectedSubjectId, setSelectedSubjectId] = useState(subjects[0]?.id || '');
   const [newTopicTitle, setNewTopicTitle] = useState('');
   const [uploadingTopicId, setUploadingTopicId] = useState<string | null>(null);
+  const [batchLoading, setBatchLoading] = useState(false);
 
-  // Viewer + Grifos
+  // Viewer + Grifos + YouTube
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
+  const [viewerTab, setViewerTab] = useState<'pdf' | 'video'>('pdf');
   const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
+  const [videoInput, setVideoInput] = useState('');
+  const [autoSearchingVideo, setAutoSearchingVideo] = useState(false);
+  const [foundVideos, setFoundVideos] = useState<FoundVideo[]>([]);
+  const [videoIdx, setVideoIdx] = useState(0);
   const [hlText, setHlText] = useState('');
   const [hlNote, setHlNote] = useState('');
   const [hlColor, setHlColor] = useState('#fef08a');
 
   const currentSubjectId = selectedSubjectId || subjects[0]?.id || '';
+  const currentSubject = subjects.find((s) => s.id === currentSubjectId);
   const currentTopics = topics.filter((t) => t.subject_id === currentSubjectId);
   const activeTopic = topics.find((t) => t.id === activeTopicId);
   const activeHighlights = highlights.filter((h) => h.topic_id === activeTopicId);
@@ -62,7 +81,7 @@ export default function MateriasPage() {
       });
       if (error) throw error;
       await updateTopicPdf(topicId, path, file.name);
-      await openTopicViewer(topicId, path);
+      await openTopicViewer(topicId, path, 'pdf');
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Erro ao enviar PDF.');
     } finally {
@@ -70,9 +89,64 @@ export default function MateriasPage() {
     }
   }
 
-  async function openTopicViewer(topicId: string, pdfPath: string | null) {
+  async function autoFetchTopicVideo(topicId: string, subjectName: string, topicTitle: string) {
+    setAutoSearchingVideo(true);
+    try {
+      const res = await fetch('/api/youtube', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subjectName, topicTitle }),
+      });
+      const json = await res.json();
+      if (res.ok && json.ok && Array.isArray(json.videos) && json.videos.length > 0) {
+        setFoundVideos(json.videos);
+        setVideoIdx(0);
+        const firstUrl = json.videos[0].url;
+        setVideoInput(firstUrl);
+        await updateTopicVideo(topicId, firstUrl);
+      }
+    } catch {
+      // Silencioso
+    } finally {
+      setAutoSearchingVideo(false);
+    }
+  }
+
+  async function handleBatchAutoVideos() {
+    if (!currentSubject) return;
+    const missing = currentTopics.filter((t) => !t.video_url);
+    if (missing.length === 0) return;
+    setBatchLoading(true);
+    try {
+      for (const t of missing) {
+        const res = await fetch('/api/youtube', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ subjectName: currentSubject.name, topicTitle: t.title }),
+        });
+        const json = await res.json();
+        if (res.ok && json.ok && json.videos?.[0]?.url) {
+          await updateTopicVideo(t.id, json.videos[0].url);
+        }
+      }
+    } finally {
+      setBatchLoading(false);
+    }
+  }
+
+  async function openTopicViewer(
+    topicId: string,
+    pdfPath: string | null,
+    preferredTab: 'pdf' | 'video' = 'pdf'
+  ) {
+    const t = topics.find((tp) => tp.id === topicId);
     setActiveTopicId(topicId);
+    setVideoInput(t?.video_url || '');
+    setFoundVideos([]);
+    setVideoIdx(0);
+    setViewerTab(preferredTab);
     setSignedPdfUrl(null);
+
     if (pdfPath) {
       const supabase = createClient();
       const { data } = await supabase.storage
@@ -80,6 +154,29 @@ export default function MateriasPage() {
         .createSignedUrl(pdfPath, 3600);
       if (data?.signedUrl) setSignedPdfUrl(data.signedUrl);
     }
+
+    if (preferredTab === 'video' && t && !t.video_url && currentSubject) {
+      await autoFetchTopicVideo(t.id, currentSubject.name, t.title);
+    }
+  }
+
+  async function cycleNextVideo() {
+    if (!activeTopic || !currentSubject) return;
+    if (foundVideos.length > 1) {
+      const next = (videoIdx + 1) % foundVideos.length;
+      setVideoIdx(next);
+      const nextUrl = foundVideos[next].url;
+      setVideoInput(nextUrl);
+      await updateTopicVideo(activeTopic.id, nextUrl);
+    } else {
+      await autoFetchTopicVideo(activeTopic.id, currentSubject.name, activeTopic.title);
+    }
+  }
+
+  async function handleSaveVideo(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeTopicId) return;
+    await updateTopicVideo(activeTopicId, videoInput.trim() || null);
   }
 
   async function handleSaveHighlight(e: React.FormEvent) {
@@ -96,13 +193,30 @@ export default function MateriasPage() {
     setHlNote('');
   }
 
+  const embedUrl = getYouTubeEmbedUrl(activeTopic?.video_url || videoInput);
+
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Matérias, PDFs e Grifos</h1>
-        <p className="text-sm text-muted-theme">
-          Anexe seus PDFs na nuvem (acessíveis no PC e no iPhone) e salve seus grifos por tópico.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Matérias, PDFs, Vídeos e Grifos</h1>
+          <p className="text-sm text-muted-theme">
+            O app busca automaticamente uma videoaula do YouTube para cada tópico, além de guardar seus PDFs e grifos.
+          </p>
+        </div>
+
+        <button
+          onClick={handleBatchAutoVideos}
+          disabled={batchLoading || currentTopics.every((t) => !!t.video_url)}
+          className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold inline-flex items-center gap-2 disabled:opacity-50 shrink-0"
+        >
+          {batchLoading ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Sparkles className="w-4 h-4" />
+          )}
+          {batchLoading ? 'Preenchendo vídeos...' : 'Preencher Vídeos da Matéria'}
+        </button>
       </div>
 
       {/* Subject pills */}
@@ -151,11 +265,24 @@ export default function MateriasPage() {
               <div className="min-w-0">
                 <p className="text-sm font-medium">{t.title}</p>
                 <p className="text-[11px] text-muted-theme mt-0.5">
-                  {t.pdf_name ? `📄 ${t.pdf_name}` : 'Sem PDF anexado'} • {hlCount} grifos
+                  {t.pdf_name ? `📄 ${t.pdf_name}` : 'Sem PDF'} •{' '}
+                  {t.video_url ? '▶️ Aula pronta' : '▶️ Busca automática ao abrir'} • {hlCount} grifos
                 </p>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
+                <button
+                  onClick={() => openTopicViewer(t.id, t.pdf_path, 'video')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition ${
+                    t.video_url
+                      ? 'bg-red-600 text-white hover:bg-red-500'
+                      : 'subtle-surface hover:opacity-80'
+                  }`}
+                >
+                  <Youtube className="w-3.5 h-3.5" />
+                  {t.video_url ? 'Ver Aula' : 'Vídeo Auto'}
+                </button>
+
                 <label className="cursor-pointer px-3 py-1.5 rounded-xl subtle-surface text-xs font-medium inline-flex items-center gap-1.5 hover:opacity-80">
                   {uploadingTopicId === t.id ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -175,7 +302,7 @@ export default function MateriasPage() {
                 </label>
 
                 <button
-                  onClick={() => openTopicViewer(t.id, t.pdf_path)}
+                  onClick={() => openTopicViewer(t.id, t.pdf_path, 'pdf')}
                   className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
                 >
                   <Highlighter className="w-3.5 h-3.5" />
@@ -187,19 +314,43 @@ export default function MateriasPage() {
         })}
       </div>
 
-      {/* Built-in PDF Viewer + Grifos Modal */}
+      {/* Built-in PDF + YouTube Viewer + Grifos Modal */}
       {activeTopic && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-2 sm:p-4">
           <div className="card-surface w-full max-w-6xl h-[90vh] rounded-3xl overflow-hidden flex flex-col">
-            <div className="px-5 py-3.5 border-b border-theme flex items-center justify-between gap-3">
+            <div className="px-5 py-3.5 border-b border-theme flex items-center justify-between gap-3 flex-wrap">
               <div className="min-w-0">
                 <h2 className="font-bold text-sm truncate">{activeTopic.title}</h2>
                 <p className="text-[11px] text-muted-theme">
-                  {activeTopic.pdf_name || 'Modo anotações e grifos'}
+                  {currentSubject?.name} • {activeTopic.pdf_name || 'Estudo integrado'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                {signedPdfUrl && (
+                <div className="flex rounded-xl subtle-surface p-1">
+                  <button
+                    onClick={() => setViewerTab('pdf')}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                      viewerTab === 'pdf' ? 'bg-blue-600 text-white' : ''
+                    }`}
+                  >
+                    📄 PDF
+                  </button>
+                  <button
+                    onClick={() => {
+                      setViewerTab('video');
+                      if (!activeTopic.video_url && currentSubject) {
+                        autoFetchTopicVideo(activeTopic.id, currentSubject.name, activeTopic.title);
+                      }
+                    }}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition ${
+                      viewerTab === 'video' ? 'bg-red-600 text-white' : ''
+                    }`}
+                  >
+                    ▶️ YouTube
+                  </button>
+                </div>
+
+                {signedPdfUrl && viewerTab === 'pdf' && (
                   <a
                     href={signedPdfUrl}
                     target="_blank"
@@ -207,7 +358,7 @@ export default function MateriasPage() {
                     className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-medium inline-flex items-center gap-1"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
-                    Abrir em nova aba
+                    Nova aba
                   </a>
                 )}
                 <button
@@ -220,21 +371,88 @@ export default function MateriasPage() {
             </div>
 
             <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 overflow-hidden">
-              {/* PDF Preview */}
-              <div className="lg:col-span-2 bg-slate-900 flex items-center justify-center overflow-hidden">
-                {signedPdfUrl ? (
-                  <iframe
-                    src={signedPdfUrl}
-                    className="w-full h-full border-0"
-                    title="Visualizador de PDF"
-                  />
+              {/* Left 2 cols: PDF or YouTube Player */}
+              <div className="lg:col-span-2 bg-slate-950 flex flex-col overflow-hidden">
+                {viewerTab === 'pdf' ? (
+                  signedPdfUrl ? (
+                    <iframe
+                      src={signedPdfUrl}
+                      className="w-full h-full border-0"
+                      title="Visualizador de PDF"
+                    />
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 p-8 text-center">
+                      <FileText className="w-10 h-10 mb-2 opacity-50" />
+                      <p className="text-sm">Nenhum PDF anexado a este tópico.</p>
+                      <p className="text-xs mt-1">
+                        Troque para <strong>▶️ YouTube</strong> ali em cima para assistir à aula automática!
+                      </p>
+                    </div>
+                  )
                 ) : (
-                  <div className="text-center text-slate-400 p-8">
-                    <FileText className="w-10 h-10 mx-auto mb-2 opacity-50" />
-                    <p className="text-sm">Nenhum PDF anexado a este tópico.</p>
-                    <p className="text-xs mt-1">
-                      Você pode usar o painel ao lado para salvar seus resumos e grifos!
-                    </p>
+                  <div className="flex-1 flex flex-col p-4 gap-3 text-white overflow-y-auto">
+                    <form onSubmit={handleSaveVideo} className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        value={videoInput}
+                        onChange={(e) => setVideoInput(e.target.value)}
+                        placeholder="Link do YouTube (preenchido automaticamente ou cole outro)"
+                        className="flex-1 rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-xs text-white"
+                      />
+                      <button
+                        type="submit"
+                        className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        Salvar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cycleNextVideo}
+                        disabled={autoSearchingVideo}
+                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+                        title="Trocar para outro vídeo sobre este tópico"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${autoSearchingVideo ? 'animate-spin' : ''}`}
+                        />
+                        Outro Vídeo
+                      </button>
+                      <a
+                        href={getYouTubeSearchUrl(currentSubject?.name || '', activeTopic.title)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        YouTube
+                      </a>
+                    </form>
+
+                    {autoSearchingVideo ? (
+                      <div className="flex-1 flex flex-col items-center justify-center text-slate-300 gap-2">
+                        <Loader2 className="w-8 h-8 animate-spin text-red-500" />
+                        <p className="text-xs">
+                          Buscando automaticamente uma aula sobre &ldquo;{activeTopic.title}&rdquo;...
+                        </p>
+                      </div>
+                    ) : embedUrl ? (
+                      <div className="flex-1 min-h-[280px] rounded-2xl overflow-hidden bg-black">
+                        <iframe
+                          src={embedUrl}
+                          className="w-full h-full border-0"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                          title="Aula YouTube"
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-center p-8">
+                        <Youtube className="w-12 h-12 text-red-500 mb-2 opacity-80" />
+                        <p className="text-sm text-white font-medium">
+                          Clique em &ldquo;Outro Vídeo&rdquo; para buscar automaticamente ou cole um link acima.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

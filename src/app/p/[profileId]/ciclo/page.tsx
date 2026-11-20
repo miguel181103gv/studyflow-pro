@@ -7,6 +7,7 @@ import {
   Play,
   Pause,
   RotateCcw,
+  GripVertical,
   ArrowUp,
   ArrowDown,
   Save,
@@ -26,6 +27,7 @@ export default function CicloPage() {
     pauseStopwatch,
     resetStopwatch,
     updateSubject,
+    moveSubject,
     reorderSubject,
     addStudyLog,
     deleteStudyLog,
@@ -43,6 +45,8 @@ export default function CicloPage() {
   const [modalCorrectQ, setModalCorrectQ] = useState('0');
   const [modalStopPoint, setModalStopPoint] = useState('');
   const [saving, setSaving] = useState(false);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   const totalCycleMinutes = subjects.reduce(
     (acc, s) => acc + s.cycle_hours * 60 + s.cycle_minutes,
@@ -218,12 +222,38 @@ export default function CicloPage() {
             const targetSecs = (s.cycle_hours * 60 + s.cycle_minutes) * 60;
             const pct = targetSecs > 0 ? Math.min(100, Math.round((studiedForSubject / targetSecs) * 100)) : 0;
 
+            const isDragging = draggedId === s.id;
+            const isOver = dragOverId === s.id && draggedId !== s.id;
             return (
               <div
                 key={s.id}
-                className="subtle-surface rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                draggable
+                onDragStart={() => setDraggedId(s.id)}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  if (dragOverId !== s.id) setDragOverId(s.id);
+                }}
+                onDragLeave={() => {
+                  if (dragOverId === s.id) setDragOverId(null);
+                }}
+                onDrop={async (e) => {
+                  e.preventDefault();
+                  if (draggedId && draggedId !== s.id) {
+                    await moveSubject(draggedId, s.id);
+                  }
+                  setDraggedId(null);
+                  setDragOverId(null);
+                }}
+                onDragEnd={() => {
+                  setDraggedId(null);
+                  setDragOverId(null);
+                }}
+                className={`subtle-surface rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-grab active:cursor-grabbing transition-all ${
+                  isDragging ? "opacity-40 scale-[0.98]" : ""
+                } ${isOver ? "ring-2 ring-blue-500 bg-blue-500/10" : ""}`}
               >
                 <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <GripVertical className="w-4 h-4 text-muted-theme shrink-0" />
                   <span
                     className="w-8 h-8 rounded-xl text-white text-xs font-bold flex items-center justify-center shrink-0"
                     style={{ backgroundColor: s.color }}
@@ -275,22 +305,25 @@ export default function CicloPage() {
                     <span className="text-muted-theme">m</span>
                   </div>
 
-                  <button
-                    onClick={() => reorderSubject(s.id, 'up')}
-                    disabled={idx === 0}
-                    className="p-2 rounded-xl card-surface disabled:opacity-30"
-                    title="Subir"
-                  >
-                    <ArrowUp className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => reorderSubject(s.id, 'down')}
-                    disabled={idx === subjects.length - 1}
-                    className="p-2 rounded-xl card-surface disabled:opacity-30"
-                    title="Descer"
-                  >
-                    <ArrowDown className="w-3.5 h-3.5" />
-                  </button>
+
+                  <div className="flex sm:hidden items-center gap-1">
+                    <button
+                      onClick={() => reorderSubject(s.id, 'up')}
+                      disabled={idx === 0}
+                      className="p-2 rounded-xl card-surface disabled:opacity-30"
+                      title="Subir"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => reorderSubject(s.id, 'down')}
+                      disabled={idx === subjects.length - 1}
+                      className="p-2 rounded-xl card-surface disabled:opacity-30"
+                      title="Descer"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                   <button
                     onClick={() => startStopwatch(s.id)}
                     className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1"

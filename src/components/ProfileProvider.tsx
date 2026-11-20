@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client';
 import type {
   AIReport,
   ErrorEntry,
+  Flashcard,
   Profile,
   Simulado,
   SpacedReview,
@@ -36,6 +37,7 @@ interface ProfileContextValue {
   studyLogs: StudyLog[];
   reviews: SpacedReview[];
   errors: ErrorEntry[];
+  flashcards: Flashcard[];
   simulados: Simulado[];
   reports: AIReport[];
   theme: ThemeId;
@@ -52,10 +54,12 @@ interface ProfileContextValue {
   updateProfile: (patch: Partial<Profile>) => Promise<void>;
   updateSubject: (id: string, patch: Partial<Subject>) => Promise<void>;
   reorderSubject: (id: string, direction: 'up' | 'down') => Promise<void>;
+  moveSubject: (sourceId: string, targetId: string) => Promise<void>;
   addTopic: (subjectId: string, title: string) => Promise<void>;
   toggleTopicStudied: (topic: Topic) => Promise<void>;
   toggleTopicPriority: (topic: Topic) => Promise<void>;
   updateTopicPdf: (topicId: string, pdfPath: string, pdfName: string) => Promise<void>;
+  updateTopicVideo: (topicId: string, videoUrl: string | null) => Promise<void>;
   addHighlight: (payload: Omit<TopicHighlight, 'id' | 'user_id' | 'profile_id' | 'created_at'>) => Promise<void>;
   deleteHighlight: (id: string) => Promise<void>;
 
@@ -79,6 +83,9 @@ interface ProfileContextValue {
   addAIReport: (
     payload: Omit<AIReport, 'id' | 'user_id' | 'profile_id' | 'created_at'>
   ) => Promise<void>;
+  addFlashcards: (items: { subject_id: string; topic_id: string | null; front: string; back: string }[]) => Promise<void>;
+  reviewFlashcard: (card: Flashcard, quality: 1 | 2 | 3 | 4) => Promise<void>;
+  deleteFlashcard: (id: string) => Promise<void>;
 }
 
 const ProfileContext = createContext<ProfileContextValue | null>(null);
@@ -101,9 +108,12 @@ export function ProfileProvider({
   const [studyLogs, setStudyLogs] = useState<StudyLog[]>([]);
   const [reviews, setReviews] = useState<SpacedReview[]>([]);
   const [errors, setErrors] = useState<ErrorEntry[]>([]);
+  const [flashcards, setFlashcards] = useState<Flashcard[]>([]);
   const [simulados, setSimulados] = useState<Simulado[]>([]);
   const [reports, setReports] = useState<AIReport[]>([]);
   const [theme, setThemeState] = useState<ThemeId>('clean');
+
+  const swStorageKey = `sf_stopwatch_${profileId}`;
 
   const [stopwatch, setStopwatch] = useState<StopwatchState>({
     running: false,
@@ -114,11 +124,43 @@ export function ProfileProvider({
   });
 
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(swStorageKey);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as StopwatchState;
+      if (saved.running && saved.startedAt) {
+        const extra = Math.max(0, Math.floor((Date.now() - saved.startedAt) / 1000));
+        setStopwatch({
+          ...saved,
+          elapsedSeconds: saved.elapsedSeconds + extra,
+          startedAt: Date.now(),
+        });
+      } else if (saved.subjectId) {
+        setStopwatch(saved);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, [swStorageKey]);
+
+  useEffect(() => {
+    try {
+      if (stopwatch.subjectId) {
+        localStorage.setItem(swStorageKey, JSON.stringify(stopwatch));
+      } else {
+        localStorage.removeItem(swStorageKey);
+      }
+    } catch {
+      // ignore
+    }
+  }, [stopwatch, swStorageKey]);
+
+  useEffect(() => {
     if (!stopwatch.running) return;
     const timer = setInterval(() => {
       setStopwatch((prev) => {
         if (!prev.running || !prev.startedAt) return prev;
-        return { ...prev, elapsedSeconds: prev.elapsedSeconds + 1 };
+        return { ...prev, elapsedSeconds: prev.elapsedSeconds + 1, startedAt: Date.now() };
       });
     }, 1000);
     return () => clearInterval(timer);
@@ -139,6 +181,9 @@ export function ProfileProvider({
   };
 
   const resetStopwatch = () => {
+    try {
+      localStorage.removeItem(swStorageKey);
+    } catch {}
     setStopwatch({
       running: false,
       subjectId: null,
@@ -168,6 +213,7 @@ export function ProfileProvider({
       simRes,
       repRes,
       setRes,
+      fcRes,
     ] = await Promise.all([
       supabase.from('profiles').select('*').eq('id', profileId).single(),
       supabase
@@ -212,6 +258,7 @@ export function ProfileProvider({
         .eq('profile_id', profileId)
         .order('created_at', { ascending: false }),
       supabase.from('user_settings').select('theme').eq('user_id', user.id).maybeSingle(),
+      supabase.from('flashcards').select('*').eq('profile_id', profileId).order('due_date', { ascending: true }).order('created_at', { ascending: false }),
     ]);
 
     if (profRes.data) setProfile(profRes.data as Profile);
@@ -223,6 +270,7 @@ export function ProfileProvider({
     setErrors((errRes.data as ErrorEntry[]) || []);
     setSimulados((simRes.data as Simulado[]) || []);
     setReports((repRes.data as AIReport[]) || []);
+    setFlashcards((fcRes?.data as Flashcard[]) || []);
 
     const savedTheme = (setRes.data?.theme as ThemeId) || 'clean';
     setThemeState(savedTheme);
@@ -272,6 +320,28 @@ export function ProfileProvider({
     await withSync(async () => {
       const supabase = createClient();
       await supabase.from('subjects').update(patch).eq('id', id);
+    });
+  };
+
+  const moveSubject = async (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) return;
+    const fromIdx = subjects.findIndex((s) => s.id === sourceId);
+    const toIdx = subjects.findIndex((s) => s.id === targetId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    const next = [...subjects];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+    const updated = next.map((s, i) => ({ ...s, cycle_order: i }));
+    setSubjects(updated);
+
+    await withSync(async () => {
+      const supabase = createClient();
+      await Promise.all(
+        updated.map((s) =>
+          supabase.from('subjects').update({ cycle_order: s.cycle_order }).eq('id', s.id)
+        )
+      );
     });
   };
 
@@ -369,6 +439,16 @@ export function ProfileProvider({
     await withSync(async () => {
       const supabase = createClient();
       await supabase.from('topics').update({ is_priority: next }).eq('id', topic.id);
+    });
+  };
+
+  const updateTopicVideo = async (topicId: string, videoUrl: string | null) => {
+    setTopics((prev) =>
+      prev.map((t) => (t.id === topicId ? { ...t, video_url: videoUrl } : t))
+    );
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('topics').update({ video_url: videoUrl }).eq('id', topicId);
     });
   };
 
@@ -514,6 +594,83 @@ export function ProfileProvider({
     });
   };
 
+
+  const addFlashcards = async (
+    items: { subject_id: string; topic_id: string | null; front: string; back: string }[]
+  ) => {
+    if (!userId || items.length === 0) return;
+    await withSync(async () => {
+      const supabase = createClient();
+      const today = todayISO();
+      const { data } = await supabase
+        .from('flashcards')
+        .insert(
+          items.map((it) => ({
+            user_id: userId,
+            profile_id: profileId,
+            subject_id: it.subject_id,
+            topic_id: it.topic_id,
+            front: it.front.trim(),
+            back: it.back.trim(),
+            ease_factor: 2.5,
+            interval_days: 0,
+            repetitions: 0,
+            due_date: today,
+          }))
+        )
+        .select('*');
+      if (data) setFlashcards((prev) => [...(data as Flashcard[]), ...prev]);
+    });
+  };
+
+  // SM-2 Spaced Repetition: 1=Errei, 2=Difícil, 3=Bom, 4=Fácil
+  const reviewFlashcard = async (card: Flashcard, quality: 1 | 2 | 3 | 4) => {
+    let reps = card.repetitions;
+    let interval = card.interval_days;
+    let ease = Number(card.ease_factor) || 2.5;
+
+    if (quality === 1) {
+      reps = 0;
+      interval = 1;
+      ease = Math.max(1.3, ease - 0.2);
+    } else if (quality === 2) {
+      reps = reps + 1;
+      interval = reps === 1 ? 1 : Math.max(2, Math.round(interval * 1.2));
+      ease = Math.max(1.3, ease - 0.1);
+    } else if (quality === 3) {
+      reps = reps + 1;
+      interval = reps === 1 ? 1 : reps === 2 ? 6 : Math.round(interval * ease);
+    } else {
+      reps = reps + 1;
+      interval = reps === 1 ? 3 : reps === 2 ? 8 : Math.round(interval * ease * 1.3);
+      ease = Math.min(3.0, ease + 0.15);
+    }
+
+    const nextDue = addDaysISO(todayISO(), interval);
+    const nowIso = new Date().toISOString();
+    const patch = {
+      repetitions: reps,
+      interval_days: interval,
+      ease_factor: Number(ease.toFixed(2)),
+      due_date: nextDue,
+      last_reviewed_at: nowIso,
+    };
+
+    setFlashcards((prev) => prev.map((c) => (c.id === card.id ? { ...c, ...patch } : c)));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('flashcards').update(patch).eq('id', card.id);
+    });
+  };
+
+  const deleteFlashcard = async (id: string) => {
+    setFlashcards((prev) => prev.filter((c) => c.id !== id));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('flashcards').delete().eq('id', id);
+    });
+  };
+
   return (
     <ProfileContext.Provider
       value={{
@@ -528,6 +685,7 @@ export function ProfileProvider({
         studyLogs,
         reviews,
         errors,
+        flashcards,
         simulados,
         reports,
         theme,
@@ -540,10 +698,12 @@ export function ProfileProvider({
         updateProfile,
         updateSubject,
         reorderSubject,
+        moveSubject,
         addTopic,
         toggleTopicStudied,
         toggleTopicPriority,
         updateTopicPdf,
+        updateTopicVideo,
         addHighlight,
         deleteHighlight,
         addStudyLog,
@@ -555,6 +715,9 @@ export function ProfileProvider({
         addSimulado,
         deleteSimulado,
         addAIReport,
+        addFlashcards,
+        reviewFlashcard,
+        deleteFlashcard,
       }}
     >
       {children}

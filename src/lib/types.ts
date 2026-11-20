@@ -44,6 +44,7 @@ export interface Topic {
   studied_at: string | null;
   pdf_path: string | null;
   pdf_name: string | null;
+  video_url?: string | null;
   sort_order: number;
   created_at: string;
 }
@@ -139,5 +140,21 @@ export interface AIReport {
   period_label: string;
   content_markdown: string;
   metrics_snapshot: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface Flashcard {
+  id: string;
+  user_id: string;
+  profile_id: string;
+  subject_id: string;
+  topic_id: string | null;
+  front: string;
+  back: string;
+  ease_factor: number;
+  interval_days: number;
+  repetitions: number;
+  due_date: string;
+  last_reviewed_at: string | null;
   created_at: string;
 }

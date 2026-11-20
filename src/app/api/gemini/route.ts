@@ -194,6 +194,29 @@ Responda SOMENTE com um JSON válido neste formato exato (sem markdown):
       return NextResponse.json({ ok: true, data: parsed });
     }
 
+    if (action === 'generate_flashcards') {
+      const { subjectName, topicTitle, profileName, count = 5 } = body;
+      const raw = await callGemini(
+        [
+          {
+            text: `Você é um professor especialista em concursos públicos (${profileName}). Crie ${count} flashcards de alta retenção (estilo Anki, diretos e cobrados em prova) sobre o tópico "${topicTitle}" da matéria "${subjectName}".
+Retorne SOMENTE um JSON válido neste formato:
+{
+  "flashcards": [
+    {
+      "front": "Pergunta objetiva ou conceito-chave para lembrar",
+      "back": "Resposta direta, clara e com a pegadinha/regra principal que cai em prova"
+    }
+  ]
+}`,
+          },
+        ],
+        true
+      );
+      const parsed = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data: parsed });
+    }
+
     if (action === 'quiz') {
       const { subjectName, topicTitle, profileName } = body;
       const raw = await callGemini(

@@ -74,3 +74,31 @@ export const SUBJECT_COLORS = [
   '#0d9488',
   '#ea580c',
 ];
+
+export function getYouTubeEmbedUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url.trim());
+    if (u.hostname.includes('youtu.be')) {
+      const id = u.pathname.replace('/', '');
+      return id ? `https://www.youtube.com/embed/${id}` : null;
+    }
+    if (u.hostname.includes('youtube.com')) {
+      const v = u.searchParams.get('v');
+      if (v) return `https://www.youtube.com/embed/${v}`;
+      if (u.pathname.startsWith('/embed/')) return url.trim();
+      if (u.pathname.startsWith('/shorts/')) {
+        const id = u.pathname.split('/shorts/')[1];
+        return id ? `https://www.youtube.com/embed/${id}` : null;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function getYouTubeSearchUrl(subjectName: string, topicTitle: string): string {
+  const q = encodeURIComponent(`${subjectName} ${topicTitle} concurso aula`);
+  return `https://www.youtube.com/results?search_query=${q}`;
+}
