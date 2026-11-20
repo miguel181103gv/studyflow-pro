@@ -50,6 +50,7 @@ create table if not exists public.topics (
   studied_at timestamptz,
   pdf_path text,
   pdf_name text,
+  video_url text,
   sort_order integer not null default 0,
   created_at timestamptz not null default now()
 );
@@ -154,6 +155,26 @@ create table if not exists public.user_settings (
   updated_at timestamptz not null default now()
 );
 
+
+-- 11. Flashcards com Revisão Espaçada (SM-2)
+create table if not exists public.flashcards (
+  id uuid primary key default uuid_generate_v4(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  profile_id uuid not null references public.profiles(id) on delete cascade,
+  subject_id uuid not null references public.subjects(id) on delete cascade,
+  topic_id uuid references public.topics(id) on delete set null,
+  front text not null,
+  back text not null,
+  ease_factor numeric(4,2) not null default 2.50,
+  interval_days integer not null default 0,
+  repetitions integer not null default 0,
+  due_date date not null default current_date,
+  last_reviewed_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists idx_flashcards_profile_due on public.flashcards(profile_id, due_date);
+alter table public.flashcards enable row level security;
+
 -- Índices para performance
 create index if not exists idx_profiles_user on public.profiles(user_id);
 create index if not exists idx_subjects_profile on public.subjects(profile_id);
@@ -182,7 +203,7 @@ begin
   for t in select unnest(array[
     'profiles','subjects','topics','topic_highlights',
     'study_logs','spaced_reviews','error_entries','simulados',
-    'ai_reports','user_settings'
+    'ai_reports','user_settings','flashcards'
   ])
   loop
     execute format('drop policy if exists "own_data_select" on public.%I', t);

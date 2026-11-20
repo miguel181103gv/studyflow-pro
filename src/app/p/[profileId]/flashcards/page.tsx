@@ -13,7 +13,41 @@ import {
   RotateCw,
   X,
   Globe2,
+  FileText,
 } from 'lucide-react';
+
+function parseBulkFlashcards(raw: string): { front: string; back: string }[] {
+  const results: { front: string; back: string }[] = [];
+  const text = raw.replace(/\r\n/g, '\n').trim();
+  if (!text) return results;
+
+  // Padrão 1: Frente: ... Verso: ... (ou Pergunta: ... Resposta: ... / P: ... R: ...)
+  const regex =
+    /(?:^|\n)\s*(?:[-*•]\s*)?(?:Frente|Pergunta|P|Q)\s*:\s*([\s\S]*?)(?:\n\s*(?:[-*•]\s*)?(?:Verso|Resposta|R|A)\s*:\s*([\s\S]*?))(?=\n\s*(?:\d+[.)]|(?:[-*•]\s*)?(?:Frente|Pergunta|P|Q)\s*:)|$)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const f = match[1].trim();
+    const b = match[2].trim();
+    if (f && b) results.push({ front: f, back: b });
+  }
+
+  // Fallback: linhas separadas por "|" ou ";"
+  if (results.length === 0) {
+    text.split('\n').forEach((line) => {
+      const sep = line.includes('|') ? '|' : line.includes(';') ? ';' : null;
+      if (sep) {
+        const parts = line.split(sep);
+        if (parts.length >= 2) {
+          const f = parts[0].trim();
+          const b = parts.slice(1).join(sep).trim();
+          if (f && b) results.push({ front: f, back: b });
+        }
+      }
+    });
+  }
+
+  return results;
+}
 
 export default function FlashcardsPage() {
   const {
@@ -38,6 +72,9 @@ export default function FlashcardsPage() {
 
   // Form criar card manual
   const [front, setFront] = useState('');
+  const [bulkText, setBulkText] = useState('');
+  const [importingBulk, setImportingBulk] = useState(false);
+  const [showBulkBox, setShowBulkBox] = useState(false);
   const [back, setBack] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -82,6 +119,24 @@ export default function FlashcardsPage() {
     if (!currentSubjectId || !newTopicName.trim()) return;
     await addTopic(currentSubjectId, newTopicName);
     setNewTopicName('');
+  }
+
+  const parsedBulk = parseBulkFlashcards(bulkText);
+
+  async function handleBulkImport() {
+    if (!currentSubjectId || parsedBulk.length === 0) return;
+    setImportingBulk(true);
+    await addFlashcards(
+      parsedBulk.map((c) => ({
+        subject_id: currentSubjectId,
+        topic_id: selectedTopicId || null,
+        front: c.front,
+        back: c.back,
+      }))
+    );
+    setBulkText('');
+    setShowBulkBox(false);
+    setImportingBulk(false);
   }
 
   async function handleAddCard(e: React.FormEvent) {
@@ -368,6 +423,51 @@ export default function FlashcardsPage() {
                 {generating ? 'Gerando...' : 'Gerar'}
               </button>
             </div>
+          </div>
+
+          {/* Importar lista de texto em lote */}
+          <div className="subtle-surface rounded-2xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-bold text-teal-700 dark:text-teal-300 flex items-center gap-1.5">
+                <FileText className="w-4 h-4" />
+                Colar Texto com Vários Flashcards (Frente / Verso)
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowBulkBox((v) => !v)}
+                className="px-3 py-1 rounded-xl card-surface text-xs font-bold"
+              >
+                {showBulkBox ? 'Fechar' : 'Colar Lista'}
+              </button>
+            </div>
+            {showBulkBox && (
+              <div className="space-y-2.5 pt-1">
+                <textarea
+                  rows={5}
+                  value={bulkText}
+                  onChange={(e) => setBulkText(e.target.value)}
+                  placeholder={"Cole aqui sua lista, por exemplo:\n1.\n- Frente: O que é norma de eficácia plena?\n- Verso: Produz todos os seus efeitos desde a entrada em vigor."}
+                  className="w-full rounded-xl card-surface p-3 text-xs font-mono"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-muted-theme">
+                    {parsedBulk.length > 0
+                      ? `${parsedBulk.length} flashcard(s) identificado(s) automaticamente!`
+                      : 'Use "Frente:" / "Verso:" ou "Pergunta:" / "Resposta:"'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={parsedBulk.length === 0 || importingBulk}
+                    onClick={handleBulkImport}
+                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
+                  >
+                    {importingBulk
+                      ? 'Importando...'
+                      : `Importar ${parsedBulk.length} Card(s)`}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {aiError && (

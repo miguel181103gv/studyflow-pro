@@ -4,75 +4,79 @@
 
 :root,
 [data-theme='clean'] {
-  --bg-page: #f7f9fc;
+  --bg-page: #f5f7fb;
   --bg-card: #ffffff;
-  --bg-subtle: #f1f5f9;
+  --bg-subtle: #eef2f7;
   --bg-sidebar: #ffffff;
   --sidebar-text: #334155;
   --sidebar-muted: #64748b;
-  --sidebar-border: #e2e8f0;
+  --sidebar-border: #e5eaf2;
   --sidebar-hover: #f1f5f9;
-  --sidebar-active-bg: #ecfdf5;
-  --sidebar-active-text: #047857;
+  --sidebar-active-bg: linear-gradient(135deg, #0d9488 0%, #10b981 100%);
+  --sidebar-active-text: #ffffff;
   --text-main: #0f172a;
-  --text-muted: #64748b;
-  --border-main: #e6eaf0;
+  --text-muted: #526075;
+  --border-main: #e4e9f2;
   --accent: #0d9488;
-  --accent-2: #6366f1;
+  --accent-2: #4f46e5;
 }
 
 [data-theme='sepia'] {
-  --bg-page: #f8f4ec;
+  --bg-page: #f7f2e8;
   --bg-card: #fffdf9;
-  --bg-subtle: #f2eadc;
-  --bg-sidebar: #fcf8f0;
+  --bg-subtle: #efe7d8;
+  --bg-sidebar: #fcf7ee;
   --sidebar-text: #3b2f24;
   --sidebar-muted: #786a59;
-  --sidebar-border: #e6dccb;
-  --sidebar-hover: #efe7d8;
-  --sidebar-active-bg: #fef3c7;
-  --sidebar-active-text: #92400e;
+  --sidebar-border: #e5dac7;
+  --sidebar-hover: #efe6d5;
+  --sidebar-active-bg: linear-gradient(135deg, #b45309 0%, #d97706 100%);
+  --sidebar-active-text: #ffffff;
   --text-main: #292018;
-  --text-muted: #786a59;
-  --border-main: #e7decb;
+  --text-muted: #6b5d4d;
+  --border-main: #e5dbc9;
   --accent: #b45309;
   --accent-2: #0f766e;
 }
 
 [data-theme='obsidian'] {
   --bg-page: #0b0f19;
-  --bg-card: #121926;
+  --bg-card: #121927;
   --bg-subtle: #1b2436;
   --bg-sidebar: #0e1422;
   --sidebar-text: #cbd5e1;
   --sidebar-muted: #94a3b8;
   --sidebar-border: #1e293b;
   --sidebar-hover: #1e293b;
-  --sidebar-active-bg: rgba(16, 185, 129, 0.16);
-  --sidebar-active-text: #34d399;
+  --sidebar-active-bg: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  --sidebar-active-text: #ffffff;
   --text-main: #f1f5f9;
   --text-muted: #94a3b8;
-  --border-main: #1f2937;
+  --border-main: #223047;
   --accent: #10b981;
   --accent-2: #818cf8;
 }
 
 [data-theme='navy'] {
   --bg-page: #0a1628;
-  --bg-card: #0f2038;
-  --bg-subtle: #162b4a;
+  --bg-card: #10223b;
+  --bg-subtle: #172e4f;
   --bg-sidebar: #0c1a30;
   --sidebar-text: #cbd5e1;
   --sidebar-muted: #8da6cc;
   --sidebar-border: #1e3a5f;
   --sidebar-hover: #162b4a;
-  --sidebar-active-bg: rgba(56, 189, 248, 0.16);
-  --sidebar-active-text: #38bdf8;
+  --sidebar-active-bg: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
+  --sidebar-active-text: #ffffff;
   --text-main: #e2ecff;
-  --text-muted: #8da6cc;
+  --text-muted: #94afd6;
   --border-main: #1e3a5f;
   --accent: #38bdf8;
   --accent-2: #818cf8;
+}
+
+html {
+  font-size: 16px;
 }
 
 body {
@@ -84,7 +88,8 @@ body {
 .card-surface {
   background-color: var(--bg-card);
   border: 1px solid var(--border-main);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 14px rgba(15, 23, 42, 0.025);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 6px 20px rgba(15, 23, 42, 0.03);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
 
 .subtle-surface {
@@ -107,20 +112,33 @@ body {
 
 .sidebar-item {
   color: var(--sidebar-text);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .sidebar-item:hover {
   background-color: var(--sidebar-hover);
+  transform: translateX(4px);
 }
 
 .sidebar-item-active {
-  background-color: var(--sidebar-active-bg);
+  background: var(--sidebar-active-bg);
   color: var(--sidebar-active-text);
+  box-shadow: 0 6px 16px -4px rgba(13, 148, 136, 0.35);
+}
+
+button,
+a {
+  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease,
+    border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
 }
 
 ::-webkit-scrollbar-track {
@@ -128,6 +146,6 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
+  background: rgba(148, 163, 184, 0.4);
   border-radius: 9999px;
 }

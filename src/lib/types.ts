@@ -115,6 +115,7 @@ export interface SimuladoSubjectScore {
   subject_name: string;
   total: number;
   correct: number;
+  weight?: number;
 }
 
 export interface Simulado {
