@@ -12,10 +12,40 @@ import {
   ArrowDown,
   Save,
   Plus,
+  Minus,
   Trash2,
   X,
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: { name: string; value: number; payload: { color: string; pct: number } }[];
+}
+
+function CycleTooltip({ active, payload }: CustomTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null;
+  const item = payload[0];
+  const h = Math.floor(item.value / 60);
+  const m = item.value % 60;
+  return (
+    <div className="rounded-2xl bg-slate-900/95 text-white px-4 py-3 shadow-2xl border border-white/10 backdrop-blur-md text-xs space-y-1">
+      <div className="flex items-center gap-2">
+        <span
+          className="w-2.5 h-2.5 rounded-full shrink-0"
+          style={{ backgroundColor: item.payload.color }}
+        />
+        <span className="font-bold">{item.name}</span>
+      </div>
+      <p className="text-slate-300 pl-4">
+        <strong className="text-white">
+          {h}h {String(m).padStart(2, '0')}m
+        </strong>{' '}
+        · {item.payload.pct}% do ciclo
+      </p>
+    </div>
+  );
+}
 
 export default function CicloPage() {
   const {
@@ -54,11 +84,22 @@ export default function CicloPage() {
   );
   const totalStudiedSeconds = studyLogs.reduce((acc, l) => acc + l.duration_seconds, 0);
 
-  const donutData = subjects.map((s) => ({
-    name: s.name,
-    value: Math.max(15, s.cycle_hours * 60 + s.cycle_minutes),
-    color: s.color,
-  }));
+  const donutData = subjects.map((s) => {
+    const val = Math.max(15, s.cycle_hours * 60 + s.cycle_minutes);
+    return {
+      name: s.name,
+      value: val,
+      color: s.color,
+      pct: totalCycleMinutes > 0 ? Math.round((val / totalCycleMinutes) * 100) : 0,
+    };
+  });
+
+  function adjustSubjectTime(subjectId: string, currentH: number, currentM: number, deltaMin: number) {
+    const total = Math.max(15, Math.min(20 * 60, currentH * 60 + currentM + deltaMin));
+    const nextH = Math.floor(total / 60);
+    const nextM = total % 60;
+    updateSubject(subjectId, { cycle_hours: nextH, cycle_minutes: nextM });
+  }
 
   function openRegisterModal(prefillSubjectId?: string, useStopwatch = false) {
     const subId = prefillSubjectId || stopwatch.subjectId || subjects[0]?.id || '';
@@ -108,72 +149,91 @@ export default function CicloPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Ciclo de Estudos</h1>
-          <p className="text-sm text-muted-theme">
-            Ordene suas matérias, ajuste a carga horária e use o cronômetro ao vivo.
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Ciclo de Estudos</h1>
+          <p className="text-sm text-muted-theme mt-1">
+            Arraste para ordenar suas matérias, ajuste a carga horária e use o cronômetro ao vivo.
           </p>
         </div>
         <button
           onClick={() => openRegisterModal()}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold shadow-sm transition"
+          className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold shadow-sm transition"
         >
           <Plus className="w-4 h-4" />
           Registrar Estudo Manual
         </button>
       </div>
 
-      {/* Top Row: Donut + Active Stopwatch */}
+      {/* Top Row: Donut Refinado + Cronômetro */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="card-surface rounded-2xl p-5 shadow-sm flex flex-col items-center">
-          <h2 className="font-bold text-sm self-start mb-2">Distribuição do Ciclo</h2>
-          <div className="h-52 w-full">
+        <div className="card-surface rounded-3xl p-6 flex flex-col items-center">
+          <div className="w-full flex items-center justify-between mb-2">
+            <h2 className="font-bold text-base">Distribuição do Ciclo</h2>
+            <span className="text-xs font-bold px-2.5 py-1 rounded-full subtle-surface text-muted-theme">
+              {subjects.length} matérias
+            </span>
+          </div>
+
+          <div className="relative h-60 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
                   data={donutData}
                   dataKey="value"
                   nameKey="name"
-                  innerRadius={52}
-                  outerRadius={80}
-                  paddingAngle={2}
+                  innerRadius={64}
+                  outerRadius={94}
+                  paddingAngle={3}
+                  cornerRadius={8}
+                  stroke="none"
                 >
                   {donutData.map((entry, idx) => (
                     <Cell key={idx} fill={entry.color} />
                   ))}
                 </Pie>
-                <Tooltip formatter={(v: number) => `${Math.floor(v / 60)}h ${v % 60}m`} />
+                <Tooltip content={<CycleTooltip />} />
               </PieChart>
             </ResponsiveContainer>
+            {/* Texto central dentro do gráfico */}
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted-theme">
+                Meta Total
+              </span>
+              <span className="text-xl font-extrabold">
+                {Math.floor(totalCycleMinutes / 60)}h {String(totalCycleMinutes % 60).padStart(2, '0')}m
+              </span>
+            </div>
           </div>
-          <div className="text-center mt-1">
-            <p className="text-xs text-muted-theme">Estudado vs. Meta do Ciclo</p>
-            <p className="text-sm font-bold">
-              {formatDurationHMS(totalStudiedSeconds)} / {Math.floor(totalCycleMinutes / 60)}h{' '}
-              {String(totalCycleMinutes % 60).padStart(2, '0')}m
-            </p>
+
+          <div className="w-full mt-2 pt-3 border-t border-theme flex items-center justify-between text-xs">
+            <span className="text-muted-theme font-medium">Total já estudado:</span>
+            <span className="font-extrabold text-teal-600">
+              {formatDurationHMS(totalStudiedSeconds)}
+            </span>
           </div>
         </div>
 
-        <div className="lg:col-span-2 card-surface rounded-2xl p-5 shadow-sm flex flex-col justify-between">
+        <div className="lg:col-span-2 card-surface rounded-3xl p-6 flex flex-col justify-between">
           <div>
-            <h2 className="font-bold text-base mb-1">Cronômetro de Sessão</h2>
-            <p className="text-xs text-muted-theme">
-              Selecione qualquer matéria abaixo e clique em Play. Ao terminar, salve direto no seu histórico.
+            <h2 className="font-bold text-lg mb-1">Cronômetro de Sessão</h2>
+            <p className="text-sm text-muted-theme">
+              Selecione qualquer matéria abaixo e clique em Estudar. Ao terminar, salve direto no seu histórico.
             </p>
           </div>
 
-          <div className="my-6 flex flex-col sm:flex-row items-center justify-between gap-4 subtle-surface rounded-2xl p-5">
+          <div className="my-6 flex flex-col sm:flex-row items-center justify-between gap-4 subtle-surface rounded-3xl p-6">
             <div>
-              <p className="text-xs text-muted-theme">Matéria ativa</p>
-              <p className="text-lg font-bold">
+              <p className="text-xs font-semibold uppercase tracking-wider text-muted-theme">
+                Matéria ativa
+              </p>
+              <p className="text-lg font-extrabold mt-0.5">
                 {subjects.find((s) => s.id === stopwatch.subjectId)?.name ||
                   'Nenhuma matéria selecionada'}
               </p>
             </div>
-            <div className="text-4xl font-mono font-bold tracking-wider text-blue-600">
+            <div className="text-4xl sm:text-5xl font-mono font-extrabold tracking-wider text-teal-600">
               {formatDurationHMS(stopwatch.elapsedSeconds)}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               {stopwatch.subjectId && (
                 <>
                   <button
@@ -182,20 +242,20 @@ export default function CicloPage() {
                         ? pauseStopwatch()
                         : startStopwatch(stopwatch.subjectId!)
                     }
-                    className="p-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white"
+                    className="p-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm"
                   >
-                    {stopwatch.running ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                    {stopwatch.running ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                   </button>
                   <button
                     onClick={resetStopwatch}
-                    className="p-3 rounded-xl card-surface hover:opacity-80"
+                    className="p-3.5 rounded-2xl card-surface hover:opacity-80"
                     title="Zerar"
                   >
-                    <RotateCcw className="w-4 h-4" />
+                    <RotateCcw className="w-5 h-5" />
                   </button>
                   <button
                     onClick={() => openRegisterModal(stopwatch.subjectId!, true)}
-                    className="px-4 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                    className="px-5 py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
                   >
                     <Save className="w-4 h-4" />
                     Finalizar & Salvar
@@ -211,19 +271,29 @@ export default function CicloPage() {
         </div>
       </div>
 
-      {/* Reorderable Subject List */}
-      <div className="card-surface rounded-2xl p-5 shadow-sm">
-        <h2 className="font-bold text-base mb-4">Ordem e Carga Horária das Matérias</h2>
-        <div className="space-y-2.5">
+      {/* Lista de Matérias com Controles Grandes e Confortáveis */}
+      <div className="card-surface rounded-3xl p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="font-bold text-lg">Ordem e Carga Horária das Matérias</h2>
+            <p className="text-xs text-muted-theme">
+              Arraste os cartões para reordenar e use os botões − / + para ajustar de 15 em 15 minutos.
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
           {subjects.map((s, idx) => {
             const studiedForSubject = studyLogs
               .filter((l) => l.subject_id === s.id)
               .reduce((a, b) => a + b.duration_seconds, 0);
             const targetSecs = (s.cycle_hours * 60 + s.cycle_minutes) * 60;
-            const pct = targetSecs > 0 ? Math.min(100, Math.round((studiedForSubject / targetSecs) * 100)) : 0;
+            const pct =
+              targetSecs > 0 ? Math.min(100, Math.round((studiedForSubject / targetSecs) * 100)) : 0;
 
             const isDragging = draggedId === s.id;
             const isOver = dragOverId === s.id && draggedId !== s.id;
+
             return (
               <div
                 key={s.id}
@@ -248,87 +318,85 @@ export default function CicloPage() {
                   setDraggedId(null);
                   setDragOverId(null);
                 }}
-                className={`subtle-surface rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-grab active:cursor-grabbing transition-all ${
-                  isDragging ? "opacity-40 scale-[0.98]" : ""
-                } ${isOver ? "ring-2 ring-blue-500 bg-blue-500/10" : ""}`}
+                className={`subtle-surface rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-grab active:cursor-grabbing transition-all ${
+                  isDragging ? 'opacity-40 scale-[0.98]' : ''
+                } ${isOver ? 'ring-2 ring-teal-500 bg-teal-500/10' : ''}`}
               >
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <GripVertical className="w-4 h-4 text-muted-theme shrink-0" />
+                <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                  <GripVertical className="w-5 h-5 text-muted-theme shrink-0" />
                   <span
-                    className="w-8 h-8 rounded-xl text-white text-xs font-bold flex items-center justify-center shrink-0"
+                    className="w-10 h-10 rounded-2xl text-white text-sm font-extrabold flex items-center justify-center shrink-0 shadow-xs"
                     style={{ backgroundColor: s.color }}
                   >
                     {idx + 1}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-sm truncate">{s.name}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <div className="w-28 h-1.5 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
+                    <p className="font-bold text-base truncate">{s.name}</p>
+                    <div className="flex items-center gap-3 mt-1.5">
+                      <div className="w-36 h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
                         <div
-                          className="h-full rounded-full"
+                          className="h-full rounded-full transition-all"
                           style={{ width: `${pct}%`, backgroundColor: s.color }}
                         />
                       </div>
-                      <span className="text-[11px] text-muted-theme">
+                      <span className="text-xs font-medium text-muted-theme">
                         {formatDurationHM(studiedForSubject)} estudados ({pct}%)
                       </span>
                     </div>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-1 text-xs card-surface rounded-xl px-2 py-1">
-                    <input
-                      type="number"
-                      min={0}
-                      max={20}
-                      value={s.cycle_hours}
-                      onChange={(e) =>
-                        updateSubject(s.id, { cycle_hours: Math.max(0, Number(e.target.value)) })
-                      }
-                      className="w-10 text-center bg-transparent font-semibold focus:outline-none"
-                    />
-                    <span className="text-muted-theme">h</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={55}
-                      step={5}
-                      value={s.cycle_minutes}
-                      onChange={(e) =>
-                        updateSubject(s.id, {
-                          cycle_minutes: Math.min(59, Math.max(0, Number(e.target.value))),
-                        })
-                      }
-                      className="w-10 text-center bg-transparent font-semibold focus:outline-none"
-                    />
-                    <span className="text-muted-theme">m</span>
+                {/* Controles grandes de Tempo (- / +) + Botão Estudar */}
+                <div className="flex items-center justify-between md:justify-end gap-3 flex-wrap">
+                  <div className="flex items-center gap-1.5 card-surface rounded-2xl p-1.5 shadow-xs">
+                    <button
+                      type="button"
+                      onClick={() => adjustSubjectTime(s.id, s.cycle_hours, s.cycle_minutes, -15)}
+                      className="w-10 h-10 rounded-xl subtle-surface hover:bg-rose-500/15 hover:text-rose-600 flex items-center justify-center font-bold"
+                      title="Diminuir 15 minutos"
+                    >
+                      <Minus className="w-4 h-4" />
+                    </button>
+                    <div className="px-3 text-center min-w-[82px]">
+                      <p className="text-sm font-extrabold leading-none">
+                        {s.cycle_hours}h {String(s.cycle_minutes).padStart(2, '0')}m
+                      </p>
+                      <p className="text-[10px] text-muted-theme mt-0.5">Meta</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => adjustSubjectTime(s.id, s.cycle_hours, s.cycle_minutes, 15)}
+                      className="w-10 h-10 rounded-xl subtle-surface hover:bg-teal-500/15 hover:text-teal-600 flex items-center justify-center font-bold"
+                      title="Aumentar 15 minutos"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
                   </div>
 
-
-                  <div className="flex sm:hidden items-center gap-1">
+                  <div className="flex sm:hidden items-center gap-1.5">
                     <button
                       onClick={() => reorderSubject(s.id, 'up')}
                       disabled={idx === 0}
-                      className="p-2 rounded-xl card-surface disabled:opacity-30"
+                      className="p-2.5 rounded-xl card-surface disabled:opacity-30"
                       title="Subir"
                     >
-                      <ArrowUp className="w-3.5 h-3.5" />
+                      <ArrowUp className="w-4 h-4" />
                     </button>
                     <button
                       onClick={() => reorderSubject(s.id, 'down')}
                       disabled={idx === subjects.length - 1}
-                      className="p-2 rounded-xl card-surface disabled:opacity-30"
+                      className="p-2.5 rounded-xl card-surface disabled:opacity-30"
                       title="Descer"
                     >
-                      <ArrowDown className="w-3.5 h-3.5" />
+                      <ArrowDown className="w-4 h-4" />
                     </button>
                   </div>
+
                   <button
                     onClick={() => startStopwatch(s.id)}
-                    className="px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1"
+                    className="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
                   >
-                    <Play className="w-3.5 h-3.5" />
+                    <Play className="w-4 h-4 fill-current" />
                     Estudar
                   </button>
                 </div>
@@ -339,47 +407,49 @@ export default function CicloPage() {
       </div>
 
       {/* Últimos Estudos */}
-      <div className="card-surface rounded-2xl p-5 shadow-sm">
-        <h2 className="font-bold text-base mb-4">Últimos Estudos Registrados</h2>
+      <div className="card-surface rounded-3xl p-6">
+        <h2 className="font-bold text-lg mb-4">Últimos Estudos Registrados</h2>
         {studyLogs.length === 0 ? (
           <p className="text-sm text-muted-theme">Nenhum estudo registrado ainda.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             {studyLogs.slice(0, 15).map((log) => {
               const s = subjects.find((sb) => sb.id === log.subject_id);
               const t = topics.find((tp) => tp.id === log.topic_id);
               return (
                 <div
                   key={log.id}
-                  className="subtle-surface rounded-xl p-3 flex items-center justify-between gap-3"
+                  className="subtle-surface rounded-2xl p-4 flex items-center justify-between gap-3"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-sm">{s?.name || 'Matéria'}</span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full card-surface">
+                      <span className="font-bold text-sm">{s?.name || 'Matéria'}</span>
+                      <span className="text-xs px-2.5 py-0.5 rounded-full card-surface font-medium">
                         {log.method}
                       </span>
-                      <span className="text-[11px] text-muted-theme">
+                      <span className="text-xs text-muted-theme">
                         {formatDateBR(log.study_date)} • {log.period}
                       </span>
                     </div>
-                    {t && <p className="text-xs text-muted-theme truncate mt-0.5">{t.title}</p>}
+                    {t && <p className="text-xs text-muted-theme truncate mt-1">{t.title}</p>}
                     {log.stop_point && (
-                      <p className="text-xs text-blue-600 mt-0.5">Parada: {log.stop_point}</p>
+                      <p className="text-xs text-teal-600 font-medium mt-1">
+                        Parada: {log.stop_point}
+                      </p>
                     )}
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     <div className="text-right text-xs">
-                      <p className="font-bold">{formatDurationHM(log.duration_seconds)}</p>
+                      <p className="font-extrabold text-sm">{formatDurationHM(log.duration_seconds)}</p>
                       {log.questions_total > 0 && (
-                        <p className="text-muted-theme">
+                        <p className="text-muted-theme font-medium">
                           {log.questions_correct}/{log.questions_total} q
                         </p>
                       )}
                     </div>
                     <button
                       onClick={() => deleteStudyLog(log.id)}
-                      className="p-1.5 rounded-lg hover:bg-red-500/15 text-muted-theme hover:text-red-500"
+                      className="p-2 rounded-xl hover:bg-rose-500/15 text-muted-theme hover:text-rose-500"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -393,8 +463,8 @@ export default function CicloPage() {
 
       {/* Modal Registrar Estudo */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
-          <div className="card-surface w-full max-w-lg rounded-3xl p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-surface w-full max-w-lg rounded-3xl p-6 shadow-2xl animate-pop-in">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-bold">Registrar Estudo</h2>
               <button
@@ -407,14 +477,14 @@ export default function CicloPage() {
 
             <form onSubmit={handleSaveStudy} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-muted-theme mb-1">Matéria</label>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">Matéria</label>
                 <select
                   value={modalSubjectId}
                   onChange={(e) => {
                     setModalSubjectId(e.target.value);
                     setModalTopicId('');
                   }}
-                  className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
                 >
                   {subjects.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -425,13 +495,13 @@ export default function CicloPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-muted-theme mb-1">
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
                   Tópico (opcional)
                 </label>
                 <select
                   value={modalTopicId}
                   onChange={(e) => setModalTopicId(e.target.value)}
-                  className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
                 >
                   <option value="">Geral da matéria</option>
                   {subjectTopics.map((t) => (
@@ -450,7 +520,7 @@ export default function CicloPage() {
                     min={0}
                     value={modalHours}
                     onChange={(e) => setModalHours(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   />
                 </div>
                 <div>
@@ -461,7 +531,7 @@ export default function CicloPage() {
                     max={59}
                     value={modalMinutes}
                     onChange={(e) => setModalMinutes(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   />
                 </div>
                 <div className="col-span-2">
@@ -470,7 +540,7 @@ export default function CicloPage() {
                     type="date"
                     value={modalDate}
                     onChange={(e) => setModalDate(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   />
                 </div>
               </div>
@@ -481,7 +551,7 @@ export default function CicloPage() {
                   <select
                     value={modalPeriod}
                     onChange={(e) => setModalPeriod(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   >
                     <option>Manhã</option>
                     <option>Tarde</option>
@@ -494,7 +564,7 @@ export default function CicloPage() {
                   <select
                     value={modalMethod}
                     onChange={(e) => setModalMethod(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   >
                     <option>PDF + Questões</option>
                     <option>Videoaula</option>
@@ -513,7 +583,7 @@ export default function CicloPage() {
                     min={0}
                     value={modalTotalQ}
                     onChange={(e) => setModalTotalQ(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   />
                 </div>
                 <div>
@@ -523,7 +593,7 @@ export default function CicloPage() {
                     min={0}
                     value={modalCorrectQ}
                     onChange={(e) => setModalCorrectQ(e.target.value)}
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2.5 text-sm"
                   />
                 </div>
               </div>
@@ -538,7 +608,7 @@ export default function CicloPage() {
                   value={modalStopPoint}
                   onChange={(e) => setModalStopPoint(e.target.value)}
                   placeholder="Ex: Aula 03, página 28, parei em Atos Administrativos..."
-                  className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+                  className="w-full rounded-2xl subtle-surface border border-theme p-3 text-sm"
                 />
               </div>
 
@@ -546,14 +616,14 @@ export default function CicloPage() {
                 <button
                   type="button"
                   onClick={() => setShowModal(false)}
-                  className="px-4 py-2 rounded-xl subtle-surface text-sm"
+                  className="px-4 py-2.5 rounded-2xl subtle-surface text-sm font-semibold"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold"
+                  className="px-5 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold"
                 >
                   {saving ? 'Salvando...' : 'Salvar Sessão'}
                 </button>

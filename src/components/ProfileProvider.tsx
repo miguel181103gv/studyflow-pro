@@ -16,6 +16,7 @@ import type {
   TopicHighlight,
 } from '@/lib/types';
 import { addDaysISO, SUBJECT_COLORS, todayISO } from '@/lib/utils';
+import { useGlobal } from './GlobalProvider';
 
 interface StopwatchState {
   running: boolean;
@@ -98,6 +99,7 @@ export function ProfileProvider({
   profileId: string;
   children: React.ReactNode;
 }) {
+  const { notify } = useGlobal();
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [userId, setUserId] = useState('');
@@ -453,6 +455,7 @@ export function ProfileProvider({
             .select('*');
           if (createdRevs) {
             setReviews((prev) => [...prev, ...(createdRevs as SpacedReview[])]);
+            notify('Tópico estudado! Revisões de 1, 7 e 30 dias agendadas.');
           }
         }
       }
@@ -536,7 +539,10 @@ export function ProfileProvider({
         .insert({ ...payload, user_id: userId, profile_id: profileId })
         .select('*')
         .single();
-      if (data) setStudyLogs((prev) => [data as StudyLog, ...prev]);
+      if (data) {
+        setStudyLogs((prev) => [data as StudyLog, ...prev]);
+        notify('Sessão salva na nuvem!');
+      }
     });
   };
 
@@ -559,6 +565,7 @@ export function ProfileProvider({
         .from('spaced_reviews')
         .update({ completed: true, completed_at: completedAt })
         .eq('id', reviewId);
+      notify('Revisão concluída! Progresso atualizado no Edital.');
     });
   };
 
@@ -699,6 +706,7 @@ export function ProfileProvider({
     await withSync(async () => {
       const supabase = createClient();
       await supabase.from('flashcards').update(patch).eq('id', card.id);
+      notify(quality === 1 ? 'Card voltará nesta sessão para fixação.' : `Ótimo! Card agendado para daqui a ${interval} dia(s).`);
     });
   };
 

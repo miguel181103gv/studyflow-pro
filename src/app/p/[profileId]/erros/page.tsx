@@ -325,7 +325,12 @@ export default function CadernoErrosPage() {
                 )}
 
                 {entry.explanation && (
-                  <p className="text-xs text-muted-theme leading-relaxed">{entry.explanation}</p>
+                  <div className="rounded-xl subtle-surface p-3 space-y-1">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
+                      Explicação / Sugestão IA (confirme com o gabarito oficial)
+                    </p>
+                    <p className="text-xs text-muted-theme leading-relaxed">{entry.explanation}</p>
+                  </div>
                 )}
 
                 <div className="pt-1 flex justify-end">
