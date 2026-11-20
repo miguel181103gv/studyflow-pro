@@ -68,12 +68,33 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!profile?.id) return;
     try {
-      const raw = localStorage.getItem(`sf_agenda_prefs_${profile.id}`);
+      const raw = localStorage.getItem(`sf_agenda_plans_v2_${profile.id}`);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed?.notes)) {
-          setAgendaItems(parsed.notes);
+        const list: { id: string; date: string; text: string; done: boolean; kind?: string }[] = [];
+        if (Array.isArray(parsed?.assessments)) {
+          parsed.assessments.forEach((a: { id: string; date: string; title: string; subjectName?: string; done?: boolean; kind?: string }) => {
+            list.push({
+              id: a.id,
+              date: a.date,
+              text: a.subjectName ? `${a.title} (${a.subjectName})` : a.title,
+              done: Boolean(a.done),
+              kind: a.kind || 'Prova',
+            });
+          });
         }
+        if (Array.isArray(parsed?.notes)) {
+          parsed.notes.forEach((n: { id: string; date: string; text: string; done?: boolean; kind?: string }) => {
+            list.push({
+              id: n.id,
+              date: n.date,
+              text: n.text,
+              done: Boolean(n.done),
+              kind: n.kind || 'Tarefa',
+            });
+          });
+        }
+        setAgendaItems(list);
       }
     } catch {
       // ignore
