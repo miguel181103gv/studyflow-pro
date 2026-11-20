@@ -2,12 +2,14 @@
 
 import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { getStudyMode } from '@/lib/studyModes';
 import { calcAccuracy, formatDateBR, todayISO } from '@/lib/utils';
 import type { SimuladoSubjectScore } from '@/lib/types';
 import { Plus, Trash2, ClipboardCheck, X } from 'lucide-react';
 
 export default function SimuladosPage() {
-  const { subjects, simulados, addSimulado, deleteSimulado } = useProfile();
+  const { profile, subjects, simulados, addSimulado, deleteSimulado } = useProfile();
+  const studyMode = getStudyMode(profile);
 
   const [showAdd, setShowAdd] = useState(false);
   const [title, setTitle] = useState('');
@@ -64,7 +66,7 @@ export default function SimuladosPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Simulados</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{studyMode.simuladosPageTitle}</h1>
           <p className="text-sm text-muted-theme mt-1">
             Registre seus simulados completos com suporte a pesos diferentes por matéria (padrão 1).
           </p>

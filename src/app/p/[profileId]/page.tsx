@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useProfile } from '@/components/ProfileProvider';
+import { getStudyMode } from '@/lib/studyModes';
 import {
   calcAccuracy,
   daysBetween,
@@ -55,10 +56,33 @@ export default function DashboardPage() {
   } = useProfile();
 
   const today = todayISO();
+  const studyMode = getStudyMode(profile);
   const [showRaioX, setShowRaioX] = useState(false);
   const [showConsistency, setShowConsistency] = useState(false);
   const [chartSubjectFilter, setChartSubjectFilter] = useState('');
   const [selectedDayISO, setSelectedDayISO] = useState<string | null>(null);
+  const [agendaItems, setAgendaItems] = useState<
+    { id: string; date: string; text: string; done: boolean; kind?: string }[]
+  >([]);
+
+  useEffect(() => {
+    if (!profile?.id) return;
+    try {
+      const raw = localStorage.getItem(`sf_agenda_prefs_${profile.id}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.notes)) {
+          setAgendaItems(parsed.notes);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [profile?.id]);
+
+  const upcomingAgendaTasks = agendaItems
+    .filter((n) => !n.done && n.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date));
 
   // 1. Métricas de HOJE
   const todaySeconds = studyLogs
@@ -195,13 +219,15 @@ export default function DashboardPage() {
                   : '🎯 Prova realizada'
                 : '🎯 Data da prova não definida'}
             </span>
-            <button
-              onClick={() => setShowRaioX((v) => !v)}
-              className="px-3.5 py-2 rounded-2xl subtle-surface border border-theme font-bold inline-flex items-center gap-1.5"
-            >
-              Raio-X do concurso
-              {showRaioX ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
+            {studyMode.hasSalaryRaioX && (
+              <button
+                onClick={() => setShowRaioX((v) => !v)}
+                className="px-3.5 py-2 rounded-2xl subtle-surface border border-theme font-bold inline-flex items-center gap-1.5"
+              >
+                Raio-X do concurso
+                {showRaioX ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              </button>
+            )}
             <Link
               href={`/p/${profile?.id}/config`}
               className="p-2 rounded-2xl subtle-surface border border-theme text-muted-theme hover:text-teal-600"
@@ -213,7 +239,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Cartão Recolhível Raio-X (sem competir com o estudo de hoje) */}
-        {showRaioX && (
+        {studyMode.hasSalaryRaioX && showRaioX && (
           <div className="card-surface rounded-3xl p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs animate-fade-in-up">
             <div>
               <p className="text-muted-theme font-semibold">Salário base</p>
@@ -242,44 +268,44 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* ONBOARDING PARA PERFIL NOVO (adapta ao estado do aluno) */}
+      {/* PRIMEIRO ACESSO: AÇÃO INICIAL CLARA SEM CARTÕES VAZIOS */}
       {isNewUser && (
-        <div className="card-surface rounded-3xl p-6 border-l-4 border-l-teal-600 space-y-3">
-          <p className="text-sm font-bold flex items-center gap-2 text-teal-700 dark:text-teal-300">
-            <Sparkles className="w-4 h-4" />
-            Primeiros passos neste concurso
-            <Link href={`/p/${profile?.id}/onboarding`} className="ml-auto text-xs underline">Abrir assistente guiado →</Link>
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-            <Link
-              href={`/p/${profile?.id}/config`}
-              className="subtle-surface rounded-2xl p-3.5 hover:opacity-85"
-            >
-              <p className="font-bold">1. Confirme sua meta e data</p>
-              <p className="text-muted-theme mt-0.5">
-                Ajuste horas por dia ({dailyGoalHours}h) e a data da prova.
+        <div className="card-surface rounded-3xl p-6 border-l-4 border-l-teal-600 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <p className="text-base font-bold flex items-center gap-2 text-teal-700 dark:text-teal-300">
+                <Sparkles className="w-4 h-4" />
+                Seu espaço está pronto. Vamos organizar seu primeiro estudo?
               </p>
+              <p className="text-xs text-muted-theme mt-0.5">
+                Você pode adicionar matérias agora ou planejar sua primeira sessão.
+              </p>
+            </div>
+            <Link href={`/p/${profile?.id}/onboarding`} className="text-xs font-semibold text-teal-600 hover:underline shrink-0">
+              Assistente guiado →
+            </Link>
+          </div>
+          <div className="flex flex-wrap gap-2.5">
+            <Link
+              href={`/p/${profile?.id}/materias`}
+              className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
+            >
+              Adicionar matéria
             </Link>
             <Link
-              href={`/p/${profile?.id}/ciclo`}
-              className="subtle-surface rounded-2xl p-3.5 hover:opacity-85"
+              href={`/p/${profile?.id}/agenda`}
+              className="px-4 py-2.5 rounded-xl subtle-surface border border-theme hover:opacity-85 text-xs font-semibold"
             >
-              <p className="font-bold">2. Organize seu Ciclo</p>
-              <p className="text-muted-theme mt-0.5">
-                Arraste as matérias na ordem que prefere estudar.
-              </p>
+              Planejar primeira sessão
             </Link>
-            <button
-              onClick={() => nextStudySubject && startStopwatch(nextStudySubject.id)}
-              className="text-left subtle-surface rounded-2xl p-3.5 hover:opacity-85"
-            >
-              <p className="font-bold text-teal-700 dark:text-teal-300">
-                3. Inicie sua 1ª sessão →
-              </p>
-              <p className="text-muted-theme mt-0.5">
-                Comece agora por {nextStudySubject?.name || 'sua primeira matéria'}.
-              </p>
-            </button>
+            {nextStudySubject && (
+              <button
+                onClick={() => startStopwatch(nextStudySubject.id)}
+                className="px-4 py-2.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-semibold text-teal-700 dark:text-teal-300"
+              >
+                Iniciar agora ({nextStudySubject.name})
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -432,6 +458,50 @@ export default function DashboardPage() {
         </div>
       )}
 
+            {/* TAREFAS, AULAS, TRABALHOS E PROVAS (FACULDADE / ESCOLA) */}
+      {studyMode.showAgendaTasksHighlight && (
+        <div className="card-surface rounded-3xl p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-bold text-base flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-indigo-500" />
+              {studyMode.id === 'faculdade'
+                ? 'Próximas Aulas, Trabalhos & Provas'
+                : 'Deveres & Provas da Semana'}
+            </h2>
+            <Link
+              href={`/p/${profile?.id}/agenda`}
+              className="text-xs font-bold text-teal-700 dark:text-teal-300 hover:underline"
+            >
+              Gerenciar na Agenda →
+            </Link>
+          </div>
+          {upcomingAgendaTasks.length === 0 ? (
+            <p className="text-xs text-muted-theme">
+              Nenhuma aula, trabalho ou prova agendada ainda. Registre entregas e avaliações na aba <strong>Agenda & Notas</strong> para acompanhar tudo aqui.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {upcomingAgendaTasks.slice(0, 4).map((item) => (
+                <div
+                  key={item.id}
+                  className="subtle-surface rounded-2xl px-4 py-3 flex items-center justify-between gap-3 text-xs"
+                >
+                  <div className="min-w-0">
+                    <span className="inline-block text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 mb-1">
+                      {item.kind || 'Tarefa'}
+                    </span>
+                    <p className="font-semibold truncate">{item.text}</p>
+                  </div>
+                  <span className="font-bold text-muted-theme shrink-0">
+                    {formatDateBR(item.date).slice(0, 5)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 4. RESUMO DO PROGRESSO (4 INDICADORES COM PERÍODO E DENOMINADOR) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <Link
@@ -456,25 +526,66 @@ export default function DashboardPage() {
           </div>
         </Link>
 
-        <Link
-          href={`/p/${profile?.id}/evolucao`}
-          className="card-surface rounded-3xl p-5 hover:border-teal-500/40 block space-y-2"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wide text-muted-theme">
-              Questões na Semana
-            </span>
-            <Target className="w-4 h-4 text-emerald-600" />
-          </div>
-          <p className="text-2xl font-extrabold">
-            {weekQuestions > 0 ? `${weekAccuracy}%` : '0 questões'}
-          </p>
-          <p className="text-xs text-muted-theme">
-            {weekQuestions > 0
-              ? `${weekCorrect} acertos de ${weekQuestions} nos últimos 7 dias`
-              : 'Registre suas baterias no Ciclo'}
-          </p>
-        </Link>
+        {studyMode.showAgendaTasksHighlight ? (
+          <Link
+            href={`/p/${profile?.id}/agenda`}
+            className="card-surface rounded-3xl p-5 hover:border-teal-500/40 block space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-muted-theme">
+                {studyMode.id === 'faculdade' ? 'Provas & Trabalhos' : 'Deveres & Provas'}
+              </span>
+              <Calendar className="w-4 h-4 text-indigo-500" />
+            </div>
+            <p className="text-2xl font-extrabold">
+              {upcomingAgendaTasks.length}{' '}
+              {upcomingAgendaTasks.length === 1 ? 'pendente' : 'pendentes'}
+            </p>
+            <p className="text-xs text-muted-theme truncate">
+              {upcomingAgendaTasks[0]
+                ? `Próx: ${upcomingAgendaTasks[0].text} (${formatDateBR(upcomingAgendaTasks[0].date).slice(0, 5)})`
+                : 'Adicione aulas, trabalhos e provas na Agenda'}
+            </p>
+          </Link>
+        ) : studyMode.id === 'livre' || studyMode.id === 'outro' ? (
+          <Link
+            href={`/p/${profile?.id}/evolucao`}
+            className="card-surface rounded-3xl p-5 hover:border-teal-500/40 block space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-muted-theme">
+                Sessões na Semana
+              </span>
+              <Target className="w-4 h-4 text-emerald-600" />
+            </div>
+            <p className="text-2xl font-extrabold">
+              {weekLogs.length} {weekLogs.length === 1 ? 'sessão' : 'sessões'}
+            </p>
+            <p className="text-xs text-muted-theme">
+              nos últimos 7 dias · constância de {streakDays}d
+            </p>
+          </Link>
+        ) : (
+          <Link
+            href={`/p/${profile?.id}/evolucao`}
+            className="card-surface rounded-3xl p-5 hover:border-teal-500/40 block space-y-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold uppercase tracking-wide text-muted-theme">
+                Questões na Semana
+              </span>
+              <Target className="w-4 h-4 text-emerald-600" />
+            </div>
+            <p className="text-2xl font-extrabold">
+              {weekQuestions > 0 ? `${weekAccuracy}%` : '0 questões'}
+            </p>
+            <p className="text-xs text-muted-theme">
+              {weekQuestions > 0
+                ? `${weekCorrect} acertos de ${weekQuestions} nos últimos 7 dias`
+                : 'Registre suas baterias no Ciclo'}
+            </p>
+          </Link>
+        )}
 
         <Link
           href={`/p/${profile?.id}/estudos`}
@@ -482,7 +593,7 @@ export default function DashboardPage() {
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wide text-muted-theme">
-              Edital Concluído
+              {studyMode.syllabusShort} Concluído
             </span>
             <CheckCircle2 className="w-4 h-4 text-teal-600" />
           </div>
@@ -490,7 +601,7 @@ export default function DashboardPage() {
             {studiedTopicsCount} de {topics.length}
           </p>
           <p className="text-xs text-muted-theme">
-            tópicos concluídos ({editalProgress}% do edital)
+            tópicos concluídos ({editalProgress}% do {studyMode.syllabusShort.toLowerCase()})
           </p>
           <div className="h-1.5 w-full rounded-full subtle-surface overflow-hidden">
             <div

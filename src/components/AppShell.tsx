@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useProfile } from './ProfileProvider';
 import { formatDurationHMS, todayISO } from '@/lib/utils';
 import type { ThemeId } from '@/lib/types';
+import { getStudyMode } from '@/lib/studyModes';
 import {
   Home,
   RefreshCw,
@@ -125,6 +126,7 @@ export function AppShell({
   const [searchQuery, setSearchQuery] = useState('');
 
   const basePath = `/p/${profileId}`;
+  const studyMode = getStudyMode(profile);
   const activeSubject = subjects.find((s) => s.id === stopwatch.subjectId);
   const today = todayISO();
   const dueReviewsCount = reviews.filter((r) => !r.completed && r.due_date <= today).length;
@@ -308,13 +310,13 @@ export function AppShell({
           <div className={`mt-2.5 flex items-center gap-2 ${compact ? 'flex-col' : ''}`}>
             <button
               onClick={handleSwitchProfileClick}
-              title="Trocar de Concurso"
+              title="{studyMode.switchProfileLabel}"
               className={`flex-1 flex items-center justify-center gap-2 text-xs font-bold py-2 px-3 rounded-xl subtle-surface hover:opacity-85 ${
                 compact ? 'w-full px-2' : ''
               }`}
             >
               <ArrowLeftRight className="w-4 h-4 text-teal-600 shrink-0" />
-              {!compact && <span>Trocar de Concurso</span>}
+              {!compact && <span>{studyMode.switchProfileLabel}</span>}
             </button>
 
             {!isMobile && (
@@ -367,7 +369,13 @@ export function AppShell({
                   )}
                 </button>
               )}
-              {isGroupOpen && group.items.map((item) => {
+              {isGroupOpen && group.items
+                .filter((item) => {
+                  if (item.href === '/simulados' && !studyMode.showSimulados) return false;
+                  if (item.href === '/mapa' && !studyMode.showMapa) return false;
+                  return true;
+                })
+                .map((item) => {
                 const fullHref = `${basePath}${item.href}`;
                 const isActive =
                   item.href === '' ? pathname === basePath : pathname.startsWith(fullHref);
@@ -383,7 +391,7 @@ export function AppShell({
                   <Link
                     key={item.href}
                     href={fullHref}
-                    title={item.label}
+                    title={item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : item.label}
                     onClick={() => setMobileOpen(false)}
                     className={`group flex items-center ${
                       compact ? 'justify-center px-2' : 'justify-between px-3.5'
@@ -397,7 +405,7 @@ export function AppShell({
                           isActive ? 'scale-110' : 'group-hover:scale-110'
                         }`}
                       />
-                      {!compact && <span className="truncate">{item.label}</span>}
+                      {!compact && <span className="truncate">{item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : item.label}</span>}
                     </span>
                     {!compact && badgeCount > 0 && (
                       <span

@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import { ensureUserSeeded } from '@/lib/seed';
 import type { Profile } from '@/lib/types';
 import { SUBJECT_COLORS } from '@/lib/utils';
+import { STUDY_MODES, STUDY_MODE_LIST, encodeStudyModeSlug, getStudyMode, type StudyMode } from '@/lib/studyModes';
 import {
   Plus,
   LogOut,
@@ -21,6 +22,8 @@ import {
   ExternalLink,
   Layers,
   ArrowLeft,
+  BookOpen,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface ParsedSubject {
@@ -58,7 +61,7 @@ interface PciConcurso {
   };
 }
 
-type ModalStep = 'start' | 'pci' | 'pick_role' | 'review';
+type ModalStep = 'choose_mode' | 'start' | 'pci' | 'pick_role' | 'review';
 
 export default function ProfileSelectorPage() {
   const router = useRouter();
@@ -69,7 +72,10 @@ export default function ProfileSelectorPage() {
 
   // Modal Criar Novo Perfil
   const [showModal, setShowModal] = useState(false);
-  const [step, setStep] = useState<ModalStep>('start');
+  const [step, setStep] = useState<ModalStep>('choose_mode');
+  const [studyMode, setStudyMode] = useState<StudyMode>('concurso');
+  const [pickedMode, setPickedMode] = useState<StudyMode | null>(null);
+  const [quickSubjectInput, setQuickSubjectInput] = useState('');
 
   const [pdfBase64Cache, setPdfBase64Cache] = useState<string | null>(null);
   const [pdfMimeCache, setPdfMimeCache] = useState<string>('application/pdf');
@@ -142,7 +148,10 @@ export default function ProfileSelectorPage() {
   }, []);
 
   function resetModal() {
-    setStep('start');
+    setStep('choose_mode');
+    setStudyMode('concurso');
+    setPickedMode(null);
+    setQuickSubjectInput('');
     setPdfBase64Cache(null);
     setRoleOptions([]);
     setChosenRole('');
@@ -417,13 +426,14 @@ export default function ProfileSelectorPage() {
         .from('profiles')
         .insert({
           user_id: userId,
+          slug: encodeStudyModeSlug(studyMode),
           name: name.trim(),
           role_title: roleTitle.trim(),
           icon: icon || '🏛️',
           color: SUBJECT_COLORS[profiles.length % SUBJECT_COLORS.length],
-          salary_base: salaryBase,
-          vale_alimentacao: vale,
-          workload,
+          salary_base: STUDY_MODES[studyMode].hasSalaryRaioX ? salaryBase : '',
+          vale_alimentacao: STUDY_MODES[studyMode].hasSalaryRaioX ? vale : '',
+          workload: STUDY_MODES[studyMode].hasSalaryRaioX ? workload : '',
           extras,
           status_text: statusText,
           exam_date: examDate || null,
@@ -488,6 +498,77 @@ export default function ProfileSelectorPage() {
     }
   }
 
+  async function handleQuickCreateSkip() {
+    if (!userId) return;
+    const modeCfg = STUDY_MODES[studyMode];
+    const finalName = name.trim() || `Meu plano — ${modeCfg.label}`;
+    setSaving(true);
+    try {
+      const supabase = createClient();
+      const { data: created, error } = await supabase
+        .from('profiles')
+        .insert({
+          user_id: userId,
+          slug: encodeStudyModeSlug(studyMode),
+          name: finalName,
+          role_title: roleTitle.trim(),
+          icon: icon || modeCfg.icon,
+          color: modeCfg.color,
+          salary_base: '',
+          vale_alimentacao: '',
+          workload: '',
+          extras: '',
+          status_text: '',
+          exam_date: examDate || null,
+          daily_hours_goal: 2,
+          target_accuracy: 80,
+          sort_order: profiles.length,
+        })
+        .select('*')
+        .single();
+      if (error || !created) throw error || new Error('Erro ao criar perfil');
+
+      const subjectsToInsert =
+        parsedSubjects.length > 0 ? parsedSubjects : modeCfg.defaultSubjects;
+      for (let i = 0; i < subjectsToInsert.length; i++) {
+        const s = subjectsToInsert[i];
+        const { data: sub } = await supabase
+          .from('subjects')
+          .insert({
+            user_id: userId,
+            profile_id: created.id,
+            name: s.name,
+            category: s.category || modeCfg.shortLabel,
+            color: SUBJECT_COLORS[i % SUBJECT_COLORS.length],
+            cycle_hours: 1,
+            cycle_minutes: 0,
+            cycle_order: i,
+          })
+          .select('id')
+          .single();
+        if (sub && s.topics?.length) {
+          await supabase.from('topics').insert(
+            s.topics.map((t, tIdx) => ({
+              user_id: userId,
+              profile_id: created.id,
+              subject_id: sub.id,
+              title: t,
+              studied: false,
+              is_priority: false,
+              sort_order: tIdx,
+            }))
+          );
+        }
+      }
+      setShowModal(false);
+      router.push(`/p/${created.id}`);
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : 'Erro ao criar perfil.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleDeleteProfile(id: string, profileName: string, e: React.MouseEvent) {
     e.stopPropagation();
     if (!confirm(`Excluir o perfil "${profileName}" e todos os seus dados?`)) return;
@@ -502,185 +583,322 @@ export default function ProfileSelectorPage() {
     router.replace('/login');
   }
 
+  const currentStepNumber =
+    step === 'choose_mode' ? 1 : step === 'start' || step === 'pci' || step === 'pick_role' ? 2 : studyMode === 'concurso' ? 3 : 2;
+  const totalSteps = studyMode === 'concurso' ? 3 : 2;
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 text-white flex flex-col">
-      <header className="w-full max-w-6xl mx-auto px-6 py-5 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl">🎯</span>
-          <div>
-            <span className="font-bold text-lg tracking-tight">StudyFlow Pro</span>
-            <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-              Nuvem ativa
-            </span>
+    <div className="min-h-screen bg-[var(--bg-page)] text-[var(--text-main)] flex flex-col">
+      {/* Header limpo alinhado ao restante do StudyFlow */}
+      <header className="w-full border-b border-theme bg-[var(--bg-card)]/90 backdrop-blur-md sticky top-0 z-20">
+        <div className="max-w-5xl mx-auto px-5 py-3.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shadow-sm">
+              <BookOpen className="w-5 h-5" />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-extrabold text-lg tracking-tight">StudyFlow</span>
+              <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25">
+                Nuvem ativa
+              </span>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="hidden sm:inline text-xs text-slate-300">{userEmail}</span>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 transition"
-          >
-            <LogOut className="w-3.5 h-3.5" />
-            Sair
-          </button>
+          <div className="flex items-center gap-3">
+            <span className="hidden sm:inline text-xs text-muted-theme">{userEmail}</span>
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl subtle-surface border border-theme hover:opacity-85 transition"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Sair
+            </button>
+          </div>
         </div>
       </header>
 
-      <main className="flex-1 flex flex-col items-center justify-center px-6 py-10 max-w-5xl mx-auto w-full">
-        <div className="text-center mb-10">
-          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-2">
-            Qual foco vamos estudar hoje?
-          </h1>
-          <p className="text-slate-300 text-sm sm:text-base">
-            Escolha seu concurso abaixo ou crie um novo perfil pelo PCI Concursos ou PDF.
-          </p>
+      <main className="flex-1 flex flex-col justify-center px-5 py-10 max-w-5xl mx-auto w-full">
+        <div className="mb-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+              Seus espaços de estudo
+            </h1>
+            <p className="text-sm text-muted-theme mt-1">
+              Escolha um perfil para continuar ou crie um novo para concurso, faculdade, escola, certificação ou estudo livre.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              resetModal();
+              setShowModal(true);
+            }}
+            className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 shadow-sm shrink-0 self-start sm:self-auto"
+          >
+            <Plus className="w-4 h-4" />
+            Novo perfil de estudo
+          </button>
         </div>
 
         {loading ? (
-          <div className="flex items-center gap-3 text-slate-300 py-16">
-            <Loader2 className="w-6 h-6 animate-spin" />
-            <span>Carregando seus concursos da nuvem...</span>
+          <div className="flex items-center justify-center gap-3 text-muted-theme py-16">
+            <Loader2 className="w-5 h-5 animate-spin text-teal-600" />
+            <span className="text-sm font-medium">Carregando seus planos de estudo...</span>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 w-full">
-            {profiles.map((p) => (
-              <div
-                key={p.id}
-                onClick={() => router.push(`/p/${p.id}`)}
-                className="group relative cursor-pointer rounded-3xl bg-white/10 hover:bg-white/15 border border-white/15 hover:border-blue-400/60 p-6 transition-all duration-200 hover:-translate-y-1 shadow-xl"
-              >
-                <button
-                  onClick={(e) => handleDeleteProfile(p.id, p.name, e)}
-                  title="Excluir perfil"
-                  className="opacity-0 group-hover:opacity-100 absolute top-4 right-4 p-1.5 rounded-lg bg-white/10 hover:bg-red-500/40 text-slate-300 hover:text-white transition"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full">
+            {profiles.map((p) => {
+              const pMode = getStudyMode(p);
+              return (
                 <div
-                  className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl mb-4 shadow-lg"
-                  style={{ backgroundColor: `${p.color}33`, border: `1px solid ${p.color}66` }}
+                  key={p.id}
+                  onClick={() => router.push(`/p/${p.id}`)}
+                  className="group relative cursor-pointer card-surface rounded-2xl p-5 hover:border-teal-500/50 hover:shadow-md transition-all flex flex-col justify-between gap-4"
                 >
-                  {p.icon}
-                </div>
+                  <button
+                    onClick={(e) => handleDeleteProfile(p.id, p.name, e)}
+                    title="Excluir perfil"
+                    aria-label={`Excluir perfil ${p.name}`}
+                    className="opacity-0 group-hover:opacity-100 absolute top-4 right-4 p-1.5 rounded-lg subtle-surface hover:bg-rose-500/15 text-muted-theme hover:text-rose-600 transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
 
-                <h2 className="text-xl font-bold mb-1">{p.name}</h2>
-                <p className="text-xs text-slate-300 line-clamp-2 mb-4 min-h-[2rem]">
-                  {p.role_title || 'Plano de estudos personalizado'}
-                </p>
-
-                {p.salary_base && (
-                  <div className="text-xs bg-black/25 rounded-xl px-3 py-2 mb-4 space-y-1">
-                    <div className="flex justify-between">
-                      <span className="text-slate-400">Salário Base:</span>
-                      <span className="font-semibold text-emerald-300">{p.salary_base}</span>
-                    </div>
-                    {p.vale_alimentacao && (
-                      <div className="flex justify-between">
-                        <span className="text-slate-400">Vale:</span>
-                        <span className="font-semibold text-sky-300">{p.vale_alimentacao}</span>
+                  <div>
+                    <div className="flex items-center gap-3 mb-3">
+                      <div
+                        className="w-11 h-11 rounded-xl flex items-center justify-center text-2xl shrink-0"
+                        style={{
+                          backgroundColor: `${p.color}18`,
+                          border: `1px solid ${p.color}35`,
+                        }}
+                      >
+                        {p.icon}
                       </div>
-                    )}
-                  </div>
-                )}
+                      <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full subtle-surface text-muted-theme">
+                        {pMode.shortLabel}
+                      </span>
+                    </div>
 
-                <div className="flex items-center justify-between text-xs font-medium text-blue-300 group-hover:text-blue-200">
-                  <span>Abrir painel de estudos</span>
-                  <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                    <h2 className="text-lg font-bold leading-snug mb-1 pr-6">{p.name}</h2>
+                    <p className="text-xs text-muted-theme line-clamp-2 min-h-[2rem]">
+                      {p.role_title || pMode.cardSubtitle}
+                    </p>
+                  </div>
+
+                  {pMode.hasSalaryRaioX && p.salary_base && (
+                    <div className="text-xs subtle-surface rounded-xl px-3 py-2 space-y-1">
+                      <div className="flex justify-between gap-2">
+                        <span className="text-muted-theme">Salário Base:</span>
+                        <span className="font-bold text-emerald-700 dark:text-emerald-300">
+                          {p.salary_base}
+                        </span>
+                      </div>
+                      {p.vale_alimentacao && (
+                        <div className="flex justify-between gap-2">
+                          <span className="text-muted-theme">Vale:</span>
+                          <span className="font-semibold text-teal-700 dark:text-teal-300">
+                            {p.vale_alimentacao}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-theme flex items-center justify-between text-xs font-bold text-teal-700 dark:text-teal-300">
+                    <span>Abrir espaço de estudo</span>
+                    <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             <button
               onClick={() => {
                 resetModal();
                 setShowModal(true);
               }}
-              className="rounded-3xl border-2 border-dashed border-white/25 hover:border-blue-400/70 bg-white/5 hover:bg-white/10 p-6 flex flex-col items-center justify-center text-center min-h-[240px] transition-all"
+              className="rounded-2xl border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-teal-500/70 bg-[var(--bg-card)]/60 hover:bg-[var(--bg-card)] p-6 flex flex-col items-center justify-center text-center min-h-[210px] transition-all"
             >
-              <div className="w-14 h-14 rounded-2xl bg-blue-600/30 border border-blue-400/40 flex items-center justify-center mb-3">
-                <Plus className="w-7 h-7 text-blue-300" />
+              <div className="w-12 h-12 rounded-2xl bg-teal-600/12 text-teal-600 flex items-center justify-center mb-3">
+                <Plus className="w-6 h-6" />
               </div>
-              <span className="font-bold text-lg">Criar Novo Perfil</span>
-              <span className="text-xs text-slate-300 mt-1 max-w-[210px]">
-                Procurar concurso ou mandar PDF do edital
+              <span className="font-bold text-base">Criar novo perfil</span>
+              <span className="text-xs text-muted-theme mt-1 max-w-[220px]">
+                Concurso, faculdade, escola, certificação ou estudo livre
               </span>
             </button>
           </div>
         )}
       </main>
 
+      {/* MODAL DE ONBOARDING CURTO (ALINHADO AO VISUAL DO APP) */}
       {showModal && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="w-full max-w-2xl rounded-3xl bg-slate-900 border border-white/15 p-6 text-white shadow-2xl my-8">
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2">
-                {step !== 'start' && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="w-full max-w-2xl card-surface rounded-3xl p-6 shadow-2xl my-8 animate-pop-in">
+            {/* Cabeçalho do assistente com Etapa X de Y */}
+            <div className="flex items-start justify-between gap-3 mb-5">
+              <div className="flex items-start gap-2.5">
+                {step !== 'choose_mode' && (
                   <button
                     type="button"
-                    onClick={() => setStep('start')}
-                    className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 mr-1"
+                    onClick={() => {
+                      if (step === 'start') setStep('choose_mode');
+                      else if (step === 'review' && studyMode !== 'concurso') setStep('choose_mode');
+                      else setStep('start');
+                    }}
+                    className="p-2 rounded-xl subtle-surface hover:opacity-85 mt-0.5 shrink-0"
                     title="Voltar"
                   >
                     <ArrowLeft className="w-4 h-4" />
                   </button>
                 )}
-                <Sparkles className="w-5 h-5 text-blue-400" />
-                <h2 className="text-xl font-bold">
-                  {step === 'start' && 'Adicionar Novo Concurso'}
-                  {step === 'pci' && 'Procurar Concurso (PCI Concursos)'}
-                  {step === 'pick_role' && 'Qual cargo você quer estudar?'}
-                  {step === 'review' && 'Confirmar Dados do Perfil'}
-                </h2>
+                <div>
+                  <span className="inline-block text-[11px] font-bold text-teal-700 dark:text-teal-300 mb-0.5">
+                    Etapa {currentStepNumber} de {totalSteps}
+                  </span>
+                  <h2 className="text-xl font-extrabold tracking-tight">
+                    {step === 'choose_mode' && 'O que você está estudando agora?'}
+                    {step === 'start' && 'Como quer configurar seu concurso?'}
+                    {step === 'pci' && 'Procurar Concurso (PCI Concursos)'}
+                    {step === 'pick_role' && 'Qual cargo você quer estudar?'}
+                    {step === 'review' &&
+                      (studyMode === 'concurso'
+                        ? 'Confirmar dados do concurso'
+                        : `Organizar perfil — ${STUDY_MODES[studyMode].label}`)}
+                  </h2>
+                </div>
               </div>
               <button
                 onClick={() => setShowModal(false)}
-                className="p-2 rounded-xl bg-white/10 hover:bg-white/20"
+                aria-label="Fechar"
+                className="p-2 rounded-xl subtle-surface hover:opacity-85 shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {parseError && (
-              <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-400/40 text-red-200 text-xs">
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/12 border border-rose-500/30 text-rose-600 text-xs">
                 {parseError}
               </div>
             )}
 
-            {/* TELA 1: Apenas Procurar Concurso OU Mandar PDF */}
+            {/* ETAPA 1: ESCOLHA DO OBJETIVO (6 CARTÕES CLICÁVEIS + CONTINUAR) */}
+            {step === 'choose_mode' && (
+              <div className="space-y-5">
+                <p className="text-sm text-muted-theme">
+                  Vamos adaptar seu espaço de estudo ao seu objetivo. Você pode mudar isso ou criar outros perfis depois.
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {STUDY_MODE_LIST.map((m) => {
+                    const isSelected = pickedMode === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        type="button"
+                        aria-pressed={isSelected}
+                        onClick={() => setPickedMode(m.id)}
+                        className={`text-left rounded-2xl p-4 border-2 transition-all flex items-center justify-between gap-3 ${
+                          isSelected
+                            ? 'border-teal-600 bg-teal-600/8 shadow-sm'
+                            : 'border-theme bg-[var(--bg-card)] hover:border-slate-400/60'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="text-2xl shrink-0">{m.icon}</span>
+                          <div className="min-w-0">
+                            <p className="font-bold text-sm leading-tight">{m.label}</p>
+                            <p className="text-xs text-muted-theme mt-0.5">{m.cardSubtitle}</p>
+                          </div>
+                        </div>
+                        <span
+                          className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 border ${
+                            isSelected
+                              ? 'bg-teal-600 border-teal-600 text-white'
+                              : 'border-slate-300 dark:border-slate-600'
+                          }`}
+                        >
+                          {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <p className="text-xs text-muted-theme text-center">
+                  Estuda para mais de um objetivo? Você poderá adicionar outro perfil depois.
+                </p>
+
+                <div className="flex justify-end gap-2 pt-2 border-t border-theme">
+                  <button
+                    type="button"
+                    onClick={() => setShowModal(false)}
+                    className="px-4 py-2.5 rounded-xl subtle-surface text-xs font-semibold"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!pickedMode}
+                    onClick={() => {
+                      if (!pickedMode) return;
+                      const m = STUDY_MODES[pickedMode];
+                      setStudyMode(m.id);
+                      setIcon(m.icon);
+                      if (m.id === 'concurso') {
+                        setParsedSubjects([]);
+                        setStep('start');
+                      } else {
+                        setParsedSubjects(m.defaultSubjects);
+                        setSalaryBase('');
+                        setVale('');
+                        setWorkload('');
+                        setStep('review');
+                      }
+                    }}
+                    className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-40"
+                  >
+                    Continuar
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ETAPA 2 (CONCURSO): Procurar no PCI OU Mandar PDF OU Manual */}
             {step === 'start' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <button
                     type="button"
                     onClick={() => setStep('pci')}
-                    className="group text-left rounded-2xl bg-emerald-950/40 hover:bg-emerald-900/40 border border-emerald-500/35 hover:border-emerald-400 p-6 transition space-y-3"
+                    className="text-left rounded-2xl border border-theme hover:border-teal-500/60 bg-[var(--bg-subtle)]/50 hover:bg-[var(--bg-subtle)] p-5 transition space-y-2.5"
                   >
-                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-300 flex items-center justify-center">
-                      <Search className="w-6 h-6" />
+                    <div className="w-11 h-11 rounded-xl bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 flex items-center justify-center">
+                      <Search className="w-5 h-5" />
                     </div>
                     <div>
-                      <h3 className="font-bold text-base text-white">Procurar Concurso</h3>
-                      <p className="text-xs text-slate-300 mt-1">
+                      <h3 className="font-bold text-sm">Procurar Concurso</h3>
+                      <p className="text-xs text-muted-theme mt-1">
                         Busca ao vivo no PCI Concursos com vagas, salários e cargos abertos.
                       </p>
                     </div>
                   </button>
 
-                  <label className="cursor-pointer group text-left rounded-2xl bg-blue-950/40 hover:bg-blue-900/40 border border-blue-500/35 hover:border-blue-400 p-6 transition space-y-3">
-                    <div className="w-12 h-12 rounded-2xl bg-blue-500/20 text-blue-300 flex items-center justify-center">
+                  <label className="cursor-pointer text-left rounded-2xl border border-theme hover:border-teal-500/60 bg-[var(--bg-subtle)]/50 hover:bg-[var(--bg-subtle)] p-5 transition space-y-2.5">
+                    <div className="w-11 h-11 rounded-xl bg-teal-500/15 text-teal-700 dark:text-teal-300 flex items-center justify-center">
                       {parsingPdf ? (
-                        <Loader2 className="w-6 h-6 animate-spin" />
+                        <Loader2 className="w-5 h-5 animate-spin" />
                       ) : (
-                        <Upload className="w-6 h-6" />
+                        <Upload className="w-5 h-5" />
                       )}
                     </div>
                     <div>
-                      <h3 className="font-bold text-base text-white">
-                        {parsingPdf ? 'Lendo PDF do Edital...' : 'Mandar PDF do Edital'}
+                      <h3 className="font-bold text-sm">
+                        {parsingPdf ? 'Lendo PDF do Edital...' : 'Enviar PDF do Edital'}
                       </h3>
-                      <p className="text-xs text-slate-300 mt-1">
-                        O Gemini lê o PDF, pergunta o cargo e completa o que faltar pela internet.
+                      <p className="text-xs text-muted-theme mt-1">
+                        O Gemini extrai cargos, matérias e data da prova para você revisar antes de criar.
                       </p>
                     </div>
                     <input
@@ -697,19 +915,27 @@ export default function ProfileSelectorPage() {
                   </label>
                 </div>
 
-                <div className="text-center pt-2">
+                <div className="flex items-center justify-between pt-2 text-xs">
                   <button
                     type="button"
                     onClick={() => setStep('review')}
-                    className="text-xs text-slate-400 hover:text-slate-200 underline"
+                    className="font-semibold text-teal-700 dark:text-teal-300 hover:underline"
                   >
-                    Ou preencher manualmente
+                    Adicionar manualmente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleQuickCreateSkip}
+                    disabled={saving}
+                    className="text-muted-theme hover:underline"
+                  >
+                    Não sei ainda — fazer depois
                   </button>
                 </div>
               </div>
             )}
 
-            {/* TELA 2A: Busca PCI Concursos */}
+            {/* ETAPA 2A: Busca PCI Concursos */}
             {step === 'pci' && (
               <div className="space-y-4">
                 <div className="flex flex-col sm:flex-row gap-2">
@@ -724,19 +950,19 @@ export default function ProfileSelectorPage() {
                       }
                     }}
                     placeholder="Ex: INSS, Câmara, Polícia Civil, TRT..."
-                    className="flex-1 rounded-xl bg-white/10 border border-white/15 px-4 py-2.5 text-sm"
+                    className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2.5 text-sm"
                   />
                   <input
                     value={pciUf}
                     onChange={(e) => setPciUf(e.target.value.slice(0, 2))}
                     placeholder="UF (mg)"
-                    className="w-24 rounded-xl bg-white/10 border border-white/15 px-3 py-2.5 text-sm uppercase"
+                    className="w-24 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2.5 text-sm uppercase"
                   />
                   <button
                     type="button"
                     onClick={() => handlePciSearch(false)}
                     disabled={pciLoading}
-                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold inline-flex items-center justify-center gap-2 disabled:opacity-60"
+                    className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center justify-center gap-2 disabled:opacity-60"
                   >
                     {pciLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Buscar'}
                   </button>
@@ -744,23 +970,23 @@ export default function ProfileSelectorPage() {
                     type="button"
                     onClick={() => handlePciSearch(true)}
                     disabled={pciLoading}
-                    className="px-3 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-semibold shrink-0"
+                    className="px-3 py-2.5 rounded-xl subtle-surface border border-theme text-xs font-semibold shrink-0"
                   >
                     Ver Abertos
                   </button>
                 </div>
 
-                {pciMessage && <p className="text-xs text-amber-300">{pciMessage}</p>}
+                {pciMessage && <p className="text-xs text-amber-600 font-medium">{pciMessage}</p>}
 
                 <div className="max-h-72 overflow-y-auto space-y-2">
                   {pciResults.map((c, i) => (
                     <div
                       key={c.id || i}
-                      className="rounded-2xl bg-white/5 border border-white/10 p-3.5 flex items-center justify-between gap-3 text-xs"
+                      className="rounded-2xl subtle-surface border border-theme p-3.5 flex items-center justify-between gap-3 text-xs"
                     >
                       <div className="min-w-0">
-                        <p className="font-semibold text-sm truncate">{c.orgao || c.titulo}</p>
-                        <p className="text-slate-300 mt-0.5">
+                        <p className="font-bold text-sm truncate">{c.orgao || c.titulo}</p>
+                        <p className="text-muted-theme mt-0.5">
                           {c.uf ? `${c.uf} • ` : ''}
                           {c.vagas_salario || `${c.vagas ? `${c.vagas} vagas • ` : ''}${c.salario || ''}`}
                         </p>
@@ -771,7 +997,7 @@ export default function ProfileSelectorPage() {
                             href={c.noticia.link}
                             target="_blank"
                             rel="noreferrer"
-                            className="p-2 rounded-xl bg-white/10 hover:bg-white/20"
+                            className="p-2 rounded-xl card-surface border border-theme"
                             title="Ver edital no PCI"
                           >
                             <ExternalLink className="w-4 h-4" />
@@ -780,7 +1006,7 @@ export default function ProfileSelectorPage() {
                         <button
                           type="button"
                           onClick={() => applyPciConcurso(c)}
-                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 font-semibold"
+                          className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-semibold"
                         >
                           Escolher
                         </button>
@@ -791,10 +1017,10 @@ export default function ProfileSelectorPage() {
               </div>
             )}
 
-            {/* TELA 2B: Pergunta qual cargo o usuário quer */}
+            {/* ETAPA 2B: Escolha de cargo */}
             {step === 'pick_role' && (
               <div className="space-y-4">
-                <p className="text-sm text-slate-300">
+                <p className="text-sm text-muted-theme">
                   Encontramos <strong>{roleOptions.length} cargos</strong> em{' '}
                   <strong>{pendingOrgan || name}</strong>. Clique no cargo que você vai prestar:
                 </p>
@@ -804,21 +1030,21 @@ export default function ProfileSelectorPage() {
                       key={idx}
                       type="button"
                       onClick={() => handleSelectRole(roleName)}
-                      className="text-left p-3.5 rounded-2xl bg-white/5 hover:bg-blue-600/30 border border-white/10 hover:border-blue-400 text-xs font-medium transition flex items-center justify-between gap-2"
+                      className="text-left p-3.5 rounded-2xl subtle-surface hover:border-teal-500 border border-theme text-xs font-semibold transition flex items-center justify-between gap-2"
                     >
                       <span>{roleName}</span>
-                      <ArrowRight className="w-4 h-4 shrink-0 text-blue-300" />
+                      <ArrowRight className="w-4 h-4 shrink-0 text-teal-600" />
                     </button>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* TELA 3: Revisão e Conciliação (só aparece depois de escolher/ler) */}
+            {/* ETAPA FINAL: REVISÃO & CRIAÇÃO (ADAPTADA AO MODO ESCOLHIDO) */}
             {step === 'review' && (
               <form onSubmit={handleCreateProfile} className="space-y-4">
                 {extractingRole && (
-                  <div className="p-3 rounded-xl bg-blue-500/20 border border-blue-400/40 text-blue-200 text-xs flex items-center gap-2">
+                  <div className="p-3 rounded-xl bg-teal-500/12 border border-teal-500/30 text-teal-700 dark:text-teal-300 text-xs flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                     <span>
                       Extraindo salário, data e matérias exclusivas de <strong>{chosenRole}</strong>...
@@ -827,35 +1053,33 @@ export default function ProfileSelectorPage() {
                 )}
 
                 {reconciling && (
-                  <div className="p-3 rounded-xl bg-violet-500/20 border border-violet-400/40 text-violet-200 text-xs flex items-center gap-2">
+                  <div className="p-3 rounded-xl bg-violet-500/12 border border-violet-500/30 text-violet-700 dark:text-violet-300 text-xs flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                    <span>
-                      Conciliando os editais (Núcleo Comum + Módulos Exclusivos)...
-                    </span>
+                    <span>Conciliando os editais (Núcleo Comum + Módulos Exclusivos)...</span>
                   </div>
                 )}
 
                 {enrichingWeb && (
-                  <div className="p-3 rounded-xl bg-sky-500/15 border border-sky-400/30 text-sky-200 text-xs flex items-center gap-2">
+                  <div className="p-3 rounded-xl bg-sky-500/12 border border-sky-500/30 text-sky-700 dark:text-sky-300 text-xs flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                     <span>Completando salário, vale e data pela internet com Gemini...</span>
                   </div>
                 )}
 
                 {addedEditais.length > 0 && (
-                  <div className="rounded-2xl bg-blue-950/40 border border-blue-400/30 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="rounded-2xl subtle-surface border border-theme p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex flex-wrap gap-1.5 items-center text-xs">
-                      <Layers className="w-4 h-4 text-blue-300 shrink-0" />
+                      <Layers className="w-4 h-4 text-teal-600 shrink-0" />
                       {addedEditais.map((ed, idx) => (
                         <span
                           key={idx}
-                          className="px-2.5 py-1 rounded-lg bg-blue-600/30 border border-blue-400/30"
+                          className="px-2.5 py-1 rounded-lg card-surface border border-theme font-medium"
                         >
                           {ed.organName} · {ed.roleTitle}
                         </span>
                       ))}
                     </div>
-                    <label className="cursor-pointer shrink-0 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-xs font-semibold inline-flex items-center gap-1.5">
+                    <label className="cursor-pointer shrink-0 px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5">
                       {parsingPdf ? (
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       ) : (
@@ -879,111 +1103,192 @@ export default function ProfileSelectorPage() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                   <div>
-                    <label className="block text-xs text-slate-300 mb-1">Ícone</label>
+                    <label className="block text-xs font-semibold text-muted-theme mb-1">Ícone</label>
                     <input
                       value={icon}
                       onChange={(e) => setIcon(e.target.value)}
-                      className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm text-center"
+                      className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm text-center"
                     />
                   </div>
                   <div className="sm:col-span-3">
-                    <label className="block text-xs text-slate-300 mb-1">Concurso / Órgão *</label>
+                    <label className="block text-xs font-semibold text-muted-theme mb-1">
+                      {STUDY_MODES[studyMode].nameLabel}
+                    </label>
                     <input
                       required
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm"
+                      placeholder={STUDY_MODES[studyMode].namePlaceholder}
+                      className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
                     />
                   </div>
                 </div>
 
                 <div className="flex items-end gap-2">
                   <div className="flex-1">
-                    <label className="block text-xs text-slate-300 mb-1">Cargo</label>
+                    <label className="block text-xs font-semibold text-muted-theme mb-1">
+                      {STUDY_MODES[studyMode].roleLabel}
+                    </label>
                     <input
                       value={roleTitle}
                       onChange={(e) => setRoleTitle(e.target.value)}
-                      className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm"
+                      placeholder={STUDY_MODES[studyMode].rolePlaceholder}
+                      className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
                     />
                   </div>
-                  <button
-                    type="button"
-                    disabled={enrichingWeb || !name.trim()}
-                    onClick={() => enrichMissingInfo(name, roleTitle)}
-                    className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
-                  >
-                    <Globe className="w-3.5 h-3.5 text-sky-300" />
-                    Completar via Web
-                  </button>
+                  {STUDY_MODES[studyMode].hasEdital && (
+                    <button
+                      type="button"
+                      disabled={enrichingWeb || !name.trim()}
+                      onClick={() => enrichMissingInfo(name, roleTitle)}
+                      className="px-3 py-2 rounded-xl subtle-surface border border-theme text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40 shrink-0"
+                    >
+                      <Globe className="w-3.5 h-3.5 text-teal-600" />
+                      Completar via Web
+                    </button>
+                  )}
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1">Salário Base</label>
-                    <input
-                      value={salaryBase}
-                      onChange={(e) => setSalaryBase(e.target.value)}
-                      className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm"
-                    />
+                {STUDY_MODES[studyMode].hasSalaryRaioX ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-muted-theme mb-1">Salário Base</label>
+                      <input
+                        value={salaryBase}
+                        onChange={(e) => setSalaryBase(e.target.value)}
+                        className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-muted-theme mb-1">Vale Alimentação</label>
+                      <input
+                        value={vale}
+                        onChange={(e) => setVale(e.target.value)}
+                        className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-muted-theme mb-1">
+                        {STUDY_MODES[studyMode].examDateLabel}
+                      </label>
+                      <input
+                        type="date"
+                        value={examDate}
+                        onChange={(e) => setExamDate(e.target.value)}
+                        className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
+                      />
+                    </div>
                   </div>
+                ) : (
                   <div>
-                    <label className="block text-xs text-slate-300 mb-1">Vale Alimentação</label>
-                    <input
-                      value={vale}
-                      onChange={(e) => setVale(e.target.value)}
-                      className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-300 mb-1">Data da Prova</label>
+                    <label className="block text-xs font-semibold text-muted-theme mb-1">
+                      {STUDY_MODES[studyMode].examDateLabel}
+                    </label>
                     <input
                       type="date"
                       value={examDate}
                       onChange={(e) => setExamDate(e.target.value)}
-                      className="w-full rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm"
+                      className="w-full sm:w-64 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
                     />
                   </div>
-                </div>
+                )}
 
-                {parsedSubjects.length > 0 && (
-                  <div className="rounded-2xl bg-emerald-950/30 border border-emerald-500/30 p-3 text-xs space-y-2">
-                    <p className="font-semibold text-emerald-300 flex items-center gap-1.5">
-                      <Check className="w-4 h-4" />
-                      {parsedSubjects.length} matérias prontas:
-                    </p>
+                {/* Matérias editáveis (pode adicionar, remover ou deixar para depois) */}
+                <div className="rounded-2xl subtle-surface border border-theme p-3.5 text-xs space-y-2.5">
+                  <p className="font-bold flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-teal-600" />
+                    Matérias iniciais ({parsedSubjects.length}) — você pode ajustar depois
+                  </p>
+                  {parsedSubjects.length > 0 && (
                     <div className="flex flex-wrap gap-1.5">
                       {parsedSubjects.map((s, idx) => (
                         <span
                           key={idx}
-                          className={`px-2 py-0.5 rounded-lg ${
-                            s.category.includes('Comum')
-                              ? 'bg-emerald-500/25 text-emerald-200'
-                              : 'bg-amber-500/20 text-amber-200'
-                          }`}
+                          className="px-2.5 py-1 rounded-lg card-surface border border-theme inline-flex items-center gap-1.5 font-medium"
                         >
-                          {s.name} ({s.topics?.length || 0})
+                          {s.name}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setParsedSubjects((prev) => prev.filter((_, i) => i !== idx))
+                            }
+                            className="text-muted-theme hover:text-rose-600"
+                            title="Remover matéria"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
                         </span>
                       ))}
                     </div>
+                  )}
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      value={quickSubjectInput}
+                      onChange={(e) => setQuickSubjectInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && quickSubjectInput.trim()) {
+                          e.preventDefault();
+                          setParsedSubjects((prev) => [
+                            ...prev,
+                            {
+                              name: quickSubjectInput.trim(),
+                              category: STUDY_MODES[studyMode].shortLabel,
+                              topics: ['Tópico 1'],
+                            },
+                          ]);
+                          setQuickSubjectInput('');
+                        }
+                      }}
+                      placeholder="Adicionar matéria ou disciplina..."
+                      className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!quickSubjectInput.trim()) return;
+                        setParsedSubjects((prev) => [
+                          ...prev,
+                          {
+                            name: quickSubjectInput.trim(),
+                            category: STUDY_MODES[studyMode].shortLabel,
+                            topics: ['Tópico 1'],
+                          },
+                        ]);
+                        setQuickSubjectInput('');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-semibold shrink-0"
+                    >
+                      + Adicionar
+                    </button>
                   </div>
-                )}
+                </div>
 
-                <div className="flex justify-end gap-3 pt-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-theme">
                   <button
                     type="button"
-                    onClick={() => setShowModal(false)}
-                    className="px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-sm"
+                    disabled={saving}
+                    onClick={handleQuickCreateSkip}
+                    className="text-xs font-semibold text-muted-theme hover:underline"
                   >
-                    Cancelar
+                    Pular e preencher depois
                   </button>
-                  <button
-                    type="submit"
-                    disabled={saving || extractingRole || parsingPdf || reconciling}
-                    className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-sm font-semibold inline-flex items-center gap-2 disabled:opacity-60"
-                  >
-                    {saving && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Criar e Abrir Perfil
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowModal(false)}
+                      className="px-4 py-2.5 rounded-xl subtle-surface text-xs font-semibold"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={saving || extractingRole || parsingPdf || reconciling}
+                      className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-2 disabled:opacity-60"
+                    >
+                      {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+                      Criar e abrir espaço
+                    </button>
+                  </div>
                 </div>
               </form>
             )}

@@ -9,9 +9,9 @@ const jakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'StudyFlow Concursos — Plataforma Inteligente de Estudos',
+  title: 'StudyFlow — Plataforma Inteligente de Estudos',
   description:
-    'Ciclo de estudos, edital verticalizado, revisões espaçadas, flashcards, caderno de erros e mentor Gemini AI sincronizados na nuvem.',
+    'Organize estudos para concursos, faculdade, escola, ENEM ou projetos livres com ciclo de estudos, revisões espaçadas, flashcards e Gemini AI.',
 };
 
 export const viewport: Viewport = {

@@ -36,11 +36,14 @@ interface ScheduledBlock {
   overdue: boolean;
 }
 
+type NoteKind = 'Nota' | 'Aula' | 'Trabalho' | 'Prova' | 'Tarefa';
+
 interface DayNote {
   id: string;
   date: string;
   text: string;
   done: boolean;
+  kind?: NoteKind;
 }
 
 interface StudyPlan {

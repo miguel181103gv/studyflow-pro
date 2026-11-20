@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { getStudyMode } from '@/lib/studyModes';
 import { useGlobal } from '@/components/GlobalProvider';
 import { calcAccuracy, getYouTubeSearchUrl } from '@/lib/utils';
 import type { Topic } from '@/lib/types';
@@ -28,6 +29,7 @@ export default function ProgressoEditalPage() {
   const [difficultyMap, setDifficultyMap] = useState<Record<string, Difficulty>>({});
   const [pendingDifficultyTopic, setPendingDifficultyTopic] = useState<Topic | null>(null);
 
+  const studyMode = getStudyMode(profile);
   const isDark = theme === 'obsidian' || theme === 'navy';
   const diffStorageKey = `sf_topic_difficulty_${profile?.id || 'default'}`;
 
@@ -153,7 +155,7 @@ export default function ProgressoEditalPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Edital Verticalizado</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">{studyMode.syllabusPageTitle}</h1>
           <p className="text-sm text-muted-theme mt-1">
             Marque tópicos individuais ou a matéria inteira. Tópicos marcados como Médio ou Difícil vão automaticamente para Prioridades.
           </p>

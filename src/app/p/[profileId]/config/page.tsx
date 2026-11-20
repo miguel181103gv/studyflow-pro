@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { createClient } from '@/lib/supabase/client';
 import type { ThemeId } from '@/lib/types';
+import { STUDY_MODES, STUDY_MODE_LIST, encodeStudyModeSlug, getStudyModeId, type StudyMode } from '@/lib/studyModes';
 import { Check, CheckCircle2, Download, Upload, Loader2 } from 'lucide-react';
 
 const THEMES: { id: ThemeId; name: string; desc: string }[] = [
@@ -33,6 +34,8 @@ export default function ConfigPage() {
     userId,
   } = useProfile();
 
+  const [studyMode, setStudyMode] = useState<StudyMode>(() => getStudyModeId(profile));
+  const modeCfg = STUDY_MODES[studyMode];
   const [name, setName] = useState(profile?.name || '');
   const [roleTitle, setRoleTitle] = useState(profile?.role_title || '');
   const [dailyGoal, setDailyGoal] = useState(String(profile?.daily_hours_goal || 4));
@@ -51,6 +54,7 @@ export default function ConfigPage() {
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     await updateProfile({
+      slug: encodeStudyModeSlug(studyMode),
       name: name.trim() || profile?.name,
       role_title: roleTitle.trim(),
       daily_hours_goal: Number(dailyGoal) || 4,
@@ -245,7 +249,7 @@ export default function ConfigPage() {
           Configurações & Backup
         </h1>
         <p className="text-sm text-muted-theme mt-1">
-          Edite as informações do edital (inclusive data da prova), ajuste o tema ou exporte/recupere todos os seus dados.
+          Escolha o modo de estudo, edite metas e datas, ajuste o tema ou faça backup dos seus dados.
         </p>
       </div>
 
@@ -266,12 +270,35 @@ export default function ConfigPage() {
 
       {/* Edição Completa das Informações do Edital */}
       <form onSubmit={handleSave} className="card-surface rounded-3xl p-6 space-y-4">
-        <h2 className="font-bold text-base">Informações do Edital & Metas</h2>
+        <h2 className="font-bold text-base">Modo de Estudo & Metas</h2>
+
+        <div>
+          <label className="block text-xs font-semibold text-muted-theme mb-1.5">
+            Para que você está usando este plano?
+          </label>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {STUDY_MODE_LIST.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => setStudyMode(m.id)}
+                className={`px-3 py-2 rounded-xl text-xs font-semibold border text-left flex items-center gap-1.5 ${
+                  studyMode === m.id
+                    ? 'bg-teal-600 text-white border-teal-600'
+                    : 'subtle-surface border-theme hover:opacity-85'
+                }`}
+              >
+                <span>{m.icon}</span>
+                <span className="truncate">{m.shortLabel}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
           <div>
             <label className="block text-xs font-semibold text-muted-theme mb-1">
-              Nome do Concurso / Órgão
+              {modeCfg.nameLabel.replace(" *", "")}
             </label>
             <input
               value={name}
@@ -280,7 +307,7 @@ export default function ConfigPage() {
             />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-muted-theme mb-1">Cargo</label>
+            <label className="block text-xs font-semibold text-muted-theme mb-1">{modeCfg.roleLabel}</label>
             <input
               value={roleTitle}
               onChange={(e) => setRoleTitle(e.target.value)}
@@ -292,7 +319,7 @@ export default function ConfigPage() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
           <div>
             <label className="block text-xs font-semibold text-muted-theme mb-1">
-              Data da Prova
+              {modeCfg.examDateLabel}
             </label>
             <input
               type="date"
@@ -330,6 +357,8 @@ export default function ConfigPage() {
           </div>
         </div>
 
+        {modeCfg.hasSalaryRaioX && (
+        <>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
           <div>
             <label className="block text-xs font-semibold text-muted-theme mb-1">
@@ -386,6 +415,8 @@ export default function ConfigPage() {
             />
           </div>
         </div>
+        </>
+        )}
 
         <div className="flex items-center gap-3 pt-1">
           <button
