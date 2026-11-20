@@ -16,14 +16,21 @@ import {
   X,
   Globe2,
   FileText,
+  PenLine,
+  BookOpen,
+  FolderOpen,
+  Check,
 } from 'lucide-react';
+
+function plural(count: number, singular: string, pluralForm: string) {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
 
 function parseBulkFlashcards(raw: string): { front: string; back: string }[] {
   const results: { front: string; back: string }[] = [];
   const text = raw.replace(/\r\n/g, '\n').trim();
   if (!text) return results;
 
-  // Padrão 1: Frente: ... Verso: ... (ou Pergunta: ... Resposta: ... / P: ... R: ...)
   const regex =
     /(?:^|\n)\s*(?:[-*•]\s*)?(?:Frente|Pergunta|P|Q)\s*:\s*([\s\S]*?)(?:\n\s*(?:[-*•]\s*)?(?:Verso|Resposta|R|A)\s*:\s*([\s\S]*?))(?=\n\s*(?:\d+[.)]|(?:[-*•]\s*)?(?:Frente|Pergunta|P|Q)\s*:)|$)/gi;
   let match: RegExpExecArray | null;
@@ -33,7 +40,6 @@ function parseBulkFlashcards(raw: string): { front: string; back: string }[] {
     if (f && b) results.push({ front: f, back: b });
   }
 
-  // Fallback: linhas separadas por "|" ou ";"
   if (results.length === 0) {
     text.split('\n').forEach((line) => {
       const sep = line.includes('|') ? '|' : line.includes(';') ? ';' : null;
@@ -51,6 +57,8 @@ function parseBulkFlashcards(raw: string): { front: string; back: string }[] {
   return results;
 }
 
+type CreateTab = 'manual' | 'ai' | 'bulk';
+
 export default function FlashcardsPage() {
   const {
     userId,
@@ -65,26 +73,33 @@ export default function FlashcardsPage() {
     deleteFlashcard,
   } = useProfile();
 
+  const { aiJobs, runAiJob } = useGlobal();
+
   const today = todayISO();
   const [selectedSubjectId, setSelectedSubjectId] = useState(subjects[0]?.id || '');
   const [selectedTopicId, setSelectedTopicId] = useState<string>('');
 
-  // Criar nova matéria ou tópico direto aqui
+  // Ações secundárias recolhíveis para criar matéria / tópico
+  const [showNewSubject, setShowNewSubject] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
+  const [showNewTopic, setShowNewTopic] = useState(false);
   const [newTopicName, setNewTopicName] = useState('');
 
-  // Form criar card manual
+  // Aba única de criação: Manual (padrão) | Gerar com IA | Importar lista
+  const [createTab, setCreateTab] = useState<CreateTab>('manual');
+
+  // Form Manual
   const [front, setFront] = useState('');
-  const [bulkText, setBulkText] = useState('');
-  const [importingBulk, setImportingBulk] = useState(false);
-  const [showBulkBox, setShowBulkBox] = useState(false);
   const [back, setBack] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Gerar com Gemini (tema livre + quantidade)
+  // Form Importar Lista
+  const [bulkText, setBulkText] = useState('');
+  const [importingBulk, setImportingBulk] = useState(false);
+
+  // Form Gerar com IA (em segundo plano via GlobalProvider)
   const [customTheme, setCustomTheme] = useState('');
   const [genCount, setGenCount] = useState<5 | 10 | 15>(5);
-  const { aiJobs, runAiJob } = useGlobal();
   const flashcardJobId = `flashcards:${profile?.id || 'default'}`;
   const flashcardJob = aiJobs[flashcardJobId];
   const generating = flashcardJob?.status === 'running';
@@ -92,6 +107,7 @@ export default function FlashcardsPage() {
 
   // Modo Estudo Espaçado (SM-2)
   const [studying, setStudying] = useState(false);
+  const [studyScopeLabel, setStudyScopeLabel] = useState('');
   const [studyQueueIds, setStudyQueueIds] = useState<string[]>([]);
   const [studyHistoryIds, setStudyHistoryIds] = useState<string[]>([]);
   const [studyTotalCount, setStudyTotalCount] = useState(0);
@@ -102,49 +118,37 @@ export default function FlashcardsPage() {
   const subjectTopics = topics.filter((t) => t.subject_id === currentSubjectId);
   const currentTopic = subjectTopics.find((t) => t.id === selectedTopicId);
 
-  const deckCards = flashcards.filter(
-    (c) =>
-      c.subject_id === currentSubjectId &&
-      (!selectedTopicId || c.topic_id === selectedTopicId)
-  );
-  const dueCards = deckCards.filter((c) => c.due_date <= today);
+  // Contagens por escopo (sem ambiguidade)
+  const subjectCards = flashcards.filter((c) => c.subject_id === currentSubjectId);
+  const subjectDueCards = subjectCards.filter((c) => c.due_date <= today);
+
+  const topicCards = selectedTopicId
+    ? subjectCards.filter((c) => c.topic_id === selectedTopicId)
+    : subjectCards;
+  const topicDueCards = topicCards.filter((c) => c.due_date <= today);
 
   const allDueCards = flashcards.filter((c) => c.due_date <= today);
+
+  const parsedBulk = parseBulkFlashcards(bulkText);
 
   async function handleAddSubject(e: React.FormEvent) {
     e.preventDefault();
     if (!newSubjectName.trim()) return;
-    const created = await addSubject(newSubjectName);
+    const created = await addSubject(newSubjectName.trim());
     if (created) {
       setSelectedSubjectId(created.id);
       setSelectedTopicId('');
     }
     setNewSubjectName('');
+    setShowNewSubject(false);
   }
 
   async function handleAddTopic(e: React.FormEvent) {
     e.preventDefault();
     if (!currentSubjectId || !newTopicName.trim()) return;
-    await addTopic(currentSubjectId, newTopicName);
+    await addTopic(currentSubjectId, newTopicName.trim());
     setNewTopicName('');
-  }
-
-  const parsedBulk = parseBulkFlashcards(bulkText);
-
-  async function handleBulkImport() {
-    if (!currentSubjectId || parsedBulk.length === 0) return;
-    setImportingBulk(true);
-    await addFlashcards(
-      parsedBulk.map((c) => ({
-        subject_id: currentSubjectId,
-        topic_id: selectedTopicId || null,
-        front: c.front,
-        back: c.back,
-      }))
-    );
-    setBulkText('');
-    setShowBulkBox(false);
-    setImportingBulk(false);
+    setShowNewTopic(false);
   }
 
   async function handleAddCard(e: React.FormEvent) {
@@ -162,6 +166,21 @@ export default function FlashcardsPage() {
     setFront('');
     setBack('');
     setSaving(false);
+  }
+
+  async function handleBulkImport() {
+    if (!currentSubjectId || parsedBulk.length === 0) return;
+    setImportingBulk(true);
+    await addFlashcards(
+      parsedBulk.map((c) => ({
+        subject_id: currentSubjectId,
+        topic_id: selectedTopicId || null,
+        front: c.front,
+        back: c.back,
+      }))
+    );
+    setBulkText('');
+    setImportingBulk(false);
   }
 
   function handleGenerateWithGemini() {
@@ -222,10 +241,10 @@ export default function FlashcardsPage() {
     });
   }
 
-  function startStudySession(cardsPool: typeof flashcards) {
+  function startStudySession(cardsPool: typeof flashcards, scopeLabel: string) {
     if (cardsPool.length === 0) return;
-    // Embaralha levemente quando mistura todas as matérias
     const shuffled = [...cardsPool].sort(() => Math.random() - 0.5);
+    setStudyScopeLabel(scopeLabel);
     setStudyQueueIds(shuffled.map((c) => c.id));
     setStudyHistoryIds([]);
     setStudyTotalCount(shuffled.length);
@@ -234,9 +253,7 @@ export default function FlashcardsPage() {
   }
 
   const activeStudyCard =
-    studyQueueIds.length > 0
-      ? flashcards.find((c) => c.id === studyQueueIds[0])
-      : undefined;
+    studyQueueIds.length > 0 ? flashcards.find((c) => c.id === studyQueueIds[0]) : undefined;
   const activeStudySubject = activeStudyCard
     ? subjects.find((s) => s.id === activeStudyCard.subject_id)
     : undefined;
@@ -277,185 +294,444 @@ export default function FlashcardsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studying, activeStudyCard, revealed]);
 
+  const inputClass =
+    'w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2.5 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500';
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Layers className="w-6 h-6 text-teal-600" />
-            Flashcards & Revisão Espaçada
-          </h1>
-          <p className="text-sm text-muted-theme">
-            Crie matérias, tópicos e temas livres ou estude o baralho inteiro com todas as matérias juntas.
-          </p>
+      {/* Cabeçalho limpo */}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+          <Layers className="w-6 h-6 text-teal-600" />
+          Flashcards & Revisão Espaçada
+        </h1>
+        <p className="text-sm text-muted-theme mt-0.5">
+          Escolha a matéria e o tópico, crie seus cards e estude por tópico, por matéria ou no baralho completo.
+        </p>
+      </div>
+
+      {/* 1. ESCOLHA ONDE OS CARDS FICAM (MATÉRIA + TÓPICO + RESUMO COMPACTO) */}
+      <div className="card-surface rounded-2xl p-5 space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Seletor de Matéria */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="fc-subject" className="text-xs font-bold uppercase tracking-wider text-muted-theme">
+                1. Matéria
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowNewSubject((v) => !v)}
+                className="text-xs font-semibold text-teal-600 hover:underline inline-flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {showNewSubject ? 'Cancelar' : 'Nova matéria'}
+              </button>
+            </div>
+            <select
+              id="fc-subject"
+              value={currentSubjectId}
+              onChange={(e) => {
+                setSelectedSubjectId(e.target.value);
+                setSelectedTopicId('');
+              }}
+              className={inputClass}
+            >
+              {subjects.map((s) => {
+                const cnt = flashcards.filter((c) => c.subject_id === s.id).length;
+                return (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({plural(cnt, 'card', 'cards')})
+                  </option>
+                );
+              })}
+            </select>
+
+            {showNewSubject && (
+              <form onSubmit={handleAddSubject} className="flex gap-2 pt-1 animate-fade-in-up">
+                <input
+                  autoFocus
+                  value={newSubjectName}
+                  onChange={(e) => setNewSubjectName(e.target.value)}
+                  placeholder="Nome da nova matéria (ex: Redação)..."
+                  className={inputClass}
+                />
+                <button
+                  type="submit"
+                  className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold shrink-0 inline-flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Salvar
+                </button>
+              </form>
+            )}
+          </div>
+
+          {/* Seletor de Tópico */}
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="fc-topic" className="text-xs font-bold uppercase tracking-wider text-muted-theme">
+                2. Tópico
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowNewTopic((v) => !v)}
+                className="text-xs font-semibold text-teal-600 hover:underline inline-flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {showNewTopic ? 'Cancelar' : 'Novo tópico'}
+              </button>
+            </div>
+            <select
+              id="fc-topic"
+              value={selectedTopicId}
+              onChange={(e) => setSelectedTopicId(e.target.value)}
+              className={inputClass}
+            >
+              <option value="">Todos os tópicos de {currentSubject?.name || 'matéria'}</option>
+              {subjectTopics.map((t) => {
+                const cnt = flashcards.filter((c) => c.topic_id === t.id).length;
+                return (
+                  <option key={t.id} value={t.id}>
+                    {t.title} ({plural(cnt, 'card', 'cards')})
+                  </option>
+                );
+              })}
+            </select>
+
+            {showNewTopic && (
+              <form onSubmit={handleAddTopic} className="flex gap-2 pt-1 animate-fade-in-up">
+                <input
+                  autoFocus
+                  value={newTopicName}
+                  onChange={(e) => setNewTopicName(e.target.value)}
+                  placeholder="Nome do novo tópico..."
+                  className={inputClass}
+                />
+                <button
+                  type="submit"
+                  className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold shrink-0 inline-flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  Salvar
+                </button>
+              </form>
+            )}
+          </div>
         </div>
 
-        {/* Botões Globais: Estudar Todas as Matérias */}
-        <div className="flex flex-wrap items-center gap-2">
-          {allDueCards.length > 0 && (
-            <button
-              onClick={() => startStudySession(allDueCards)}
-              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
-            >
-              <Zap className="w-4 h-4" />
-              Revisar Tudo Hoje ({allDueCards.length})
-            </button>
-          )}
-          {flashcards.length > 0 && (
-            <button
-              onClick={() => startStudySession(flashcards)}
-              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
-            >
-              <Globe2 className="w-4 h-4" />
-              Estudar Baralho Inteiro ({flashcards.length})
-            </button>
-          )}
+        {/* Linha de resumo compacta e sem ambiguidade */}
+        <div className="pt-3 border-t border-theme flex flex-wrap items-center justify-between gap-2 text-xs text-muted-theme">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            {currentTopic ? (
+              <>
+                <span>
+                  <strong className="text-[var(--text-main)]">
+                    {plural(topicCards.length, 'card', 'cards')}
+                  </strong>{' '}
+                  neste tópico
+                </span>
+                <span>·</span>
+                <span>
+                  <strong className="text-emerald-600">
+                    {plural(topicDueCards.length, 'revisão pendente', 'revisões pendentes')}
+                  </strong>{' '}
+                  neste tópico
+                </span>
+                <span>·</span>
+              </>
+            ) : (
+              <>
+                <span>
+                  <strong className="text-[var(--text-main)]">
+                    {plural(subjectCards.length, 'card', 'cards')}
+                  </strong>{' '}
+                  nesta matéria
+                </span>
+                <span>·</span>
+                <span>
+                  <strong className="text-emerald-600">
+                    {plural(subjectDueCards.length, 'revisão pendente', 'revisões pendentes')}
+                  </strong>{' '}
+                  nesta matéria
+                </span>
+                <span>·</span>
+              </>
+            )}
+            <span>
+              <strong className="text-[var(--text-main)]">
+                {plural(flashcards.length, 'card', 'cards')}
+              </strong>{' '}
+              no baralho completo
+            </span>
+          </div>
+
+          <span className="text-[11px] font-medium">
+            Novos cards salvos em:{' '}
+            <strong className="text-teal-700 dark:text-teal-300">
+              {currentSubject?.name || 'Matéria'}
+              {currentTopic ? ` › ${currentTopic.title}` : ' (geral)'}
+            </strong>
+          </span>
         </div>
       </div>
 
-      {/* Nível 1: Baralhos por Matéria + Nova Matéria */}
-      <div className="space-y-2.5">
-        <p className="text-xs font-bold text-muted-theme uppercase tracking-wider">
-          1. Escolha ou Crie a Matéria
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {subjects.map((s) => {
-            const sDue = flashcards.filter(
-              (c) => c.subject_id === s.id && c.due_date <= today
-            ).length;
-            return (
+      {/* 2. FAIXA DEDICADA PARA ESTUDAR (ESCOPO EXPLÍCITO: TÓPICO · MATÉRIA · GERAL) */}
+      <div className="card-surface rounded-2xl p-5 space-y-4">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <h2 className="font-bold text-sm flex items-center gap-2">
+            <BookOpen className="w-4 h-4 text-teal-600" />
+            Estudar Flashcards
+          </h2>
+          <span className="text-[11px] text-muted-theme">
+            O algoritmo SM-2 agenda automaticamente a próxima revisão conforme você responde.
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* Nível A: Tópico selecionado */}
+          <div className="subtle-surface rounded-xl p-3.5 flex flex-col justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
+                <FolderOpen className="w-3.5 h-3.5 text-teal-600" />
+                {currentTopic ? 'Este Tópico' : 'Tópico'}
+              </p>
+              <p className="text-xs font-semibold mt-1 truncate">
+                {currentTopic ? currentTopic.title : 'Selecione um tópico acima'}
+              </p>
+              <p className="text-[11px] text-muted-theme mt-0.5">
+                {currentTopic
+                  ? `${plural(topicCards.length, 'card', 'cards')} · ${plural(topicDueCards.length, 'pendente', 'pendentes')} hoje`
+                  : 'Filtre por tópico para estudar isoladamente.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {currentTopic && topicDueCards.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    startStudySession(topicDueCards, `Pendentes · ${currentTopic.title}`)
+                  }
+                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  Revisar pendentes ({topicDueCards.length})
+                </button>
+              )}
               <button
-                key={s.id}
-                onClick={() => {
-                  setSelectedSubjectId(s.id);
-                  setSelectedTopicId('');
-                }}
-                className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition inline-flex items-center gap-2 ${
-                  currentSubjectId === s.id
-                    ? 'bg-teal-600 text-white shadow-sm'
+                type="button"
+                disabled={!currentTopic || topicCards.length === 0}
+                onClick={() =>
+                  currentTopic &&
+                  startStudySession(topicCards, `Tópico · ${currentTopic.title}`)
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-45 ${
+                  currentTopic && topicDueCards.length === 0 && topicCards.length > 0
+                    ? 'bg-teal-600 hover:bg-teal-500 text-white'
                     : 'card-surface hover:opacity-85'
                 }`}
               >
-                <span>{s.name}</span>
-                {sDue > 0 && (
-                  <span
-                    className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-                      currentSubjectId === s.id
-                        ? 'bg-white/25 text-white'
-                        : 'bg-emerald-500/20 text-emerald-600'
-                    }`}
-                  >
-                    {sDue}
-                  </span>
-                )}
+                Estudar tópico ({currentTopic ? topicCards.length : 0})
               </button>
-            );
-          })}
-        </div>
-
-        <form onSubmit={handleAddSubject} className="flex gap-2 max-w-md">
-          <input
-            value={newSubjectName}
-            onChange={(e) => setNewSubjectName(e.target.value)}
-            placeholder="Adicionar nova matéria (ex: Redação, Atualidades)..."
-            className="flex-1 rounded-xl card-surface px-3 py-2 text-xs"
-          />
-          <button
-            type="submit"
-            className="px-3 py-2 rounded-xl subtle-surface text-xs font-semibold inline-flex items-center gap-1"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Nova Matéria
-          </button>
-        </form>
-      </div>
-
-      {/* Nível 2: Sub-baralho por Tópico + Novo Tópico */}
-      <div className="space-y-2.5">
-        <p className="text-xs font-bold text-muted-theme uppercase tracking-wider">
-          2. Escolha ou Crie um Tópico (opcional)
-        </p>
-        <div className="flex flex-col sm:flex-row gap-2">
-          <select
-            value={selectedTopicId}
-            onChange={(e) => setSelectedTopicId(e.target.value)}
-            className="flex-1 rounded-xl card-surface px-4 py-2.5 text-sm"
-          >
-            <option value="">Todos os tópicos de {currentSubject?.name}</option>
-            {subjectTopics.map((t) => {
-              const cnt = flashcards.filter((c) => c.topic_id === t.id).length;
-              return (
-                <option key={t.id} value={t.id}>
-                  {t.title} ({cnt} cards)
-                </option>
-              );
-            })}
-          </select>
-          <form onSubmit={handleAddTopic} className="flex gap-2 sm:w-80">
-            <input
-              value={newTopicName}
-              onChange={(e) => setNewTopicName(e.target.value)}
-              placeholder="Novo tópico/tema nesta matéria..."
-              className="flex-1 rounded-xl card-surface px-3 py-2 text-xs"
-            />
-            <button
-              type="submit"
-              className="px-3 py-2 rounded-xl subtle-surface text-xs font-semibold inline-flex items-center gap-1 shrink-0"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Tópico
-            </button>
-          </form>
-        </div>
-      </div>
-
-      {/* Nível 3: Criar Flashcard Manual OU Gerar com Gemini (Tema Livre) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <form
-          onSubmit={handleAddCard}
-          className="lg:col-span-2 card-surface rounded-2xl p-5 shadow-sm space-y-3"
-        >
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <h2 className="font-bold text-sm">Criar Flashcard ou Gerar com Gemini</h2>
-            <div className="flex items-center gap-2">
-              {dueCards.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => startStudySession(dueCards)}
-                  className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-semibold"
-                >
-                  Revisar Matéria ({dueCards.length})
-                </button>
-              )}
-              {deckCards.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => startStudySession(deckCards)}
-                  className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold"
-                >
-                  Estudar Matéria ({deckCards.length})
-                </button>
-              )}
             </div>
           </div>
 
-          {/* Gerador Gemini com tema livre */}
-          <div className="subtle-surface rounded-xl p-3 space-y-2">
-            <p className="text-[11px] font-bold text-violet-600 flex items-center gap-1">
-              <Sparkles className="w-3.5 h-3.5" />
-              Gerar Flashcards com IA (pode digitar qualquer tema livre abaixo)
+          {/* Nível B: Matéria selecionada */}
+          <div className="subtle-surface rounded-xl p-3.5 flex flex-col justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-teal-600" />
+                Esta Matéria
+              </p>
+              <p className="text-xs font-semibold mt-1 truncate">
+                {currentSubject?.name || 'Matéria'}
+              </p>
+              <p className="text-[11px] text-muted-theme mt-0.5">
+                {plural(subjectCards.length, 'card', 'cards')} ·{' '}
+                {plural(subjectDueCards.length, 'pendente', 'pendentes')} hoje
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {subjectDueCards.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    startStudySession(
+                      subjectDueCards,
+                      `Pendentes · ${currentSubject?.name || 'Matéria'}`
+                    )
+                  }
+                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  Revisar matéria ({subjectDueCards.length})
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={subjectCards.length === 0}
+                onClick={() =>
+                  startStudySession(
+                    subjectCards,
+                    `Matéria completa · ${currentSubject?.name || 'Matéria'}`
+                  )
+                }
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-45 ${
+                  subjectDueCards.length === 0 && subjectCards.length > 0
+                    ? 'bg-teal-600 hover:bg-teal-500 text-white'
+                    : 'card-surface hover:opacity-85'
+                }`}
+              >
+                Todos da matéria ({subjectCards.length})
+              </button>
+            </div>
+          </div>
+
+          {/* Nível C: Baralho Completo (todas as matérias) */}
+          <div className="subtle-surface rounded-xl p-3.5 flex flex-col justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
+                <Globe2 className="w-3.5 h-3.5 text-teal-600" />
+                Baralho Completo (Geral)
+              </p>
+              <p className="text-xs font-semibold mt-1">Todas as matérias juntas</p>
+              <p className="text-[11px] text-muted-theme mt-0.5">
+                {plural(flashcards.length, 'card', 'cards')} ·{' '}
+                {plural(allDueCards.length, 'pendente', 'pendentes')} hoje
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {allDueCards.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    startStudySession(allDueCards, 'Pendentes · Todas as matérias')
+                  }
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  Revisar tudo hoje ({allDueCards.length})
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={flashcards.length === 0}
+                onClick={() =>
+                  startStudySession(flashcards, 'Baralho completo · Todas as matérias')
+                }
+                className="px-3 py-1.5 rounded-xl card-surface hover:opacity-85 text-xs font-semibold disabled:opacity-45"
+              >
+                Baralho completo ({flashcards.length})
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. CRIAR FLASHCARD — UMA ÚNICA FORMA VISÍVEL POR VEZ */}
+      <div className="card-surface rounded-2xl p-5 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="font-bold text-sm">Criar Flashcard</h2>
+            <p className="text-xs text-muted-theme">
+              Será associado a{' '}
+              <strong className="text-[var(--text-main)]">
+                {currentSubject?.name || 'Matéria'}
+                {currentTopic ? ` › ${currentTopic.title}` : ' (todos os tópicos)'}
+              </strong>
             </p>
-            <div className="flex flex-col sm:flex-row gap-2">
+          </div>
+
+          {/* Seletor segmentado das 3 formas de criação */}
+          <div className="inline-flex p-1 rounded-xl subtle-surface gap-1 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => setCreateTab('manual')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                createTab === 'manual' ? 'bg-teal-600 text-white shadow-sm' : 'text-muted-theme hover:text-[var(--text-main)]'
+              }`}
+            >
+              <PenLine className="w-3.5 h-3.5" />
+              Manual
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateTab('ai')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                createTab === 'ai' ? 'bg-violet-600 text-white shadow-sm' : 'text-muted-theme hover:text-[var(--text-main)]'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Gerar com IA
+            </button>
+            <button
+              type="button"
+              onClick={() => setCreateTab('bulk')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                createTab === 'bulk' ? 'bg-teal-600 text-white shadow-sm' : 'text-muted-theme hover:text-[var(--text-main)]'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Importar lista
+            </button>
+          </div>
+        </div>
+
+        {/* Aba 1: Manual (padrão) */}
+        {createTab === 'manual' && (
+          <form onSubmit={handleAddCard} className="space-y-3 animate-fade-in-up">
+            <div>
+              <label className="block text-xs font-semibold mb-1">Frente (Pergunta)</label>
+              <input
+                required
+                value={front}
+                onChange={(e) => setFront(e.target.value)}
+                placeholder="Ex: Qual é a aplicabilidade das normas de eficácia plena?"
+                className={inputClass}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold mb-1">Verso (Resposta)</label>
+              <textarea
+                required
+                rows={3}
+                value={back}
+                onChange={(e) => setBack(e.target.value)}
+                placeholder="Ex: Direta, imediata e integral."
+                className={inputClass}
+              />
+            </div>
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+              >
+                <Plus className="w-4 h-4" />
+                {saving ? 'Salvando...' : 'Adicionar Flashcard'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Aba 2: Gerar com IA (Gemini em segundo plano) */}
+        {createTab === 'ai' && (
+          <div className="space-y-3 animate-fade-in-up">
+            <p className="text-xs text-muted-theme">
+              Digite um tema específico ou deixe em branco para o Gemini gerar cards sobre{' '}
+              <strong>{currentTopic?.title || currentSubject?.name}</strong>. Você pode trocar de tela enquanto ele trabalha.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2.5">
               <input
                 value={customTheme}
                 onChange={(e) => setCustomTheme(e.target.value)}
-                placeholder="Tema livre (ex: Súmulas TST, Crase, Prazos Lei 8.112) ou deixe vazio para usar o tópico"
-                className="flex-1 rounded-xl card-surface px-3 py-2 text-xs"
+                placeholder="Tema livre (ex: Súmulas TST, Crase, Prazos Lei 8.112)..."
+                className={`flex-1 ${inputClass}`}
               />
               <select
                 value={genCount}
                 onChange={(e) => setGenCount(Number(e.target.value) as 5 | 10 | 15)}
-                className="rounded-xl card-surface px-2.5 py-2 text-xs font-semibold"
+                className="rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2.5 text-xs font-semibold"
               >
                 <option value={5}>5 cards</option>
                 <option value={10}>10 cards</option>
@@ -465,130 +741,70 @@ export default function FlashcardsPage() {
                 type="button"
                 onClick={handleGenerateWithGemini}
                 disabled={generating || !currentSubject}
-                className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 disabled:opacity-60 shrink-0"
+                className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 disabled:opacity-60 shrink-0"
               >
                 {generating ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-4 h-4 animate-spin" />
                 ) : (
-                  <Sparkles className="w-3.5 h-3.5" />
+                  <Sparkles className="w-4 h-4" />
                 )}
-                {generating ? 'Gerando...' : 'Gerar'}
+                {generating ? 'Gerando com Gemini...' : 'Gerar com Gemini'}
               </button>
             </div>
-          </div>
-
-          {/* Importar lista de texto em lote */}
-          <div className="subtle-surface rounded-2xl p-3.5 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-xs font-bold text-teal-700 dark:text-teal-300 flex items-center gap-1.5">
-                <FileText className="w-4 h-4" />
-                Colar Texto com Vários Flashcards (Frente / Verso)
-              </p>
-              <button
-                type="button"
-                onClick={() => setShowBulkBox((v) => !v)}
-                className="px-3 py-1 rounded-xl card-surface text-xs font-bold"
-              >
-                {showBulkBox ? 'Fechar' : 'Colar Lista'}
-              </button>
-            </div>
-            {showBulkBox && (
-              <div className="space-y-2.5 pt-1 animate-fade-in-up">
-                <textarea
-                  rows={5}
-                  value={bulkText}
-                  onChange={(e) => setBulkText(e.target.value)}
-                  placeholder={"Cole aqui sua lista, por exemplo:\n1.\n- Frente: O que é norma de eficácia plena?\n- Verso: Produz todos os seus efeitos desde a entrada em vigor."}
-                  className="w-full rounded-xl card-surface p-3 text-xs font-mono"
-                />
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold text-muted-theme">
-                    {parsedBulk.length > 0
-                      ? `${parsedBulk.length} flashcard(s) identificado(s) automaticamente!`
-                      : 'Use "Frente:" / "Verso:" ou "Pergunta:" / "Resposta:"'}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={parsedBulk.length === 0 || importingBulk}
-                    onClick={handleBulkImport}
-                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
-                  >
-                    {importingBulk
-                      ? 'Importando...'
-                      : `Importar ${parsedBulk.length} Card(s)`}
-                  </button>
-                </div>
-              </div>
+            {aiError && (
+              <div className="p-3 rounded-xl bg-rose-500/15 text-rose-600 text-xs">{aiError}</div>
             )}
           </div>
+        )}
 
-          {aiError && (
-            <div className="p-3 rounded-xl bg-red-500/15 text-red-500 text-xs">{aiError}</div>
-          )}
-
-          <input
-            required
-            value={front}
-            onChange={(e) => setFront(e.target.value)}
-            placeholder="Pergunta manual (Frente do card)..."
-            className="w-full rounded-xl subtle-surface border border-theme px-3.5 py-2.5 text-sm"
-          />
-          <textarea
-            required
-            rows={2}
-            value={back}
-            onChange={(e) => setBack(e.target.value)}
-            placeholder="Resposta manual (Verso do card)..."
-            className="w-full rounded-xl subtle-surface border border-theme p-3.5 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={saving}
-            className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
-          >
-            <Plus className="w-4 h-4" />
-            {saving ? 'Salvando...' : 'Adicionar Flashcard'}
-          </button>
-        </form>
-
-        <div className="card-surface rounded-2xl p-5 shadow-sm flex flex-col justify-between space-y-3">
-          <div>
-            <h2 className="font-bold text-sm mb-2">Resumo</h2>
-            <div className="space-y-2 text-xs">
-              <div className="flex justify-between">
-                <span className="text-muted-theme">Nesta matéria/tópico:</span>
-                <span className="font-bold">{deckCards.length} cards</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-theme">Para revisar hoje (aqui):</span>
-                <span className="font-bold text-emerald-600">{dueCards.length}</span>
-              </div>
-              <div className="border-t border-theme my-2 pt-2 flex justify-between">
-                <span className="text-muted-theme">Baralho inteiro (todas):</span>
-                <span className="font-bold text-indigo-600">{flashcards.length} cards</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-theme">Total para revisar hoje:</span>
-                <span className="font-bold text-emerald-600">{allDueCards.length}</span>
-              </div>
+        {/* Aba 3: Importar Lista em Lote */}
+        {createTab === 'bulk' && (
+          <div className="space-y-3 animate-fade-in-up">
+            <textarea
+              rows={6}
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              placeholder={
+                'Cole aqui sua lista, por exemplo:\n1.\n- Frente: O que é norma de eficácia plena?\n- Verso: Produz todos os seus efeitos desde a entrada em vigor.'
+              }
+              className={`${inputClass} font-mono text-xs`}
+            />
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-muted-theme">
+                {parsedBulk.length > 0
+                  ? `${plural(parsedBulk.length, 'flashcard identificado', 'flashcards identificados')} automaticamente`
+                  : 'Use "Frente:" / "Verso:", "Pergunta:" / "Resposta:" ou separe por "|"'}
+              </span>
+              <button
+                type="button"
+                disabled={parsedBulk.length === 0 || importingBulk}
+                onClick={handleBulkImport}
+                className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50"
+              >
+                {importingBulk
+                  ? 'Importando...'
+                  : `Importar ${plural(parsedBulk.length, 'card', 'cards')}`}
+              </button>
             </div>
           </div>
-          <p className="text-[11px] text-muted-theme">
-            O algoritmo SM-2 agenda automaticamente cada card de acordo com sua facilidade em lembrar.
-          </p>
-        </div>
+        )}
       </div>
 
-      {/* Lista de Flashcards */}
-      <div className="space-y-2.5">
-        <h2 className="font-bold text-sm">Cards neste Baralho ({deckCards.length})</h2>
-        {deckCards.length === 0 ? (
+      {/* 4. LISTA DE FLASHCARDS DO ESCOPO ATUAL */}
+      <div className="space-y-3">
+        <h2 className="font-bold text-sm">
+          {currentTopic
+            ? `Cards em "${currentTopic.title}" (${plural(topicCards.length, 'card', 'cards')})`
+            : `Cards em ${currentSubject?.name || 'Matéria'} (${plural(topicCards.length, 'card', 'cards')})`}
+        </h2>
+
+        {topicCards.length === 0 ? (
           <div className="card-surface rounded-2xl p-8 text-center text-sm text-muted-theme">
-            Nenhum flashcard aqui ainda. Crie um acima ou peça para o Gemini gerar sobre qualquer tema!
+            Nenhum flashcard neste filtro ainda. Crie o primeiro acima no modo Manual, com IA ou colando uma lista.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {deckCards.map((card) => {
+            {topicCards.map((card) => {
               const t = topics.find((tp) => tp.id === card.topic_id);
               const isDue = card.due_date <= today;
               return (
@@ -598,29 +814,28 @@ export default function FlashcardsPage() {
                       <span
                         className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                           isDue
-                            ? 'bg-emerald-500/15 text-emerald-600'
+                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                             : 'subtle-surface text-muted-theme'
                         }`}
                       >
                         {isDue ? 'Revisar hoje' : `Próx: ${formatDateBR(card.due_date)}`}
                       </span>
                       {t && (
-                        <span className="text-[10px] text-muted-theme truncate max-w-[200px]">
+                        <span className="text-[10px] text-muted-theme truncate max-w-[220px]">
                           {t.title}
                         </span>
                       )}
                     </div>
                     <button
                       onClick={() => deleteFlashcard(card.id)}
-                      className="p-1 rounded-lg hover:bg-red-500/15 text-muted-theme hover:text-red-500"
+                      aria-label="Excluir flashcard"
+                      className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-500"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                   <p className="text-sm font-semibold">{card.front}</p>
-                  <p className="text-xs text-muted-theme border-t border-theme pt-2">
-                    {card.back}
-                  </p>
+                  <p className="text-xs text-muted-theme border-t border-theme pt-2">{card.back}</p>
                 </div>
               );
             })}
@@ -632,8 +847,8 @@ export default function FlashcardsPage() {
       {studying && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="card-surface w-full max-w-xl rounded-3xl p-6 space-y-5 shadow-2xl animate-pop-in">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 {activeStudySubject && (
                   <span
                     className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
@@ -647,6 +862,11 @@ export default function FlashcardsPage() {
                     ? `${Math.min(studyTotalCount, studyTotalCount - studyQueueIds.length + 1)} de ${studyTotalCount}`
                     : 'Sessão Concluída!'}
                 </span>
+                {studyScopeLabel && (
+                  <span className="text-[11px] text-muted-theme truncate max-w-[200px]">
+                    · {studyScopeLabel}
+                  </span>
+                )}
                 {studyHistoryIds.length > 0 && activeStudyCard && (
                   <button
                     onClick={handlePrevCard}
@@ -658,7 +878,8 @@ export default function FlashcardsPage() {
               </div>
               <button
                 onClick={() => setStudying(false)}
-                className="p-2 rounded-xl subtle-surface"
+                aria-label="Fechar sessão"
+                className="p-2 rounded-xl subtle-surface shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -679,8 +900,8 @@ export default function FlashcardsPage() {
 
                 {revealed ? (
                   <>
-                    <div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/30 p-5 text-center space-y-2">
-                      <p className="text-[11px] uppercase tracking-wider text-emerald-600 font-bold">
+                    <div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/30 p-5 text-center space-y-2 animate-fade-in-up">
+                      <p className="text-[11px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-bold">
                         Resposta
                       </p>
                       <p className="text-sm leading-relaxed">{activeStudyCard.back}</p>
@@ -689,7 +910,7 @@ export default function FlashcardsPage() {
                     <div className="grid grid-cols-4 gap-2 pt-1">
                       <button
                         onClick={() => handleRate(1)}
-                        className="py-2.5 px-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold"
+                        className="py-2.5 px-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
                       >
                         Errei
                         <span className="block text-[10px] font-normal opacity-80">Agora</span>
@@ -729,7 +950,7 @@ export default function FlashcardsPage() {
               </>
             ) : (
               <div className="text-center py-8 space-y-3">
-                <p className="text-xl font-bold">Parabéns! Baralho finalizado 🎉</p>
+                <p className="text-xl font-bold">Parabéns! Sessão finalizada</p>
                 <p className="text-xs text-muted-theme">
                   Todas as próximas datas de revisão foram agendadas automaticamente na nuvem.
                 </p>
@@ -737,7 +958,7 @@ export default function FlashcardsPage() {
                   onClick={() => setStudying(false)}
                   className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
                 >
-                  Voltar ao Baralho
+                  Voltar aos Flashcards
                 </button>
               </div>
             )}
