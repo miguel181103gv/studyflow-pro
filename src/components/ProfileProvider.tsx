@@ -476,7 +476,18 @@ export function ProfileProvider({
     );
     await withSync(async () => {
       const supabase = createClient();
-      await supabase.from('topics').update({ video_url: videoUrl }).eq('id', topicId);
+      const { error } = await supabase
+        .from('topics')
+        .update({ video_url: videoUrl })
+        .eq('id', topicId);
+      if (error) {
+        console.error('Erro ao salvar video_url:', error.message);
+        if (typeof window !== 'undefined' && error.message.includes('video_url')) {
+          alert(
+            'A coluna video_url ainda não foi criada no Supabase. Rode no SQL Editor: alter table public.topics add column if not exists video_url text;'
+          );
+        }
+      }
     });
   };
 

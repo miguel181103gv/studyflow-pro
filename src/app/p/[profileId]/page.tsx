@@ -14,15 +14,15 @@ import {
   Clock,
   Target,
   CheckCircle2,
-  AlertCircle,
-  Calendar,
   Flame,
   Play,
-  Sparkles,
   ArrowRight,
-  Star,
   Layers,
-  ListChecks,
+  Calendar,
+  TrendingUp,
+  TrendingDown,
+  Award,
+  Check,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -41,34 +41,74 @@ export default function DashboardPage() {
     topics,
     studyLogs,
     reviews,
-    errors,
     flashcards,
     startStopwatch,
     completeReview,
   } = useProfile();
 
   const today = todayISO();
+  const currentMonthPrefix = today.slice(0, 7); // YYYY-MM
 
+  // Calcula mês anterior (YYYY-MM)
+  const [curY, curM] = currentMonthPrefix.split('-').map(Number);
+  const prevDt = new Date(curY, curM - 2, 1);
+  const prevMonthPrefix = `${prevDt.getFullYear()}-${String(prevDt.getMonth() + 1).padStart(
+    2,
+    '0'
+  )}`;
+
+  // Totais gerais
   const totalSecondsAll = studyLogs.reduce((acc, l) => acc + l.duration_seconds, 0);
-  const todaySeconds = studyLogs
-    .filter((l) => l.study_date === today)
-    .reduce((acc, l) => acc + l.duration_seconds, 0);
-
   const totalQuestions = studyLogs.reduce((acc, l) => acc + l.questions_total, 0);
   const totalCorrect = studyLogs.reduce((acc, l) => acc + l.questions_correct, 0);
   const accuracy = calcAccuracy(totalCorrect, totalQuestions);
 
+  // Comparativo Mês Atual vs Mês Passado
+  const thisMonthLogs = studyLogs.filter((l) => l.study_date.startsWith(currentMonthPrefix));
+  const prevMonthLogs = studyLogs.filter((l) => l.study_date.startsWith(prevMonthPrefix));
+
+  const thisMonthSecs = thisMonthLogs.reduce((a, b) => a + b.duration_seconds, 0);
+  const prevMonthSecs = prevMonthLogs.reduce((a, b) => a + b.duration_seconds, 0);
+  const hoursDeltaPct =
+    prevMonthSecs > 0
+      ? Math.round(((thisMonthSecs - prevMonthSecs) / prevMonthSecs) * 100)
+      : thisMonthSecs > 0
+      ? 100
+      : 0;
+
+  const thisMonthQ = thisMonthLogs.reduce((a, b) => a + b.questions_total, 0);
+  const thisMonthC = thisMonthLogs.reduce((a, b) => a + b.questions_correct, 0);
+  const thisMonthAcc = calcAccuracy(thisMonthC, thisMonthQ);
+
+  const prevMonthQ = prevMonthLogs.reduce((a, b) => a + b.questions_total, 0);
+  const prevMonthC = prevMonthLogs.reduce((a, b) => a + b.questions_correct, 0);
+  const prevMonthAcc = calcAccuracy(prevMonthC, prevMonthQ);
+  const accDeltaPP = prevMonthQ > 0 ? thisMonthAcc - prevMonthAcc : 0;
+
+  // Tópicos concluídos no mês
   const studiedTopicsCount = topics.filter((t) => t.studied).length;
   const editalProgress = topics.length
     ? Math.round((studiedTopicsCount / topics.length) * 100)
     : 0;
+  const topicsThisMonth = topics.filter(
+    (t) => t.studied && t.studied_at && t.studied_at.startsWith(currentMonthPrefix)
+  ).length;
 
-  const dueReviews = reviews.filter((r) => !r.completed && r.due_date <= today);
-  const dueFlashcards = flashcards.filter((c) => c.due_date <= today);
-  const daysToExam = profile?.exam_date ? daysBetween(today, profile.exam_date) : null;
+  // Metas semanais (últimos 7 dias)
+  const weekStart = addDaysISO(today, -6);
+  const weekLogs = studyLogs.filter((l) => l.study_date >= weekStart);
+  const weekSecs = weekLogs.reduce((a, b) => a + b.duration_seconds, 0);
+  const weekGoalSecs = (profile?.daily_hours_goal || 4) * 5 * 3600;
+  const weekHoursPct = weekGoalSecs > 0 ? Math.min(100, Math.round((weekSecs / weekGoalSecs) * 100)) : 0;
+  const weekQuestions = weekLogs.reduce((a, b) => a + b.questions_total, 0);
 
-  // Sequência de dias estudando (Streak)
+  // Constância nos últimos 30 dias (faixa visual estilo Estudei)
   const studyDateSet = new Set(studyLogs.map((l) => l.study_date));
+  const last30Days = Array.from({ length: 30 }, (_, i) => {
+    const iso = addDaysISO(today, i - 29);
+    return { iso, studied: studyDateSet.has(iso) };
+  });
+
   let streakDays = 0;
   let cursorDate = studyDateSet.has(today) ? today : addDaysISO(today, -1);
   while (studyDateSet.has(cursorDate) && streakDays < 365) {
@@ -76,7 +116,11 @@ export default function DashboardPage() {
     cursorDate = addDaysISO(cursorDate, -1);
   }
 
-  // 7-day chart data
+  const dueReviews = reviews.filter((r) => !r.completed && r.due_date <= today);
+  const dueFlashcards = flashcards.filter((c) => c.due_date <= today);
+  const daysToExam = profile?.exam_date ? daysBetween(today, profile.exam_date) : null;
+
+  // 7-day chart
   const last7Days = Array.from({ length: 7 }, (_, i) => {
     const iso = addDaysISO(today, i - 6);
     const dayLogs = studyLogs.filter((l) => l.study_date === iso);
@@ -90,197 +134,235 @@ export default function DashboardPage() {
     };
   });
 
-  // Top 5 revision priorities
-  const priorityTopics = topics
-    .map((t) => {
-      const sub = subjects.find((s) => s.id === t.subject_id);
-      const tLogs = studyLogs.filter((l) => l.topic_id === t.id);
-      const tQ = tLogs.reduce((a, b) => a + b.questions_total, 0);
-      const tC = tLogs.reduce((a, b) => a + b.questions_correct, 0);
-      const tAcc = tQ > 0 ? calcAccuracy(tC, tQ) : null;
-      const errCount = errors.filter((e) => e.topic_id === t.id).length;
-      const score =
-        (t.is_priority ? 50 : 0) +
-        errCount * 15 +
-        (tAcc !== null && tAcc < (profile?.target_accuracy || 80) ? 40 : 0);
-      return { topic: t, subject: sub, accuracy: tAcc, errCount, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
-
-  const todayLogs = studyLogs.filter((l) => l.study_date === today);
+  const nextSubject = subjects[0];
 
   return (
     <div className="space-y-6">
-      {/* Hero Greeting + Streak + Raio-X Motivacional */}
-      <div className="rounded-3xl bg-gradient-to-r from-slate-900 via-blue-950 to-indigo-950 text-white p-6 shadow-xl border border-white/10">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 text-xs font-medium text-blue-200">
-                <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                {profile?.status_text || 'Foco total na aprovação'}
-              </span>
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-orange-500/20 border border-orange-400/30 text-xs font-bold text-orange-300">
-                <Flame className="w-3.5 h-3.5 text-orange-400" />
-                {streakDays === 0
-                  ? 'Comece sua sequência hoje'
-                  : `${streakDays} ${streakDays === 1 ? 'dia seguido' : 'dias seguidos'}`}
-              </span>
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
-              {getGreeting()}, Miguel!
-            </h1>
-            <p className="text-sm text-slate-300">
-              {profile?.icon} <strong>{profile?.name}</strong> — {profile?.role_title}
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
-            <div className="rounded-2xl bg-white/10 backdrop-blur px-4 py-3 border border-white/10">
-              <p className="text-[11px] text-slate-300">Salário Base</p>
-              <p className="text-sm font-bold text-emerald-300">
-                {profile?.salary_base || '—'}
-              </p>
-            </div>
-            <div className="rounded-2xl bg-white/10 backdrop-blur px-4 py-3 border border-white/10">
-              <p className="text-[11px] text-slate-300">Vale / Auxílio</p>
-              <p className="text-sm font-bold text-sky-300">
-                {profile?.vale_alimentacao || '—'}
-              </p>
-            </div>
-            <div className="rounded-2xl bg-white/10 backdrop-blur px-4 py-3 border border-white/10">
-              <p className="text-[11px] text-slate-300">Jornada</p>
-              <p className="text-sm font-bold text-white">{profile?.workload || '—'}</p>
-            </div>
-            <div className="rounded-2xl bg-white/10 backdrop-blur px-4 py-3 border border-white/10">
-              <p className="text-[11px] text-slate-300">Contagem Prova</p>
-              <p className="text-sm font-bold text-amber-300">
-                {daysToExam !== null
-                  ? daysToExam >= 0
-                    ? `${daysToExam} dias`
-                    : 'Realizada'
-                  : 'Definir'}
-              </p>
-            </div>
-          </div>
-        </div>
-        {profile?.extras && (
-          <p className="mt-4 pt-3 border-t border-white/10 text-xs text-blue-200/90">
-            Benefícios: {profile.extras}
+      {/* Cabeçalho leve estilo SaaS */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">
+            {getGreeting()}, Miguel
+          </h1>
+          <p className="text-sm text-muted-theme mt-0.5">
+            Pronto para mais um dia focado em <strong>{profile?.name}</strong>?
           </p>
-        )}
-      </div>
-
-      {/* Placar Acumulado em Destaque: Horas Estudadas & Questões Resolvidas */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div className="card-surface rounded-2xl p-5 shadow-sm flex items-center justify-between gap-4 border-l-4 border-l-blue-600">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-theme">
-              Horas Estudadas (Total)
-            </p>
-            <p className="text-3xl font-extrabold mt-1 text-blue-600">
-              {formatDurationHM(totalSecondsAll)}
-            </p>
-            <p className="text-xs text-muted-theme mt-1">
-              Hoje: <strong>{formatDurationHM(todaySeconds)}</strong> de {profile?.daily_hours_goal || 4}h
-            </p>
-          </div>
-          <div className="w-12 h-12 rounded-2xl bg-blue-600/15 text-blue-600 flex items-center justify-center shrink-0">
-            <Clock className="w-6 h-6" />
-          </div>
         </div>
 
-        <div className="card-surface rounded-2xl p-5 shadow-sm flex items-center justify-between gap-4 border-l-4 border-l-emerald-600">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-theme">
-              Questões Resolvidas (Total)
-            </p>
-            <p className="text-3xl font-extrabold mt-1 text-emerald-600">
-              {totalQuestions.toLocaleString('pt-BR')}
-            </p>
-            <p className="text-xs text-muted-theme mt-1">
-              {totalCorrect.toLocaleString('pt-BR')} acertos · <strong>{accuracy}%</strong> (Meta: {profile?.target_accuracy || 80}%)
-            </p>
-          </div>
-          <div className="w-12 h-12 rounded-2xl bg-emerald-600/15 text-emerald-600 flex items-center justify-center shrink-0">
-            <ListChecks className="w-6 h-6" />
-          </div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          {profile?.salary_base && (
+            <span className="px-3 py-1.5 rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300 font-semibold">
+              💰 {profile.salary_base}
+              {profile.vale_alimentacao ? ` + ${profile.vale_alimentacao}` : ''}
+            </span>
+          )}
+          {daysToExam !== null && (
+            <span className="px-3 py-1.5 rounded-full bg-indigo-500/12 text-indigo-700 dark:text-indigo-300 font-semibold">
+              🎯 {daysToExam >= 0 ? `Faltam ${daysToExam} dias para a prova` : 'Prova realizada'}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* 4 KPI Cards Secundários */}
+      {/* 4 KPI Cards com Comparativo vs Mês Passado (estilo Estudei) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div className="card-surface rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-medium text-muted-theme">Taxa de Acertos</span>
-            <div className="w-9 h-9 rounded-xl bg-emerald-500/15 text-emerald-600 flex items-center justify-center">
+        {/* Tempo de Estudo */}
+        <div className="card-surface rounded-3xl p-5 flex flex-col justify-between gap-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-theme">
+              Tempo de Estudo
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-teal-500/12 text-teal-600 flex items-center justify-center">
+              <Clock className="w-4 h-4" />
+            </div>
+          </div>
+          <p className="text-3xl font-extrabold tracking-tight">
+            {formatDurationHM(totalSecondsAll)}
+          </p>
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="text-muted-theme">
+              Neste mês: <strong>{formatDurationHM(thisMonthSecs)}</strong>
+            </span>
+            <span
+              className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                hoursDeltaPct >= 0
+                  ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                  : 'bg-rose-500/15 text-rose-600'
+              }`}
+            >
+              {hoursDeltaPct >= 0 ? (
+                <TrendingUp className="w-3 h-3" />
+              ) : (
+                <TrendingDown className="w-3 h-3" />
+              )}
+              {hoursDeltaPct >= 0 ? `+${hoursDeltaPct}%` : `${hoursDeltaPct}%`}
+            </span>
+          </div>
+        </div>
+
+        {/* Desempenho & Questões */}
+        <div className="card-surface rounded-3xl p-5 flex flex-col justify-between gap-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-theme">
+              Desempenho
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/12 text-emerald-600 flex items-center justify-center">
               <Target className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold">{accuracy}%</p>
-          <p className="text-xs text-muted-theme mt-1">
-            Meta do concurso: {profile?.target_accuracy || 80}%
-          </p>
+          <div className="flex items-baseline gap-2">
+            <p className="text-3xl font-extrabold tracking-tight">{accuracy}%</p>
+            <span className="text-xs text-muted-theme">
+              ({totalQuestions.toLocaleString('pt-BR')} questões)
+            </span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="text-muted-theme">
+              Neste mês: <strong>{thisMonthAcc}%</strong> ({thisMonthQ}q)
+            </span>
+            {prevMonthQ > 0 && (
+              <span
+                className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                  accDeltaPP >= 0
+                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                    : 'bg-rose-500/15 text-rose-600'
+                }`}
+              >
+                {accDeltaPP >= 0 ? `+${accDeltaPP}` : accDeltaPP} p.p.
+              </span>
+            )}
+          </div>
         </div>
 
-        <div className="card-surface rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-medium text-muted-theme">Edital Concluído</span>
-            <div className="w-9 h-9 rounded-xl bg-violet-500/15 text-violet-600 flex items-center justify-center">
+        {/* Progresso no Edital */}
+        <div className="card-surface rounded-3xl p-5 flex flex-col justify-between gap-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-theme">
+              Progresso no Edital
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-indigo-500/12 text-indigo-600 flex items-center justify-center">
               <CheckCircle2 className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold">{editalProgress}%</p>
-          <div className="w-full h-1.5 rounded-full subtle-surface mt-2 overflow-hidden">
-            <div
-              className="h-full bg-violet-600 rounded-full transition-all"
-              style={{ width: `${editalProgress}%` }}
-            />
+          <div className="flex items-baseline gap-2">
+            <p className="text-3xl font-extrabold tracking-tight">{editalProgress}%</p>
+            <span className="text-xs text-muted-theme">
+              ({studiedTopicsCount} de {topics.length} tópicos)
+            </span>
           </div>
-          <p className="text-xs text-muted-theme mt-1">
-            {studiedTopicsCount} de {topics.length} tópicos
+          <p className="text-xs text-muted-theme">
+            Neste mês: <strong>{topicsThisMonth}</strong> tópico(s) concluído(s)
           </p>
         </div>
 
-        <Link
-          href={`/p/${profile?.id}/revisoes`}
-          className="card-surface rounded-2xl p-5 shadow-sm hover:opacity-90 transition block"
-        >
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-medium text-muted-theme">Revisões Pendentes</span>
-            <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-600 flex items-center justify-center">
-              <AlertCircle className="w-4 h-4" />
-            </div>
-          </div>
-          <p className="text-2xl font-bold">{dueReviews.length}</p>
-          <p className="text-xs text-muted-theme mt-1">
-            {errors.length} erros no caderno
-          </p>
-        </Link>
-
-        <Link
-          href={`/p/${profile?.id}/flashcards`}
-          className="card-surface rounded-2xl p-5 shadow-sm hover:opacity-90 transition block"
-        >
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-medium text-muted-theme">Flashcards Hoje</span>
-            <div className="w-9 h-9 rounded-xl bg-sky-500/15 text-sky-600 flex items-center justify-center">
+        {/* Revisões & Flashcards */}
+        <div className="card-surface rounded-3xl p-5 flex flex-col justify-between gap-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-muted-theme">
+              Pendências de Hoje
+            </span>
+            <div className="w-8 h-8 rounded-xl bg-amber-500/12 text-amber-600 flex items-center justify-center">
               <Layers className="w-4 h-4" />
             </div>
           </div>
-          <p className="text-2xl font-bold">{dueFlashcards.length}</p>
-          <p className="text-xs text-muted-theme mt-1">
-            {flashcards.length} cards no total
-          </p>
-        </Link>
+          <div className="flex items-baseline gap-4">
+            <Link href={`/p/${profile?.id}/revisoes`} className="hover:opacity-80">
+              <p className="text-2xl font-extrabold">{dueReviews.length}</p>
+              <p className="text-[11px] text-muted-theme">Revisões</p>
+            </Link>
+            <div className="w-px h-8 bg-slate-200 dark:bg-slate-700" />
+            <Link href={`/p/${profile?.id}/flashcards`} className="hover:opacity-80">
+              <p className="text-2xl font-extrabold text-indigo-600">{dueFlashcards.length}</p>
+              <p className="text-[11px] text-muted-theme">Flashcards</p>
+            </Link>
+          </div>
+          <p className="text-xs text-muted-theme">Clique para revisar agora</p>
+        </div>
       </div>
 
-      {/* Main Grid: Chart + Cycle + Reviews + Priorities */}
+      {/* Constância nos Estudos (30 dias visuais estilo Estudei) */}
+      <div className="card-surface rounded-3xl p-5 space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme">
+              Constância nos Estudos (Últimos 30 dias)
+            </p>
+            <p className="text-sm font-bold flex items-center gap-1.5 mt-1">
+              <Flame className="w-4 h-4 text-orange-500" />
+              {streakDays === 0
+                ? 'Estude hoje para iniciar sua corrente!'
+                : `${streakDays} ${streakDays === 1 ? 'dia seguido' : 'dias seguidos'} mantendo o ritmo.`}
+            </p>
+          </div>
+          <Link
+            href={`/p/${profile?.id}/evolucao`}
+            className="text-xs font-semibold text-teal-600 hover:underline inline-flex items-center gap-1"
+          >
+            Ver detalhes <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-10 sm:grid-cols-15 gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(24px, 1fr))" }}>
+          {last30Days.map((d) => (
+            <div
+              key={d.iso}
+              title={`${d.iso.split('-').reverse().join('/')} — ${
+                d.studied ? 'Estudado' : 'Sem registro'
+              }`}
+              className={`h-8 rounded-xl flex items-center justify-center border transition ${
+                d.studied
+                  ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-600'
+                  : 'subtle-surface border-transparent text-muted-theme/30'
+              }`}
+            >
+              {d.studied ? <Check className="w-3.5 h-3.5 stroke-[2.5]" /> : <span className="w-1.5 h-1.5 rounded-full bg-current" />}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Grid Inferior: Próximo Estudo + Metas Semanais + Gráfico 7 dias */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
-          <div className="card-surface rounded-2xl p-5 shadow-sm">
+          {/* Card Destaque: Próximo do Dia (estilo Estudei) */}
+          {nextSubject && (
+            <div className="card-surface rounded-3xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-bold uppercase tracking-wider text-muted-theme">
+                  Planejamento do Dia
+                </p>
+                <Link
+                  href={`/p/${profile?.id}/agenda`}
+                  className="text-xs font-semibold text-teal-600 hover:underline"
+                >
+                  Ver agenda completa →
+                </Link>
+              </div>
+
+              <div className="rounded-2xl bg-gradient-to-r from-teal-700 to-emerald-700 text-white p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-md">
+                <div className="space-y-1">
+                  <span className="inline-block text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-black/20">
+                    Próxima do Ciclo
+                  </span>
+                  <h2 className="text-lg font-bold">{nextSubject.name}</h2>
+                  <p className="text-xs text-emerald-100">
+                    Meta no ciclo: {nextSubject.cycle_hours}h
+                    {String(nextSubject.cycle_minutes).padStart(2, '0')}m
+                  </p>
+                </div>
+                <button
+                  onClick={() => startStopwatch(nextSubject.id)}
+                  className="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center justify-center gap-2 shadow-lg transition shrink-0"
+                >
+                  <Play className="w-4 h-4 fill-current" />
+                  Iniciar Estudo
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Gráfico 7 dias */}
+          <div className="card-surface rounded-3xl p-5">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="font-bold text-base">Questões nos Últimos 7 Dias</h2>
@@ -288,9 +370,9 @@ export default function DashboardPage() {
               </div>
               <Link
                 href={`/p/${profile?.id}/evolucao`}
-                className="text-xs font-medium text-blue-600 hover:underline inline-flex items-center gap-1"
+                className="text-xs font-semibold text-teal-600 hover:underline inline-flex items-center gap-1"
               >
-                Ver evolução completa <ArrowRight className="w-3.5 h-3.5" />
+                Evolução <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
             <div className="h-56 w-full">
@@ -300,79 +382,75 @@ export default function DashboardPage() {
                   <XAxis dataKey="day" fontSize={12} />
                   <YAxis fontSize={12} allowDecimals={false} />
                   <Tooltip />
-                  <Bar dataKey="Acertos" stackId="a" fill="#10b981" radius={[0, 0, 4, 4]} />
-                  <Bar dataKey="Erros" stackId="a" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Acertos" stackId="a" fill="#10b981" radius={[0, 0, 6, 6]} />
+                  <Bar dataKey="Erros" stackId="a" fill="#f43f5e" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
-
-          <div className="card-surface rounded-2xl p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="font-bold text-base">Próximas Matérias do Ciclo</h2>
-                <p className="text-xs text-muted-theme">
-                  Dê play para iniciar e registre suas questões no Ciclo de Estudos
-                </p>
-              </div>
-              <Link
-                href={`/p/${profile?.id}/ciclo`}
-                className="text-xs font-medium text-blue-600 hover:underline inline-flex items-center gap-1"
-              >
-                Abrir Ciclo <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {subjects.slice(0, 4).map((s, idx) => (
-                <div
-                  key={s.id}
-                  className="subtle-surface rounded-2xl p-3.5 flex items-center justify-between gap-3"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <span
-                      className="w-7 h-7 rounded-xl text-white text-xs font-bold flex items-center justify-center shrink-0"
-                      style={{ backgroundColor: s.color }}
-                    >
-                      {idx + 1}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate">{s.name}</p>
-                      <p className="text-[11px] text-muted-theme">
-                        Meta: {s.cycle_hours}h{String(s.cycle_minutes).padStart(2, '0')}m
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => startStopwatch(s.id)}
-                    className="p-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white transition shrink-0"
-                    title="Iniciar cronômetro"
-                  >
-                    <Play className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
         </div>
 
-        {/* Right Col */}
+        {/* Coluna Direita: Metas Semanais + Revisões */}
         <div className="space-y-6">
-          <div className="card-surface rounded-2xl p-5 shadow-sm">
+          <div className="card-surface rounded-3xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
+                <Award className="w-4 h-4 text-indigo-500" />
+                Metas Semanais
+              </h2>
+              <Link
+                href={`/p/${profile?.id}/config`}
+                className="text-xs font-semibold text-muted-theme hover:underline"
+              >
+                Ajustar
+              </Link>
+            </div>
+
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs">
+                  <span className="font-semibold">Horas de Estudo</span>
+                  <span className="font-bold text-indigo-600">{weekHoursPct}%</span>
+                </div>
+                <p className="text-[11px] text-muted-theme">
+                  {formatDurationHM(weekSecs)} / {(profile?.daily_hours_goal || 4) * 5}h planejadas
+                </p>
+                <div className="w-full h-2 rounded-full subtle-surface overflow-hidden">
+                  <div
+                    className="h-full bg-indigo-600 rounded-full transition-all"
+                    style={{ width: `${weekHoursPct}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5 pt-2 border-t border-theme">
+                <div className="flex justify-between text-xs">
+                  <span className="font-semibold">Questões na Semana</span>
+                  <span className="font-bold text-emerald-600">{weekQuestions}</span>
+                </div>
+                <p className="text-[11px] text-muted-theme">
+                  Total acumulado: {totalQuestions.toLocaleString('pt-BR')} questões
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="card-surface rounded-3xl p-5">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="font-bold text-base flex items-center gap-2">
+              <h2 className="font-bold text-sm flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-amber-500" />
                 Revisões de Hoje
               </h2>
               <Link
                 href={`/p/${profile?.id}/revisoes`}
-                className="text-xs text-blue-600 hover:underline"
+                className="text-xs font-semibold text-teal-600 hover:underline"
               >
                 Ver todas
               </Link>
             </div>
             {dueReviews.length === 0 ? (
               <p className="text-xs text-muted-theme py-3">
-                Nenhuma revisão atrasada ou para hoje. Excelente ritmo!
+                Nenhuma revisão pendente hoje. Excelente ritmo!
               </p>
             ) : (
               <div className="space-y-2">
@@ -382,19 +460,19 @@ export default function DashboardPage() {
                   return (
                     <div
                       key={r.id}
-                      className="subtle-surface rounded-xl p-2.5 flex items-center justify-between gap-2"
+                      className="subtle-surface rounded-2xl p-3 flex items-center justify-between gap-2"
                     >
                       <div className="min-w-0">
                         <p className="text-xs font-semibold truncate">{t?.title || 'Tópico'}</p>
                         <p className="text-[11px] text-muted-theme">
-                          {s?.name} • {r.interval_days}d
+                          {s?.name} · {r.interval_days}d
                         </p>
                       </div>
                       <button
                         onClick={() => completeReview(r.id)}
-                        className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-medium shrink-0"
+                        className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold shrink-0"
                       >
-                        Concluir
+                        Revisar
                       </button>
                     </div>
                   );
@@ -402,62 +480,6 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-
-          <div className="card-surface rounded-2xl p-5 shadow-sm">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-bold text-base flex items-center gap-2">
-                <Star className="w-4 h-4 text-yellow-500" />
-                Top 5 Prioridades
-              </h2>
-              <Link
-                href={`/p/${profile?.id}/prioridades`}
-                className="text-xs text-blue-600 hover:underline"
-              >
-                Ranking
-              </Link>
-            </div>
-            {priorityTopics.length === 0 ? (
-              <p className="text-xs text-muted-theme">
-                Marque estrelas (★) nos tópicos mais importantes ou registre questões no Ciclo para ver o ranking.
-              </p>
-            ) : (
-              <div className="space-y-2">
-                {priorityTopics.map((item) => (
-                  <div key={item.topic.id} className="subtle-surface rounded-xl p-2.5">
-                    <p className="text-xs font-semibold truncate">{item.topic.title}</p>
-                    <p className="text-[11px] text-muted-theme">
-                      {item.subject?.name}
-                      {item.accuracy !== null ? ` • ${item.accuracy}% acerto` : ''}
-                      {item.errCount > 0 ? ` • ${item.errCount} erros` : ''}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {todayLogs.length > 0 && (
-            <div className="card-surface rounded-2xl p-5 shadow-sm">
-              <h2 className="font-bold text-base mb-3">Estudado Hoje</h2>
-              <div className="space-y-2">
-                {todayLogs.slice(0, 4).map((l) => {
-                  const s = subjects.find((sb) => sb.id === l.subject_id);
-                  return (
-                    <div
-                      key={l.id}
-                      className="text-xs flex justify-between items-center py-1 border-b border-theme last:border-0"
-                    >
-                      <span className="font-medium truncate">{s?.name}</span>
-                      <span className="text-muted-theme shrink-0">
-                        {formatDurationHM(l.duration_seconds)}
-                        {l.questions_total > 0 ? ` · ${l.questions_correct}/${l.questions_total}q` : ''}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>

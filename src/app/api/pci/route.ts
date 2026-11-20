@@ -49,13 +49,7 @@ export async function POST(request: Request) {
         args.uf = String(uf).trim().toLowerCase();
       }
       const data = await callPciMcp('pesquisar_concursos', args);
-      if (action === 'provas') {
-      const args: Record<string, unknown> = { termo: String(termo).trim() };
-      const data = await callPciMcp('pesquisar_provas', args);
       return NextResponse.json({ ok: true, data });
-    }
-
-    return NextResponse.json({ ok: true, data });
     }
 
     if (action === 'listar') {

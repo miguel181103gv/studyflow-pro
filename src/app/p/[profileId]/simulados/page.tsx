@@ -4,16 +4,7 @@ import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { calcAccuracy, formatDateBR, todayISO } from '@/lib/utils';
 import type { SimuladoSubjectScore } from '@/lib/types';
-import { Plus, Trash2, ClipboardCheck, X, Search, ExternalLink, Loader2 } from 'lucide-react';
-
-interface PciProva {
-  titulo?: string;
-  ano?: string | number;
-  orgao?: string;
-  banca?: string;
-  nivel?: string;
-  link?: string;
-}
+import { Plus, Trash2, ClipboardCheck, X } from 'lucide-react';
 
 export default function SimuladosPage() {
   const { subjects, simulados, addSimulado, deleteSimulado } = useProfile();
@@ -26,39 +17,9 @@ export default function SimuladosPage() {
   const [correctQ, setCorrectQ] = useState('42');
   const [durationMin, setDurationMin] = useState('240');
   const [notes, setNotes] = useState('');
-  const [subjectScores, setSubjectScores] = useState<Record<string, { total: string; correct: string }>>({});
-
-  // Provas Anteriores PCI
-  const [provaTerm, setProvaTerm] = useState('');
-  const [provaLoading, setProvaLoading] = useState(false);
-  const [provas, setProvas] = useState<PciProva[]>([]);
-  const [provaMsg, setProvaMsg] = useState<string | null>(null);
-
-  async function handleSearchProvas(e: React.FormEvent) {
-    e.preventDefault();
-    if (!provaTerm.trim()) return;
-    setProvaLoading(true);
-    setProvaMsg(null);
-    setProvas([]);
-    try {
-      const res = await fetch('/api/pci', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'provas', termo: provaTerm }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao buscar provas.');
-      const list: PciProva[] = json.data?.data || json.data?.provas || [];
-      setProvas(list);
-      if (list.length === 0) {
-        setProvaMsg(json.data?.message || 'Nenhuma prova encontrada para esse termo.');
-      }
-    } catch (err) {
-      setProvaMsg(err instanceof Error ? err.message : 'Erro ao buscar provas.');
-    } finally {
-      setProvaLoading(false);
-    }
-  }
+  const [subjectScores, setSubjectScores] = useState<
+    Record<string, { total: string; correct: string }>
+  >({});
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
@@ -102,9 +63,9 @@ export default function SimuladosPage() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Simulados & Provas Anteriores</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Simulados</h1>
           <p className="text-sm text-muted-theme">
-            Baixe provas reais com gabarito pelo PCI Concursos e registre sua nota geral e por matéria.
+            Registre seus simulados completos, acompanhe o tempo de prova e os acertos matéria por matéria.
           </p>
         </div>
         <button
@@ -116,54 +77,6 @@ export default function SimuladosPage() {
         </button>
       </div>
 
-      {/* Busca de Provas Anteriores com Gabarito (PCI) */}
-      <div className="card-surface rounded-2xl p-5 shadow-sm space-y-3">
-        <h2 className="font-bold text-sm flex items-center gap-2">
-          <Search className="w-4 h-4 text-emerald-600" />
-          Buscar Provas Anteriores com Gabarito (PCI Concursos)
-        </h2>
-        <form onSubmit={handleSearchProvas} className="flex gap-2">
-          <input
-            value={provaTerm}
-            onChange={(e) => setProvaTerm(e.target.value)}
-            placeholder="Ex: TRT técnico judiciário, Banco do Brasil escriturário, Caixa..."
-            className="flex-1 rounded-xl subtle-surface border border-theme px-4 py-2 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={provaLoading}
-            className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
-          >
-            {provaLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Buscar Provas'}
-          </button>
-        </form>
-
-        {provaMsg && <p className="text-xs text-amber-600">{provaMsg}</p>}
-
-        {provas.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1 max-h-64 overflow-y-auto">
-            {provas.slice(0, 12).map((pr, idx) => (
-              <a
-                key={idx}
-                href={pr.link}
-                target="_blank"
-                rel="noreferrer"
-                className="subtle-surface rounded-xl p-3 flex items-center justify-between gap-2 hover:opacity-85 transition text-xs"
-              >
-                <div className="min-w-0">
-                  <p className="font-semibold truncate">{pr.titulo || pr.orgao}</p>
-                  <p className="text-[11px] text-muted-theme">
-                    {[pr.banca, pr.ano, pr.nivel].filter(Boolean).join(' · ')}
-                  </p>
-                </div>
-                <ExternalLink className="w-4 h-4 text-blue-600 shrink-0" />
-              </a>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Lista de Simulados */}
       {simulados.length === 0 ? (
         <div className="card-surface rounded-2xl p-10 text-center space-y-2">
           <ClipboardCheck className="w-10 h-10 mx-auto text-blue-500 opacity-70" />
@@ -220,7 +133,6 @@ export default function SimuladosPage() {
         </div>
       )}
 
-      {/* Modal Registrar Simulado */}
       {showAdd && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto">
           <div className="card-surface w-full max-w-lg rounded-3xl p-6 space-y-4 my-8 max-h-[90vh] overflow-y-auto">
@@ -282,7 +194,6 @@ export default function SimuladosPage() {
                 </div>
               </div>
 
-              {/* Detalhamento opcional por matéria */}
               <div className="space-y-2 pt-2 border-t border-theme">
                 <p className="text-xs font-bold text-muted-theme">
                   Acertos por Matéria (opcional — se preencher, calcula o total automaticamente)
