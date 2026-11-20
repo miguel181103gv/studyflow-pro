@@ -74,8 +74,10 @@ export function AppShell({
     subjects,
     pauseStopwatch,
     startStopwatch,
+    resetStopwatch,
   } = useProfile();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [showSwitchGuard, setShowSwitchGuard] = useState(false);
 
   const basePath = `/p/${profileId}`;
   const activeSubject = subjects.find((s) => s.id === stopwatch.subjectId);
@@ -113,7 +115,13 @@ export function AppShell({
         </div>
 
         <button
-          onClick={() => router.push('/')}
+          onClick={() => {
+            if (stopwatch.subjectId && (stopwatch.running || stopwatch.elapsedSeconds > 0)) {
+              setShowSwitchGuard(true);
+            } else {
+              router.push('/');
+            }
+          }}
           className="mt-3 w-full flex items-center justify-center gap-1.5 text-xs py-1.5 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-slate-200 transition"
         >
           <ArrowLeftRight className="w-3.5 h-3.5" />
@@ -247,6 +255,55 @@ export function AppShell({
 
         <main className="flex-1 p-4 sm:p-6 max-w-7xl w-full mx-auto">{children}</main>
       </div>
+
+      {showSwitchGuard && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="card-surface w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl">
+            <h2 className="text-lg font-bold">Cronômetro ativo em andamento</h2>
+            <p className="text-xs text-muted-theme leading-relaxed">
+              Você está com <strong>{formatDurationHMS(stopwatch.elapsedSeconds)}</strong> marcados em{' '}
+              <strong>{activeSubject?.name || 'uma matéria'}</strong>. O que deseja fazer antes de trocar de concurso?
+            </p>
+            <div className="space-y-2 pt-1">
+              <button
+                onClick={() => {
+                  pauseStopwatch();
+                  setShowSwitchGuard(false);
+                  router.push('/');
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold text-left"
+              >
+                ⏸️ Pausar cronômetro e trocar de concurso
+              </button>
+              <button
+                onClick={() => {
+                  setShowSwitchGuard(false);
+                  router.push('/');
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold text-left"
+              >
+                ▶️ Continuar rodando e trocar de concurso
+              </button>
+              <button
+                onClick={() => {
+                  resetStopwatch();
+                  setShowSwitchGuard(false);
+                  router.push('/');
+                }}
+                className="w-full py-2.5 px-4 rounded-xl bg-red-600/15 hover:bg-red-600/25 text-red-500 text-xs font-semibold text-left"
+              >
+                🗑️ Cancelar (zerar) cronômetro e trocar
+              </button>
+              <button
+                onClick={() => setShowSwitchGuard(false)}
+                className="w-full py-2.5 px-4 rounded-xl subtle-surface text-xs font-semibold"
+              >
+                Voltar e continuar aqui
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

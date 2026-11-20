@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import { GlobalProvider } from '@/components/GlobalProvider';
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -23,7 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="pt-BR" data-theme="clean" suppressHydrationWarning>
-      <body className={`${inter.className} min-h-screen antialiased`}>{children}</body>
+      <body className={`${inter.className} min-h-screen antialiased`}><GlobalProvider>{children}</GlobalProvider></body>
     </html>
   );
 }

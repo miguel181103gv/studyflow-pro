@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
 import { getYouTubeEmbedUrl, getYouTubeSearchUrl } from '@/lib/utils';
 import {
@@ -32,6 +33,7 @@ export default function MateriasPage() {
     subjects,
     topics,
     highlights,
+    addSubject,
     addTopic,
     updateTopicPdf,
     updateTopicVideo,
@@ -41,8 +43,9 @@ export default function MateriasPage() {
 
   const [selectedSubjectId, setSelectedSubjectId] = useState(subjects[0]?.id || '');
   const [newTopicTitle, setNewTopicTitle] = useState('');
+  const [newSubjectName, setNewSubjectName] = useState('');
   const [uploadingTopicId, setUploadingTopicId] = useState<string | null>(null);
-  const [batchLoading, setBatchLoading] = useState(false);
+  const { videoJob, startBatchVideoJob } = useGlobal();
 
   // Viewer + Grifos + YouTube
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
@@ -112,26 +115,21 @@ export default function MateriasPage() {
     }
   }
 
-  async function handleBatchAutoVideos() {
+  function handleBatchAutoVideos() {
     if (!currentSubject) return;
     const missing = currentTopics.filter((t) => !t.video_url);
     if (missing.length === 0) return;
-    setBatchLoading(true);
-    try {
-      for (const t of missing) {
-        const res = await fetch('/api/youtube', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ subjectName: currentSubject.name, topicTitle: t.title }),
-        });
-        const json = await res.json();
-        if (res.ok && json.ok && json.videos?.[0]?.url) {
-          await updateTopicVideo(t.id, json.videos[0].url);
-        }
+    startBatchVideoJob(
+      profile?.name || currentSubject.name,
+      missing.map((t) => ({
+        topicId: t.id,
+        subjectName: currentSubject.name,
+        topicTitle: t.title,
+      })),
+      (topicId, url) => {
+        updateTopicVideo(topicId, url);
       }
-    } finally {
-      setBatchLoading(false);
-    }
+    );
   }
 
   async function openTopicViewer(
@@ -207,20 +205,21 @@ export default function MateriasPage() {
 
         <button
           onClick={handleBatchAutoVideos}
-          disabled={batchLoading || currentTopics.every((t) => !!t.video_url)}
+          disabled={videoJob.running || currentTopics.every((t) => !!t.video_url)}
           className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold inline-flex items-center gap-2 disabled:opacity-50 shrink-0"
         >
-          {batchLoading ? (
+          {videoJob.running ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
             <Sparkles className="w-4 h-4" />
           )}
-          {batchLoading ? 'Preenchendo vídeos...' : 'Preencher Vídeos da Matéria'}
+          {videoJob.running ? 'Preenchendo em 2º plano...' : 'Preencher Vídeos da Matéria'}
         </button>
       </div>
 
-      {/* Subject pills */}
-      <div className="flex flex-wrap gap-2">
+      {/* Subject pills + Nova Matéria */}
+      <div className="space-y-2.5">
+        <div className="flex flex-wrap gap-2">
         {subjects.map((s) => (
           <button
             key={s.id}
@@ -234,6 +233,31 @@ export default function MateriasPage() {
             {s.name}
           </button>
         ))}
+        </div>
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (!newSubjectName.trim()) return;
+            const created = await addSubject(newSubjectName);
+            if (created) setSelectedSubjectId(created.id);
+            setNewSubjectName('');
+          }}
+          className="flex gap-2 max-w-md"
+        >
+          <input
+            value={newSubjectName}
+            onChange={(e) => setNewSubjectName(e.target.value)}
+            placeholder="Nome de nova matéria..."
+            className="flex-1 rounded-xl card-surface px-3 py-2 text-xs focus:outline-none"
+          />
+          <button
+            type="submit"
+            className="px-3 py-2 rounded-xl subtle-surface text-xs font-semibold inline-flex items-center gap-1 hover:opacity-80"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Nova Matéria
+          </button>
+        </form>
       </div>
 
       {/* Add Topic */}

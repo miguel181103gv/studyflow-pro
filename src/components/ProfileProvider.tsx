@@ -15,7 +15,7 @@ import type {
   Topic,
   TopicHighlight,
 } from '@/lib/types';
-import { addDaysISO, todayISO } from '@/lib/utils';
+import { addDaysISO, SUBJECT_COLORS, todayISO } from '@/lib/utils';
 
 interface StopwatchState {
   running: boolean;
@@ -52,6 +52,7 @@ interface ProfileContextValue {
 
   // Actions (all auto-sync to Supabase)
   updateProfile: (patch: Partial<Profile>) => Promise<void>;
+  addSubject: (name: string, category?: string) => Promise<Subject | null>;
   updateSubject: (id: string, patch: Partial<Subject>) => Promise<void>;
   reorderSubject: (id: string, direction: 'up' | 'down') => Promise<void>;
   moveSubject: (sourceId: string, targetId: string) => Promise<void>;
@@ -312,6 +313,33 @@ export function ProfileProvider({
     await withSync(async () => {
       const supabase = createClient();
       await supabase.from('profiles').update(patch).eq('id', profile.id);
+    });
+  };
+
+  const addSubject = async (name: string, category = 'Personalizada'): Promise<Subject | null> => {
+    if (!userId || !name.trim()) return null;
+    return withSync(async () => {
+      const supabase = createClient();
+      const { data } = await supabase
+        .from('subjects')
+        .insert({
+          user_id: userId,
+          profile_id: profileId,
+          name: name.trim(),
+          category,
+          color: SUBJECT_COLORS[subjects.length % SUBJECT_COLORS.length],
+          cycle_hours: 1,
+          cycle_minutes: 30,
+          cycle_order: subjects.length,
+        })
+        .select('*')
+        .single();
+      if (data) {
+        const sub = data as Subject;
+        setSubjects((prev) => [...prev, sub]);
+        return sub;
+      }
+      return null;
     });
   };
 
@@ -696,6 +724,7 @@ export function ProfileProvider({
         pauseStopwatch,
         resetStopwatch,
         updateProfile,
+        addSubject,
         updateSubject,
         reorderSubject,
         moveSubject,
