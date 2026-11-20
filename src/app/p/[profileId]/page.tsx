@@ -42,6 +42,7 @@ import {
 
 export default function DashboardPage() {
   const {
+    userEmail,
     profile,
     subjects,
     topics,
@@ -224,7 +225,7 @@ export default function DashboardPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-              {getGreeting()}, Miguel
+              {getGreeting()}{userEmail ? `, ${userEmail.split('@')[0].replace(/[0-9._-]+/g, ' ').trim().split(' ')[0].replace(/^./, (c) => c.toUpperCase())}` : ''}
             </h1>
             <p className="text-sm text-muted-theme mt-0.5">
               <strong>{profile?.name}</strong>

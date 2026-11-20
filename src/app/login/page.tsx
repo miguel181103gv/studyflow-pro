@@ -32,7 +32,12 @@ export default function LoginPage() {
           <img
             src="/logo-studyflow.png"
             alt="StudyFlow"
-            className="h-12 sm:h-14 mx-auto object-contain"
+            className="h-12 sm:h-14 mx-auto object-contain dark:hidden"
+          />
+          <img
+            src="/logo-studyflow-dark.png"
+            alt="StudyFlow"
+            className="h-12 sm:h-14 mx-auto object-contain hidden dark:block"
           />
           <p className="text-sm text-muted-theme leading-relaxed">
             Organize seus estudos em um só lugar, sincronizado no PC e no celular.

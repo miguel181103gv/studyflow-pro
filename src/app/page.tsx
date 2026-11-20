@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { ensureUserSeeded } from '@/lib/seed';
 import type { Profile } from '@/lib/types';
 import { SUBJECT_COLORS } from '@/lib/utils';
 import { STUDY_MODES, STUDY_MODE_LIST, encodeStudyModeSlug, getStudyMode, type StudyMode } from '@/lib/studyModes';
@@ -23,6 +22,8 @@ import {
   Layers,
   ArrowLeft,
   CheckCircle2,
+  Sun,
+  Moon,
 } from 'lucide-react';
 
 interface ParsedSubject {
@@ -68,6 +69,7 @@ export default function ProfileSelectorPage() {
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState('');
   const [userId, setUserId] = useState('');
+  const [isDarkTheme, setIsDarkTheme] = useState(false);
 
   // Modal Criar Novo Perfil
   const [showModal, setShowModal] = useState(false);
@@ -127,7 +129,6 @@ export default function ProfileSelectorPage() {
       setUserId(user.id);
       setUserEmail(user.email || '');
 
-      await ensureUserSeeded(supabase, user.id);
 
       const { data } = await supabase
         .from('profiles')
@@ -136,6 +137,18 @@ export default function ProfileSelectorPage() {
         .order('sort_order', { ascending: true });
 
       setProfiles((data as Profile[]) || []);
+
+      const { data: setRow } = await supabase
+        .from('user_settings')
+        .select('theme')
+        .eq('user_id', user.id)
+        .maybeSingle();
+      const savedTheme = setRow?.theme || 'clean';
+      const dark = savedTheme === 'obsidian' || savedTheme === 'navy';
+      setIsDarkTheme(dark);
+      if (typeof document !== 'undefined') {
+        document.documentElement.setAttribute('data-theme', savedTheme);
+      }
     } finally {
       setLoading(false);
     }
@@ -576,6 +589,18 @@ export default function ProfileSelectorPage() {
     setProfiles((prev) => prev.filter((p) => p.id !== id));
   }
 
+  async function toggleHomeTheme() {
+    const nextTheme = isDarkTheme ? 'clean' : 'obsidian';
+    setIsDarkTheme(!isDarkTheme);
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', nextTheme);
+    }
+    if (userId) {
+      const supabase = createClient();
+      await supabase.from('user_settings').upsert({ user_id: userId, theme: nextTheme });
+    }
+  }
+
   async function handleLogout() {
     const supabase = createClient();
     await supabase.auth.signOut();
@@ -592,13 +617,22 @@ export default function ProfileSelectorPage() {
       <header className="w-full border-b border-theme bg-[var(--bg-card)]/90 backdrop-blur-md sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-5 py-3.5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <img src="/logo-studyflow.png" alt="StudyFlow" className="h-8 object-contain" />
+            <img src="/logo-studyflow.png" alt="StudyFlow" className="h-8 object-contain dark:hidden" />
+            <img src="/logo-studyflow-dark.png" alt="StudyFlow" className="h-8 object-contain hidden dark:block" />
             <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25">
               Nuvem ativa
             </span>
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden sm:inline text-xs text-muted-theme">{userEmail}</span>
+            <button
+              type="button"
+              onClick={toggleHomeTheme}
+              title={isDarkTheme ? 'Mudar para tema claro' : 'Mudar para tema escuro'}
+              className="p-2 rounded-xl subtle-surface border border-theme hover:opacity-85 transition"
+            >
+              {isDarkTheme ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5" />}
+            </button>
             <button
               onClick={handleLogout}
               className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-xl subtle-surface border border-theme hover:opacity-85 transition"
@@ -636,6 +670,88 @@ export default function ProfileSelectorPage() {
           <div className="flex items-center justify-center gap-3 text-muted-theme py-16">
             <Loader2 className="w-5 h-5 animate-spin text-teal-600" />
             <span className="text-sm font-medium">Carregando seus planos de estudo...</span>
+          </div>
+        ) : profiles.length === 0 ? (
+          <div className="card-surface rounded-3xl p-6 sm:p-8 max-w-2xl mx-auto w-full space-y-5 animate-fade-in-up">
+            <div>
+              <span className="inline-block text-[11px] font-bold text-teal-700 dark:text-teal-300 mb-1">
+                Etapa 1 de 2 · Primeiro acesso
+              </span>
+              <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight">
+                O que você está estudando agora?
+              </h2>
+              <p className="text-sm text-muted-theme mt-1">
+                Vamos adaptar seu espaço de estudo ao seu objetivo. Você pode mudar isso ou criar outros perfis depois.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {STUDY_MODE_LIST.map((m) => {
+                const isSelected = pickedMode === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    aria-pressed={isSelected}
+                    onClick={() => setPickedMode(m.id)}
+                    className={`text-left rounded-2xl p-4 border-2 transition-all flex items-center justify-between gap-3 ${
+                      isSelected
+                        ? 'border-teal-600 bg-teal-600/8 shadow-sm'
+                        : 'border-theme bg-[var(--bg-card)] hover:border-slate-400/60'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-2xl shrink-0">{m.icon}</span>
+                      <div className="min-w-0">
+                        <p className="font-bold text-sm leading-tight">{m.label}</p>
+                        <p className="text-xs text-muted-theme mt-0.5">{m.cardSubtitle}</p>
+                      </div>
+                    </div>
+                    <span
+                      className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 border ${
+                        isSelected
+                          ? 'bg-teal-600 border-teal-600 text-white'
+                          : 'border-slate-300 dark:border-slate-600'
+                      }`}
+                    >
+                      {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="text-xs text-muted-theme text-center">
+              Estuda para mais de um objetivo? Você poderá adicionar outro perfil depois.
+            </p>
+
+            <div className="flex justify-end pt-2 border-t border-theme">
+              <button
+                type="button"
+                disabled={!pickedMode}
+                onClick={() => {
+                  if (!pickedMode) return;
+                  const m = STUDY_MODES[pickedMode];
+                  setStudyMode(m.id);
+                  setIcon(m.icon);
+                  if (m.id === 'concurso') {
+                    setParsedSubjects([]);
+                    setStep('start');
+                  } else {
+                    setParsedSubjects(m.defaultSubjects);
+                    setSalaryBase('');
+                    setVale('');
+                    setWorkload('');
+                    setStep('review');
+                  }
+                  setShowModal(true);
+                }}
+                className="px-6 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-40"
+              >
+                Continuar
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 w-full">

@@ -4,6 +4,7 @@
 
 :root,
 [data-theme='clean'] {
+  color-scheme: light;
   --bg-page: #f5f7fb;
   --bg-card: #ffffff;
   --bg-subtle: #eef2f7;
@@ -23,6 +24,7 @@
 }
 
 [data-theme='sepia'] {
+  color-scheme: light;
   --bg-page: #f7f2e8;
   --bg-card: #fffdf9;
   --bg-subtle: #efe7d8;
@@ -42,6 +44,7 @@
 }
 
 [data-theme='obsidian'] {
+  color-scheme: dark;
   --bg-page: #0b0f19;
   --bg-card: #121927;
   --bg-subtle: #1b2436;
@@ -61,6 +64,7 @@
 }
 
 [data-theme='navy'] {
+  color-scheme: dark;
   --bg-page: #0a1628;
   --bg-card: #10223b;
   --bg-subtle: #172e4f;
