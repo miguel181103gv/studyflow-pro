@@ -1,7 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { useGlobal } from '@/components/GlobalProvider';
+import { createClient } from '@/lib/supabase/client';
 import { formatDateBR, todayISO } from '@/lib/utils';
 import {
   Layers,
@@ -51,6 +53,7 @@ function parseBulkFlashcards(raw: string): { front: string; back: string }[] {
 
 export default function FlashcardsPage() {
   const {
+    userId,
     profile,
     subjects,
     topics,
@@ -81,12 +84,17 @@ export default function FlashcardsPage() {
   // Gerar com Gemini (tema livre + quantidade)
   const [customTheme, setCustomTheme] = useState('');
   const [genCount, setGenCount] = useState<5 | 10 | 15>(5);
-  const [generating, setGenerating] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
+  const { aiJobs, runAiJob } = useGlobal();
+  const flashcardJobId = `flashcards:${profile?.id || 'default'}`;
+  const flashcardJob = aiJobs[flashcardJobId];
+  const generating = flashcardJob?.status === 'running';
+  const aiError = flashcardJob?.status === 'error' ? flashcardJob.error || null : null;
 
   // Modo Estudo Espaçado (SM-2)
   const [studying, setStudying] = useState(false);
   const [studyQueueIds, setStudyQueueIds] = useState<string[]>([]);
+  const [studyHistoryIds, setStudyHistoryIds] = useState<string[]>([]);
+  const [studyTotalCount, setStudyTotalCount] = useState(0);
   const [revealed, setRevealed] = useState(false);
 
   const currentSubjectId = selectedSubjectId || subjects[0]?.id || '';
@@ -156,45 +164,62 @@ export default function FlashcardsPage() {
     setSaving(false);
   }
 
-  async function handleGenerateWithGemini() {
-    if (!currentSubject) return;
-    setGenerating(true);
-    setAiError(null);
+  function handleGenerateWithGemini() {
+    if (!currentSubject || !profile || !userId) return;
+    const subjectIdSnap = currentSubject.id;
+    const subjectNameSnap = currentSubject.name;
+    const topicIdSnap = selectedTopicId || null;
+    const profileIdSnap = profile.id;
+    const profileNameSnap = profile.name || 'Concurso Público';
+    const userIdSnap = userId;
+    const countSnap = genCount;
     const topicPrompt =
       customTheme.trim() ||
       currentTopic?.title ||
-      `Principais pontos cobrados em prova de ${currentSubject.name}`;
+      `Principais pontos cobrados em prova de ${subjectNameSnap}`;
 
-    try {
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'generate_flashcards',
-          profileName: profile?.name || 'Concurso Público',
-          subjectName: currentSubject.name,
-          topicTitle: topicPrompt,
-          count: genCount,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar flashcards.');
-      const generated: { front: string; back: string }[] = json.data?.flashcards || [];
-      if (generated.length > 0) {
-        await addFlashcards(
+    runAiJob({
+      id: flashcardJobId,
+      kind: 'flashcards',
+      label: `Gerando ${countSnap} flashcards de ${subjectNameSnap}`,
+      route: `/p/${profileIdSnap}/flashcards`,
+      successMsg: `${countSnap} flashcards de ${subjectNameSnap} salvos no baralho!`,
+      task: async () => {
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'generate_flashcards',
+            profileName: profileNameSnap,
+            subjectName: subjectNameSnap,
+            topicTitle: topicPrompt,
+            count: countSnap,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar flashcards.');
+        return (json.data?.flashcards || []) as { front: string; back: string }[];
+      },
+      onDone: async (generated) => {
+        if (generated.length === 0) return;
+        const supabase = createClient();
+        const due = todayISO();
+        await supabase.from('flashcards').insert(
           generated.map((g) => ({
-            subject_id: currentSubject.id,
-            topic_id: selectedTopicId || null,
-            front: g.front,
-            back: g.back,
+            user_id: userIdSnap,
+            profile_id: profileIdSnap,
+            subject_id: subjectIdSnap,
+            topic_id: topicIdSnap,
+            front: g.front.trim(),
+            back: g.back.trim(),
+            ease_factor: 2.5,
+            interval_days: 0,
+            repetitions: 0,
+            due_date: due,
           }))
         );
-      }
-    } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'Erro ao gerar flashcards.');
-    } finally {
-      setGenerating(false);
-    }
+      },
+    });
   }
 
   function startStudySession(cardsPool: typeof flashcards) {
@@ -202,6 +227,8 @@ export default function FlashcardsPage() {
     // Embaralha levemente quando mistura todas as matérias
     const shuffled = [...cardsPool].sort(() => Math.random() - 0.5);
     setStudyQueueIds(shuffled.map((c) => c.id));
+    setStudyHistoryIds([]);
+    setStudyTotalCount(shuffled.length);
     setRevealed(false);
     setStudying(true);
   }
@@ -218,6 +245,7 @@ export default function FlashcardsPage() {
     if (!activeStudyCard) return;
     await reviewFlashcard(activeStudyCard, quality);
     setRevealed(false);
+    setStudyHistoryIds((prev) => [...prev, activeStudyCard.id]);
     if (quality === 1) {
       setStudyQueueIds((prev) => [...prev.slice(1), prev[0]]);
     } else {
@@ -225,12 +253,36 @@ export default function FlashcardsPage() {
     }
   }
 
+  function handlePrevCard() {
+    if (studyHistoryIds.length === 0) return;
+    const lastId = studyHistoryIds[studyHistoryIds.length - 1];
+    setStudyHistoryIds((prev) => prev.slice(0, -1));
+    setStudyQueueIds((prev) => [lastId, ...prev.filter((id) => id !== lastId)]);
+    setRevealed(true);
+  }
+
+  useEffect(() => {
+    if (!studying || !activeStudyCard) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        setRevealed((v) => !v);
+      } else if (revealed && ['1', '2', '3', '4'].includes(e.key)) {
+        e.preventDefault();
+        handleRate(Number(e.key) as 1 | 2 | 3 | 4);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studying, activeStudyCard, revealed]);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Layers className="w-6 h-6 text-blue-600" />
+            <Layers className="w-6 h-6 text-teal-600" />
             Flashcards & Revisão Espaçada
           </h1>
           <p className="text-sm text-muted-theme">
@@ -280,7 +332,7 @@ export default function FlashcardsPage() {
                 }}
                 className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition inline-flex items-center gap-2 ${
                   currentSubjectId === s.id
-                    ? 'bg-blue-600 text-white shadow-sm'
+                    ? 'bg-teal-600 text-white shadow-sm'
                     : 'card-surface hover:opacity-85'
                 }`}
               >
@@ -441,7 +493,7 @@ export default function FlashcardsPage() {
               </button>
             </div>
             {showBulkBox && (
-              <div className="space-y-2.5 pt-1">
+              <div className="space-y-2.5 pt-1 animate-fade-in-up">
                 <textarea
                   rows={5}
                   value={bulkText}
@@ -492,7 +544,7 @@ export default function FlashcardsPage() {
           <button
             type="submit"
             disabled={saving}
-            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+            className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
             {saving ? 'Salvando...' : 'Adicionar Flashcard'}
@@ -579,7 +631,7 @@ export default function FlashcardsPage() {
       {/* Modal de Estudo SM-2 */}
       {studying && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="card-surface w-full max-w-xl rounded-3xl p-6 space-y-5 shadow-2xl">
+          <div className="card-surface w-full max-w-xl rounded-3xl p-6 space-y-5 shadow-2xl animate-pop-in">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 {activeStudySubject && (
@@ -590,11 +642,19 @@ export default function FlashcardsPage() {
                     {activeStudySubject.name}
                   </span>
                 )}
-                <span className="text-xs font-bold text-blue-600">
+                <span className="text-xs font-bold text-teal-600">
                   {activeStudyCard
-                    ? `Restam ${studyQueueIds.length} card(s)`
+                    ? `${Math.min(studyTotalCount, studyTotalCount - studyQueueIds.length + 1)} de ${studyTotalCount}`
                     : 'Sessão Concluída!'}
                 </span>
+                {studyHistoryIds.length > 0 && activeStudyCard && (
+                  <button
+                    onClick={handlePrevCard}
+                    className="text-xs font-bold px-2.5 py-1 rounded-xl subtle-surface hover:opacity-80"
+                  >
+                    ← Anterior
+                  </button>
+                )}
               </div>
               <button
                 onClick={() => setStudying(false)}
@@ -606,9 +666,13 @@ export default function FlashcardsPage() {
 
             {activeStudyCard ? (
               <>
-                <div className="subtle-surface rounded-2xl p-6 min-h-[140px] flex flex-col justify-center text-center space-y-3">
+                <div
+                  onClick={() => setRevealed((v) => !v)}
+                  className="cursor-pointer subtle-surface rounded-2xl p-6 min-h-[150px] flex flex-col justify-center text-center space-y-3 hover:opacity-95"
+                  title="Toque no card ou aperte Espaço para revelar"
+                >
                   <p className="text-[11px] uppercase tracking-wider text-muted-theme font-bold">
-                    Pergunta
+                    Pergunta (toque ou aperte Espaço)
                   </p>
                   <p className="text-base sm:text-lg font-bold">{activeStudyCard.front}</p>
                 </div>
@@ -639,7 +703,7 @@ export default function FlashcardsPage() {
                       </button>
                       <button
                         onClick={() => handleRate(3)}
-                        className="py-2.5 px-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold"
+                        className="py-2.5 px-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
                       >
                         Bom
                         <span className="block text-[10px] font-normal opacity-80">Padrão</span>
@@ -656,7 +720,7 @@ export default function FlashcardsPage() {
                 ) : (
                   <button
                     onClick={() => setRevealed(true)}
-                    className="w-full py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold inline-flex items-center justify-center gap-2"
+                    className="w-full py-3.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-semibold inline-flex items-center justify-center gap-2"
                   >
                     <RotateCw className="w-4 h-4" />
                     Mostrar Resposta
@@ -671,7 +735,7 @@ export default function FlashcardsPage() {
                 </p>
                 <button
                   onClick={() => setStudying(false)}
-                  className="px-5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-semibold"
+                  className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
                 >
                   Voltar ao Baralho
                 </button>

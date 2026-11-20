@@ -34,6 +34,8 @@ import {
   Search,
   FileText,
   Highlighter,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 
 interface NavItem {
@@ -116,8 +118,10 @@ export function AppShell({
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [showSwitchGuard, setShowSwitchGuard] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
 
   const basePath = `/p/${profileId}`;
@@ -127,18 +131,33 @@ export function AppShell({
   const dueFlashcardsCount = flashcards.filter((c) => c.due_date <= today).length;
 
   useEffect(() => {
+    setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+
     function onKeyDown(e: KeyboardEvent) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setShowSearch((prev) => !prev);
+      }
+      if (e.altKey && e.key.toLowerCase() === 'p' && stopwatch.subjectId) {
+        e.preventDefault();
+        if (stopwatch.running) pauseStopwatch();
+        else startStopwatch(stopwatch.subjectId, stopwatch.topicId);
       }
       if (e.key === 'Escape') {
         setShowSearch(false);
       }
     }
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, [stopwatch.subjectId, stopwatch.running, stopwatch.topicId, pauseStopwatch, startStopwatch]);
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -314,15 +333,41 @@ export function AppShell({
           </div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-3 space-y-4">
-          {NAV_GROUPS.map((group) => (
+        <nav className="flex-1 overflow-y-auto p-3 space-y-2.5">
+          {NAV_GROUPS.map((group) => {
+            const isGroupOpen = compact ? true : (openGroups[group.title] ?? false);
+            const groupBadge = group.items.reduce((acc, it) => {
+              if (it.badgeKey === 'reviews') return acc + dueReviewsCount;
+              if (it.badgeKey === 'flashcards') return acc + dueFlashcardsCount;
+              return acc;
+            }, 0);
+
+            return (
             <div key={group.title} className="space-y-1">
               {!compact && (
-                <p className="px-3 text-[11px] font-extrabold uppercase tracking-wider text-muted-theme">
-                  {group.title}
-                </p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenGroups((prev) => ({ ...prev, [group.title]: !isGroupOpen }))
+                  }
+                  className="w-full px-3 py-2 rounded-xl flex items-center justify-between text-xs font-extrabold uppercase tracking-wider text-muted-theme hover:bg-black/5 dark:hover:bg-white/5 transition"
+                >
+                  <span className="flex items-center gap-2">
+                    {isGroupOpen ? (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    )}
+                    {group.title}
+                  </span>
+                  {!isGroupOpen && groupBadge > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-teal-500/15 text-teal-700 dark:text-teal-300">
+                      {groupBadge}
+                    </span>
+                  )}
+                </button>
               )}
-              {group.items.map((item) => {
+              {isGroupOpen && group.items.map((item) => {
                 const fullHref = `${basePath}${item.href}`;
                 const isActive =
                   item.href === '' ? pathname === basePath : pathname.startsWith(fullHref);
@@ -369,7 +414,8 @@ export function AppShell({
                 );
               })}
             </div>
-          ))}
+            );
+          })}
         </nav>
 
         {!compact && (
@@ -467,12 +513,19 @@ export function AppShell({
 
             <div
               className={`flex items-center gap-1.5 px-3 py-2 rounded-full text-xs font-bold ${
-                syncing
+                !isOnline
+                  ? 'bg-rose-500/15 text-rose-700'
+                  : syncing
                   ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
                   : 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
               }`}
             >
-              {syncing ? (
+              {!isOnline ? (
+                <>
+                  <AlertTriangle className="w-4 h-4" />
+                  <span className="hidden sm:inline">Sem conexão — tentando novamente</span>
+                </>
+              ) : syncing ? (
                 <>
                   <Cloud className="w-4 h-4 animate-pulse" />
                   <span className="hidden sm:inline">Salvando...</span>
@@ -480,7 +533,7 @@ export function AppShell({
               ) : (
                 <>
                   <CheckCircle2 className="w-4 h-4" />
-                  <span className="hidden sm:inline">Sincronizado</span>
+                  <span className="hidden sm:inline">Salvo</span>
                 </>
               )}
             </div>

@@ -2,11 +2,13 @@
 
 import { useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { useGlobal } from '@/components/GlobalProvider';
+import { createClient } from '@/lib/supabase/client';
 import { addDaysISO, calcAccuracy, formatDateBR, formatDurationHM, todayISO } from '@/lib/utils';
 import { Sparkles, Loader2, FileBarChart2, AlertTriangle } from 'lucide-react';
 
 export default function RelatoriosPage() {
-  const { profile, subjects, topics, studyLogs, reviews, errors, simulados, reports, addAIReport } =
+  const { userId, profile, subjects, topics, studyLogs, reviews, errors, simulados, reports } =
     useProfile();
 
   const today = todayISO();
@@ -20,8 +22,11 @@ export default function RelatoriosPage() {
 
   // Mentor Gemini AI
   const [periodType, setPeriodType] = useState<'Semanal' | 'Mensal' | 'Anual'>('Semanal');
-  const [generating, setGenerating] = useState(false);
-  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const { aiJobs, runAiJob } = useGlobal();
+  const reportJobId = `report:${profile?.id || 'default'}`;
+  const reportJob = aiJobs[reportJobId];
+  const generating = reportJob?.status === 'running';
+  const errMsg = reportJob?.status === 'error' ? reportJob.error || null : null;
 
   function applyPreset(p: '7' | '30' | '90' | 'all') {
     setPeriodPreset(p);
@@ -148,51 +153,62 @@ export default function RelatoriosPage() {
       };
     });
 
-  async function handleGenerateReport() {
-    if (!profile) return;
-    setGenerating(true);
-    setErrMsg(null);
-    try {
-      const metricsSummary = {
-        concurso: profile.name,
-        periodo: `${formatDateBR(startDate)} a ${formatDateBR(endDate)}`,
-        horas_liquidas: realizedHours,
-        horas_planejadas: plannedHours,
-        sessoes: sessionsCount,
-        dias_ativos: activeDays,
-        questoes_total: displayedQ.total,
-        questoes_acertos: displayedQ.correct,
-        taxa_acertos_pct: calcAccuracy(displayedQ.correct, displayedQ.total),
-        revisoes_atrasadas: revOverdue,
-        revisoes_concluidas: revDone,
-        erros_total: periodErrors.length,
-        simulados_total: periodSimulados.length,
-      };
+  function handleGenerateReport() {
+    if (!profile || !userId) return;
+    const profileIdSnap = profile.id;
+    const profileNameSnap = profile.name;
+    const userIdSnap = userId;
+    const periodTypeSnap = periodType;
+    const todaySnap = today;
+    const metricsSummary = {
+      concurso: profileNameSnap,
+      periodo: `${formatDateBR(startDate)} a ${formatDateBR(endDate)}`,
+      horas_liquidas: realizedHours,
+      horas_planejadas: plannedHours,
+      sessoes: sessionsCount,
+      dias_ativos: activeDays,
+      questoes_total: displayedQ.total,
+      questoes_acertos: displayedQ.correct,
+      taxa_acertos_pct: calcAccuracy(displayedQ.correct, displayedQ.total),
+      revisoes_atrasadas: revOverdue,
+      revisoes_concluidas: revDone,
+      erros_total: periodErrors.length,
+      simulados_total: periodSimulados.length,
+    };
 
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'report',
-          profileName: profile.name,
-          periodType,
-          metricsSummary,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar relatório.');
-
-      await addAIReport({
-        period_type: periodType,
-        period_label: `${periodType} · ${formatDateBR(today)}`,
-        content_markdown: json.data.markdown,
-        metrics_snapshot: metricsSummary,
-      });
-    } catch (err) {
-      setErrMsg(err instanceof Error ? err.message : 'Erro ao gerar relatório.');
-    } finally {
-      setGenerating(false);
-    }
+    runAiJob({
+      id: reportJobId,
+      kind: 'report',
+      label: `Gerando diagnóstico ${periodTypeSnap} do Mentor Gemini`,
+      route: `/p/${profileIdSnap}/relatorios`,
+      successMsg: `Diagnóstico ${periodTypeSnap} do Mentor Gemini salvo!`,
+      task: async () => {
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'report',
+            profileName: profileNameSnap,
+            periodType: periodTypeSnap,
+            metricsSummary,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar relatório.');
+        return json.data.markdown as string;
+      },
+      onDone: async (markdown) => {
+        const supabase = createClient();
+        await supabase.from('ai_reports').insert({
+          user_id: userIdSnap,
+          profile_id: profileIdSnap,
+          period_type: periodTypeSnap,
+          period_label: `${periodTypeSnap} · ${formatDateBR(todaySnap)}`,
+          content_markdown: markdown,
+          metrics_snapshot: metricsSummary,
+        });
+      },
+    });
   }
 
   return (
@@ -439,7 +455,7 @@ export default function RelatoriosPage() {
             <button
               onClick={handleGenerateReport}
               disabled={generating}
-              className="px-4 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-60"
+              className="px-4 py-2.5 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-60"
             >
               {generating ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

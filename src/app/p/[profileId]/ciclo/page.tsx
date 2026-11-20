@@ -56,6 +56,7 @@ export default function CicloPage() {
     startStopwatch,
     pauseStopwatch,
     resetStopwatch,
+    setStopwatchNote,
     updateSubject,
     moveSubject,
     reorderSubject,
@@ -115,7 +116,7 @@ export default function CicloPage() {
       setModalMinutes('0');
     }
     setModalDate(todayISO());
-    setModalStopPoint('');
+    setModalStopPoint(useStopwatch && stopwatch.quickNote ? stopwatch.quickNote : '');
     setShowModal(true);
   }
 
@@ -265,9 +266,18 @@ export default function CicloPage() {
             </div>
           </div>
 
-          <p className="text-xs text-muted-theme">
-            Dica: você pode navegar por outras abas enquanto o cronômetro continua rodando no topo.
-          </p>
+          {stopwatch.subjectId ? (
+            <input
+              value={stopwatch.quickNote || ''}
+              onChange={(e) => setStopwatchNote(e.target.value)}
+              placeholder="Nota rápida / ponto de parada durante a sessão (já preenche ao salvar)..."
+              className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-xs"
+            />
+          ) : (
+            <p className="text-xs text-muted-theme">
+              Dica: atalho <strong>Alt + P</strong> pausa ou retoma o cronômetro de qualquer tela.
+            </p>
+          )}
         </div>
       </div>
 

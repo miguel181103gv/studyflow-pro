@@ -11,13 +11,18 @@ import {
   CheckCircle2,
   CalendarDays,
   CalendarRange,
-  SlidersHorizontal,
   ArrowRight,
-  RotateCcw,
+  ArrowLeft,
   StickyNote,
   Plus,
   Trash2,
   Check,
+  GripVertical,
+  ArrowUp,
+  ArrowDown,
+  Sparkles,
+  X,
+  Clock,
 } from 'lucide-react';
 
 interface ScheduledBlock {
@@ -38,16 +43,34 @@ interface DayNote {
   done: boolean;
 }
 
-interface AgendaPrefs {
-  studyDays: number[];
+interface StudyPlan {
+  id: string;
+  name: string;
+  subjectIds: string[]; // Ordem exata das matérias
+  dailyHoursByDow: Record<number, number>; // 0=Dom ... 6=Sab
   blockMinutes: number;
-  anchorDate: string;
+  startDate: string;
+  estimatedEndDate: string;
   completedBlockIds: string[];
   movedOverrides: Record<string, string>;
+}
+
+interface AgendaStore {
+  activePlanId: string | null;
+  plans: StudyPlan[];
   notes: DayNote[];
 }
 
 const DAY_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+const DAY_FULL = [
+  'Domingo',
+  'Segunda-feira',
+  'Terça-feira',
+  'Quarta-feira',
+  'Quinta-feira',
+  'Sexta-feira',
+  'Sábado',
+];
 const MONTH_NAMES = [
   'Janeiro',
   'Fevereiro',
@@ -63,7 +86,6 @@ const MONTH_NAMES = [
   'Dezembro',
 ];
 
-// Paleta pastel harmoniosa com contraste agradável (inspirada no Estudei)
 const PASTEL_STYLES = [
   { bg: 'rgba(59, 130, 246, 0.14)', border: '#3b82f6', text: '#1e3a8a' },
   { bg: 'rgba(16, 185, 129, 0.15)', border: '#10b981', text: '#065f46' },
@@ -94,48 +116,84 @@ function startOfWeekMonday(iso: string) {
   return toISO(dt);
 }
 
+function estimateFinishDate(
+  startDate: string,
+  remainingTopicsCount: number,
+  dailyHoursByDow: Record<number, number>,
+  avgHoursPerTopic = 2.0
+): string {
+  const weeklyHours = Object.values(dailyHoursByDow).reduce((a, b) => a + (Number(b) || 0), 0);
+  if (weeklyHours <= 0 || remainingTopicsCount <= 0) return startDate;
+
+  let neededHours = remainingTopicsCount * avgHoursPerTopic;
+  let d = startDate;
+  for (let guard = 0; guard < 1500 && neededHours > 0; guard++) {
+    const dow = parseISO(d).getDay();
+    const h = Number(dailyHoursByDow[dow] || 0);
+    if (h > 0) neededHours -= h;
+    if (neededHours > 0) d = addDaysISO(d, 1);
+  }
+  return d;
+}
+
 export default function AgendaPage() {
-  const { profile, subjects, studyLogs, startStopwatch, theme } = useProfile();
+  const { profile, subjects, topics, studyLogs, startStopwatch, setSubjectOrder, theme } =
+    useProfile();
 
   const today = todayISO();
-  const storageKey = `sf_agenda_prefs_${profile?.id || 'default'}`;
+  const storageKey = `sf_agenda_plans_v2_${profile?.id || 'default'}`;
   const isDark = theme === 'obsidian' || theme === 'navy';
 
   const [viewMode, setViewMode] = useState<'week' | 'month'>('week');
   const [cursorDate, setCursorDate] = useState(today);
   const [selectedNoteDate, setSelectedNoteDate] = useState(today);
   const [noteInput, setNoteInput] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
   const [moveTargetBlock, setMoveTargetBlock] = useState<ScheduledBlock | null>(null);
   const [moveToDate, setMoveToDate] = useState(today);
 
-  const [prefs, setPrefs] = useState<AgendaPrefs>({
-    studyDays: [1, 2, 3, 4, 5],
-    blockMinutes: 90,
-    anchorDate: startOfWeekMonday(today),
-    completedBlockIds: [],
-    movedOverrides: {},
+  // Store de múltiplos cronogramas + anotações
+  const [store, setStore] = useState<AgendaStore>({
+    activePlanId: null,
+    plans: [],
     notes: [],
   });
+
+  // Wizard de Criar Novo Cronograma (4 etapas)
+  const [showWizard, setShowWizard] = useState(false);
+  const [wizStep, setWizStep] = useState<1 | 2 | 3 | 4>(1);
+  const [wizSubjectIds, setWizSubjectIds] = useState<string[]>([]);
+  const [wizDailyHours, setWizDailyHours] = useState<Record<number, number>>({
+    0: 0,
+    1: 4,
+    2: 4,
+    3: 4,
+    4: 4,
+    5: 4,
+    6: 0,
+  });
+  const [wizBlockMin, setWizBlockMin] = useState(90);
+  const [wizName, setWizName] = useState('');
+  const [wizStartDate, setWizStartDate] = useState(today);
+  const [wizDragId, setWizDragId] = useState<string | null>(null);
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<AgendaPrefs>;
-        setPrefs((prev) => ({
-          ...prev,
-          ...parsed,
+        const parsed = JSON.parse(raw) as AgendaStore;
+        setStore({
+          activePlanId: parsed.activePlanId || parsed.plans?.[0]?.id || null,
+          plans: Array.isArray(parsed.plans) ? parsed.plans : [],
           notes: Array.isArray(parsed.notes) ? parsed.notes : [],
-        }));
+        });
       }
     } catch {
       // ignore
     }
   }, [storageKey]);
 
-  function savePrefs(next: AgendaPrefs) {
-    setPrefs(next);
+  function saveStore(next: AgendaStore) {
+    setStore(next);
     try {
       localStorage.setItem(storageKey, JSON.stringify(next));
     } catch {
@@ -143,7 +201,105 @@ export default function AgendaPage() {
     }
   }
 
-  const dailyMinutesGoal = Math.round((profile?.daily_hours_goal || 4) * 60);
+  // Cronograma ativo (ou fallback automático com todas as matérias)
+  const defaultGoal = profile?.daily_hours_goal || 4;
+  const activePlan: StudyPlan = useMemo(() => {
+    const found = store.plans.find((p) => p.id === store.activePlanId) || store.plans[0];
+    if (found) return found;
+    return {
+      id: 'default',
+      name: 'Cronograma Padrão',
+      subjectIds: subjects.map((s) => s.id),
+      dailyHoursByDow: { 0: 0, 1: defaultGoal, 2: defaultGoal, 3: defaultGoal, 4: defaultGoal, 5: defaultGoal, 6: 0 },
+      blockMinutes: 90,
+      startDate: startOfWeekMonday(today),
+      estimatedEndDate: estimateFinishDate(
+        today,
+        topics.filter((t) => !t.studied).length,
+        { 0: 0, 1: defaultGoal, 2: defaultGoal, 3: defaultGoal, 4: defaultGoal, 5: defaultGoal, 6: 0 }
+      ),
+      completedBlockIds: [],
+      movedOverrides: {},
+    };
+  }, [store.plans, store.activePlanId, subjects, topics, defaultGoal, today]);
+
+  function updateActivePlan(updater: (p: StudyPlan) => StudyPlan) {
+    if (store.plans.length === 0) {
+      const created = updater(activePlan);
+      saveStore({ ...store, activePlanId: created.id, plans: [created] });
+      return;
+    }
+    const nextPlans = store.plans.map((p) => (p.id === activePlan.id ? updater(p) : p));
+    saveStore({ ...store, plans: nextPlans });
+  }
+
+  async function selectPlan(plan: StudyPlan) {
+    saveStore({ ...store, activePlanId: plan.id });
+    if (plan.subjectIds.length > 0) {
+      await setSubjectOrder(plan.subjectIds);
+    }
+  }
+
+  function deletePlan(id: string) {
+    if (!confirm('Excluir este cronograma?')) return;
+    const remaining = store.plans.filter((p) => p.id !== id);
+    saveStore({
+      ...store,
+      plans: remaining,
+      activePlanId: remaining[0]?.id || null,
+    });
+  }
+
+  function openNewPlanWizard() {
+    setWizStep(1);
+    setWizSubjectIds(subjects.map((s) => s.id));
+    setWizDailyHours({
+      0: 0,
+      1: defaultGoal,
+      2: defaultGoal,
+      3: defaultGoal,
+      4: defaultGoal,
+      5: defaultGoal,
+      6: 0,
+    });
+    setWizBlockMin(90);
+    setWizName(`Cronograma ${store.plans.length + 1}`);
+    setWizStartDate(today);
+    setShowWizard(true);
+  }
+
+  const wizRemainingTopics = useMemo(
+    () => topics.filter((t) => wizSubjectIds.includes(t.subject_id) && !t.studied).length,
+    [topics, wizSubjectIds]
+  );
+
+  const wizEstimatedEnd = useMemo(
+    () => estimateFinishDate(wizStartDate, wizRemainingTopics, wizDailyHours, 2.0),
+    [wizStartDate, wizRemainingTopics, wizDailyHours]
+  );
+
+  async function finishWizard() {
+    if (wizSubjectIds.length === 0) return;
+    const newPlan: StudyPlan = {
+      id: `plan_${Date.now()}`,
+      name: wizName.trim() || `Cronograma ${store.plans.length + 1}`,
+      subjectIds: wizSubjectIds,
+      dailyHoursByDow: wizDailyHours,
+      blockMinutes: wizBlockMin,
+      startDate: wizStartDate,
+      estimatedEndDate: wizEstimatedEnd,
+      completedBlockIds: [],
+      movedOverrides: {},
+    };
+    saveStore({
+      ...store,
+      activePlanId: newPlan.id,
+      plans: [...store.plans, newPlan],
+    });
+    await setSubjectOrder(wizSubjectIds);
+    setShowWizard(false);
+    setCursorDate(wizStartDate);
+  }
 
   const subjectPaletteIndex = useMemo(() => {
     const map: Record<string, number> = {};
@@ -153,15 +309,21 @@ export default function AgendaPage() {
     return map;
   }, [subjects]);
 
+  // Gera cronograma seguindo a ORDEM EXATA das matérias do cronograma ativo (nunca pula matéria!)
   const allBlocks = useMemo(() => {
-    if (subjects.length === 0) return [] as ScheduledBlock[];
+    const orderedSubjects = activePlan.subjectIds
+      .map((id) => subjects.find((s) => s.id === id))
+      .filter((s): s is NonNullable<typeof s> => Boolean(s));
+
+    const effectiveSubjects = orderedSubjects.length > 0 ? orderedSubjects : subjects;
+    if (effectiveSubjects.length === 0) return [] as ScheduledBlock[];
 
     const cycleUnitBlocks: { subjectId: string; name: string; color: string; minutes: number }[] =
       [];
-    subjects.forEach((s) => {
+    effectiveSubjects.forEach((s) => {
       let rem = Math.max(30, s.cycle_hours * 60 + s.cycle_minutes);
       while (rem > 0) {
-        const chunk = Math.min(prefs.blockMinutes, rem);
+        const chunk = Math.min(activePlan.blockMinutes || 90, rem);
         cycleUnitBlocks.push({
           subjectId: s.id,
           name: s.name,
@@ -172,25 +334,23 @@ export default function AgendaPage() {
       }
     });
 
-    if (cycleUnitBlocks.length === 0) return [] as ScheduledBlock[];
-
     const loggedSet = new Set(studyLogs.map((l) => `${l.study_date}::${l.subject_id}`));
     const result: ScheduledBlock[] = [];
     const dayUsedMinutes: Record<string, number> = {};
 
-    const startDt = parseISO(prefs.anchorDate);
+    const startIso = activePlan.startDate || startOfWeekMonday(today);
     const endHorizon = addDaysISO(cursorDate > today ? cursorDate : today, 70);
 
-    let currentIso = toISO(startDt);
+    let currentIso = startIso;
     let seqIndex = 0;
 
     function nextAvailableDate(fromIso: string, neededMinutes: number): string {
       let d = fromIso;
-      for (let guard = 0; guard < 200; guard++) {
+      for (let guard = 0; guard < 240; guard++) {
         const dow = parseISO(d).getDay();
-        const isStudyDay = prefs.studyDays.length === 0 || prefs.studyDays.includes(dow);
+        const capMin = Math.round((Number(activePlan.dailyHoursByDow[dow]) || 0) * 60);
         const used = dayUsedMinutes[d] || 0;
-        if (isStudyDay && used + neededMinutes <= dailyMinutesGoal + 15) {
+        if (capMin > 0 && used + neededMinutes <= capMin + 15) {
           return d;
         }
         d = addDaysISO(d, 1);
@@ -198,11 +358,11 @@ export default function AgendaPage() {
       return d;
     }
 
-    while (currentIso <= endHorizon && seqIndex < 600) {
+    while (currentIso <= endHorizon && seqIndex < 550) {
       const unit = cycleUnitBlocks[seqIndex % cycleUnitBlocks.length];
-      const blockId = `blk_${seqIndex}`;
+      const blockId = `${activePlan.id}_blk_${seqIndex}`;
 
-      const overrideDate = prefs.movedOverrides[blockId];
+      const overrideDate = activePlan.movedOverrides?.[blockId];
       if (overrideDate && overrideDate > currentIso) {
         currentIso = overrideDate;
       }
@@ -212,7 +372,7 @@ export default function AgendaPage() {
       currentIso = assignedDate;
 
       const isDone =
-        prefs.completedBlockIds.includes(blockId) ||
+        (activePlan.completedBlockIds || []).includes(blockId) ||
         loggedSet.has(`${assignedDate}::${unit.subjectId}`);
 
       result.push({
@@ -230,7 +390,7 @@ export default function AgendaPage() {
     }
 
     return result;
-  }, [subjects, studyLogs, prefs, dailyMinutesGoal, cursorDate, today]);
+  }, [activePlan, subjects, studyLogs, cursorDate, today]);
 
   const overdueBlocks = useMemo(() => allBlocks.filter((b) => b.overdue), [allBlocks]);
 
@@ -245,12 +405,12 @@ export default function AgendaPage() {
 
   const notesByDate = useMemo(() => {
     const map: Record<string, DayNote[]> = {};
-    prefs.notes.forEach((n) => {
+    store.notes.forEach((n) => {
       if (!map[n.date]) map[n.date] = [];
       map[n.date].push(n);
     });
     return map;
-  }, [prefs.notes]);
+  }, [store.notes]);
 
   function addDayNote(e: React.FormEvent) {
     e.preventDefault();
@@ -261,55 +421,48 @@ export default function AgendaPage() {
       text: noteInput.trim(),
       done: false,
     };
-    savePrefs({ ...prefs, notes: [newNote, ...prefs.notes] });
+    saveStore({ ...store, notes: [newNote, ...store.notes] });
     setNoteInput('');
   }
 
   function toggleDayNote(id: string) {
-    savePrefs({
-      ...prefs,
-      notes: prefs.notes.map((n) => (n.id === id ? { ...n, done: !n.done } : n)),
+    saveStore({
+      ...store,
+      notes: store.notes.map((n) => (n.id === id ? { ...n, done: !n.done } : n)),
     });
   }
 
   function deleteDayNote(id: string) {
-    savePrefs({
-      ...prefs,
-      notes: prefs.notes.filter((n) => n.id !== id),
+    saveStore({
+      ...store,
+      notes: store.notes.filter((n) => n.id !== id),
     });
   }
 
   function toggleBlockDone(blockId: string) {
-    const exists = prefs.completedBlockIds.includes(blockId);
-    const next = exists
-      ? prefs.completedBlockIds.filter((id) => id !== blockId)
-      : [...prefs.completedBlockIds, blockId];
-    savePrefs({ ...prefs, completedBlockIds: next });
+    updateActivePlan((p) => {
+      const exists = p.completedBlockIds.includes(blockId);
+      return {
+        ...p,
+        completedBlockIds: exists
+          ? p.completedBlockIds.filter((id) => id !== blockId)
+          : [...p.completedBlockIds, blockId],
+      };
+    });
   }
 
   function moveBlockAndRecalculate(blockId: string, newDate: string) {
-    savePrefs({
-      ...prefs,
-      movedOverrides: {
-        ...prefs.movedOverrides,
-        [blockId]: newDate,
-      },
-    });
+    updateActivePlan((p) => ({
+      ...p,
+      movedOverrides: { ...p.movedOverrides, [blockId]: newDate },
+    }));
     setMoveTargetBlock(null);
   }
 
   function rescheduleAllOverdueToToday() {
     if (overdueBlocks.length === 0) return;
+    // Mantém a ordem exata das matérias empurrando a 1ª não estudada para hoje (nunca pula!)
     moveBlockAndRecalculate(overdueBlocks[0].id, today);
-  }
-
-  function toggleStudyDay(dayIndex: number) {
-    const exists = prefs.studyDays.includes(dayIndex);
-    const next = exists
-      ? prefs.studyDays.filter((d) => d !== dayIndex)
-      : [...prefs.studyDays, dayIndex].sort();
-    if (next.length === 0) return;
-    savePrefs({ ...prefs, studyDays: next });
   }
 
   const weekStart = startOfWeekMonday(cursorDate);
@@ -341,20 +494,30 @@ export default function AgendaPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+      {/* Header + Botão Montar Novo Cronograma */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Agenda & Anotações</h1>
-          <p className="text-sm text-muted-theme">
-            Planejamento semanal/mensal com cores harmoniosas, recálculo automático e lembretes por data.
+          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
+            Agenda & Cronogramas
+          </h1>
+          <p className="text-sm text-muted-theme mt-1">
+            Crie vários cronogramas personalizados. A sequência escolhida sincroniza com o Ciclo e nunca pula matérias se você faltar um dia.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={openNewPlanWizard}
+            className="px-4 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Montar Novo Cronograma
+          </button>
+
           <div className="flex rounded-2xl card-surface p-1">
             <button
               onClick={() => setViewMode('week')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 ${
                 viewMode === 'week' ? 'bg-teal-600 text-white' : ''
               }`}
             >
@@ -363,7 +526,7 @@ export default function AgendaPage() {
             </button>
             <button
               onClick={() => setViewMode('month')}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 ${
                 viewMode === 'month' ? 'bg-teal-600 text-white' : ''
               }`}
             >
@@ -371,114 +534,81 @@ export default function AgendaPage() {
               Mensal
             </button>
           </div>
-
-          <button
-            onClick={() => setShowSettings((v) => !v)}
-            className="px-3.5 py-2 rounded-2xl card-surface text-xs font-semibold inline-flex items-center gap-1.5"
-          >
-            <SlidersHorizontal className="w-3.5 h-3.5" />
-            Replanejar
-          </button>
         </div>
       </div>
 
-      {/* Personalização */}
-      {showSettings && (
-        <div className="card-surface rounded-3xl p-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div className="space-y-1.5">
-              <p className="text-xs font-bold">Dias da semana de estudo:</p>
-              <div className="flex flex-wrap gap-1.5">
-                {DAY_LABELS.map((lbl, idx) => {
-                  const active = prefs.studyDays.includes(idx);
-                  return (
-                    <button
-                      key={lbl}
-                      onClick={() => toggleStudyDay(idx)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
-                        active ? 'bg-teal-600 text-white' : 'subtle-surface text-muted-theme'
-                      }`}
-                    >
-                      {lbl}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 text-xs">
-              <div>
-                <label className="block text-muted-theme mb-1">Duração do bloco</label>
-                <select
-                  value={prefs.blockMinutes}
-                  onChange={(e) =>
-                    savePrefs({ ...prefs, blockMinutes: Number(e.target.value) })
-                  }
-                  className="rounded-xl subtle-surface border border-theme px-3 py-1.5 font-semibold"
-                >
-                  <option value={60}>1h por bloco</option>
-                  <option value={90}>1h30 por bloco</option>
-                  <option value={120}>2h por bloco</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-muted-theme mb-1">Início da Agenda</label>
-                <input
-                  type="date"
-                  value={prefs.anchorDate}
-                  onChange={(e) =>
-                    savePrefs({ ...prefs, anchorDate: e.target.value, movedOverrides: {} })
-                  }
-                  className="rounded-xl subtle-surface border border-theme px-3 py-1.5"
-                />
-              </div>
-
-              <button
-                onClick={() =>
-                  savePrefs({
-                    ...prefs,
-                    anchorDate: startOfWeekMonday(today),
-                    movedOverrides: {},
-                  })
-                }
-                className="mt-4 px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold inline-flex items-center gap-1"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Resetar fila
-              </button>
-            </div>
-          </div>
+      {/* Seletor de Cronogramas Salvos + Estimativa de Término */}
+      <div className="card-surface rounded-3xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          {store.plans.length === 0 ? (
+            <span className="px-3.5 py-2 rounded-2xl bg-teal-600 text-white text-xs font-bold">
+              Cronograma Padrão (Todas as matérias)
+            </span>
+          ) : (
+            store.plans.map((pl) => {
+              const isCurrent = pl.id === activePlan.id;
+              return (
+                <div key={pl.id} className="inline-flex items-center gap-1">
+                  <button
+                    onClick={() => selectPlan(pl)}
+                    className={`px-3.5 py-2 rounded-2xl text-xs font-bold transition ${
+                      isCurrent
+                        ? 'bg-teal-600 text-white shadow-xs'
+                        : 'subtle-surface hover:opacity-85'
+                    }`}
+                  >
+                    {pl.name} ({pl.subjectIds.length} mat.)
+                  </button>
+                  <button
+                    onClick={() => deletePlan(pl.id)}
+                    className="p-1.5 rounded-xl text-muted-theme hover:text-rose-500"
+                    title="Excluir cronograma"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              );
+            })
+          )}
         </div>
-      )}
 
-      {/* Atrasadas */}
+        <div className="text-xs text-muted-theme flex items-center gap-2 shrink-0">
+          <Clock className="w-4 h-4 text-teal-600 shrink-0" />
+          <span>
+            Início: <strong>{formatDateBR(activePlan.startDate)}</strong> · Previsão de término:{' '}
+            <strong className="text-teal-700 dark:text-teal-300">
+              {formatDateBR(activePlan.estimatedEndDate)}
+            </strong>
+          </span>
+        </div>
+      </div>
+
+      {/* Atrasadas (mantendo a ordem exata sem pular!) */}
       {overdueBlocks.length > 0 && (
         <div className="rounded-3xl bg-amber-500/10 border border-amber-500/30 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-bold text-amber-700 dark:text-amber-300">
-                {overdueBlocks.length} bloco(s) atrasado(s)
+              <p className="text-sm font-bold text-amber-800 dark:text-amber-300">
+                {overdueBlocks.length} bloco(s) não estudado(s) anteriormente
               </p>
               <p className="text-xs text-muted-theme">
-                Primeiro atraso: <strong>{overdueBlocks[0].name}</strong> ({formatDateBR(overdueBlocks[0].date)}).
+                Para não pular nenhuma matéria, puxe <strong>{overdueBlocks[0].name}</strong> para hoje e toda a sequência se ajusta para frente.
               </p>
             </div>
           </div>
           <button
             onClick={rescheduleAllOverdueToToday}
-            className="px-4 py-2 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shrink-0"
+            className="px-4 py-2.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shrink-0"
           >
-            Reagendar para Hoje
+            Puxar sequência para Hoje
           </button>
         </div>
       )}
 
-      {/* Layout Principal: Calendário + Anotações do Dia */}
+      {/* Calendário + Anotações */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
         <div className="xl:col-span-3 space-y-4">
-          {/* Navegação no tempo */}
           <div className="flex items-center justify-between gap-3 card-surface rounded-2xl px-4 py-3">
             <button
               onClick={() => navigatePeriod(-1)}
@@ -486,7 +616,6 @@ export default function AgendaPage() {
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-
             <div className="text-center">
               <p className="font-bold text-sm">
                 {viewMode === 'week'
@@ -498,12 +627,11 @@ export default function AgendaPage() {
                   setCursorDate(today);
                   setSelectedNoteDate(today);
                 }}
-                className="text-[11px] text-teal-600 hover:underline font-semibold"
+                className="text-xs text-teal-600 hover:underline font-semibold"
               >
                 Hoje ({formatDateBR(today)})
               </button>
             </div>
-
             <button
               onClick={() => navigatePeriod(1)}
               className="p-2 rounded-full subtle-surface hover:opacity-80"
@@ -512,7 +640,6 @@ export default function AgendaPage() {
             </button>
           </div>
 
-          {/* VISÃO SEMANAL (Pastel estilo Estudei) */}
           {viewMode === 'week' && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-7 gap-2.5">
               {weekDays.map((iso) => {
@@ -533,12 +660,8 @@ export default function AgendaPage() {
                       const blkId = e.dataTransfer.getData('text/plain');
                       if (blkId) moveBlockAndRecalculate(blkId, iso);
                     }}
-                    className={`card-surface rounded-2xl p-3 flex flex-col min-h-[240px] cursor-pointer transition ${
-                      isSelected
-                        ? 'ring-2 ring-teal-500'
-                        : isToday
-                        ? 'ring-1 ring-indigo-500/60'
-                        : ''
+                    className={`card-surface rounded-2xl p-3 flex flex-col min-h-[230px] cursor-pointer transition ${
+                      isSelected ? 'ring-2 ring-teal-500' : isToday ? 'ring-1 ring-indigo-500/60' : ''
                     }`}
                   >
                     <div className="flex items-center justify-between pb-2 mb-2.5 border-b border-theme">
@@ -546,12 +669,12 @@ export default function AgendaPage() {
                         <p className="text-xs font-bold">
                           {DAY_LABELS[dt.getDay()]}, {iso.slice(8, 10)}
                         </p>
-                        <p className="text-[10px] text-muted-theme">
+                        <p className="text-[11px] text-muted-theme">
                           {totalMin > 0 ? `${(totalMin / 60).toFixed(1)}h` : 'Livre'}
                         </p>
                       </div>
                       {dayNotes.length > 0 && (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-800 dark:text-amber-300">
                           <StickyNote className="w-2.5 h-2.5" />
                           {dayNotes.length}
                         </span>
@@ -559,21 +682,20 @@ export default function AgendaPage() {
                     </div>
 
                     {dayBlocks.length === 0 ? (
-                      <p className="text-[11px] text-muted-theme my-auto text-center opacity-60">
+                      <p className="text-xs text-muted-theme my-auto text-center opacity-60">
                         Descanso
                       </p>
                     ) : (
                       <div className="space-y-2">
                         {dayBlocks.map((blk) => {
-                          const pal =
-                            PASTEL_STYLES[subjectPaletteIndex[blk.subjectId] ?? 0];
+                          const pal = PASTEL_STYLES[subjectPaletteIndex[blk.subjectId] ?? 0];
                           return (
                             <div
                               key={blk.id}
                               draggable
                               onDragStart={(e) => e.dataTransfer.setData('text/plain', blk.id)}
                               onClick={(e) => e.stopPropagation()}
-                              className="rounded-xl p-2.5 cursor-grab active:cursor-grabbing space-y-1.5 transition"
+                              className="rounded-xl p-2.5 cursor-grab active:cursor-grabbing space-y-1.5"
                               style={{
                                 backgroundColor: blk.done
                                   ? 'rgba(16, 185, 129, 0.16)'
@@ -597,14 +719,10 @@ export default function AgendaPage() {
                                 >
                                   {blk.name}
                                 </p>
-                                <button
-                                  onClick={() => toggleBlockDone(blk.id)}
-                                  className="shrink-0 opacity-75 hover:opacity-100"
-                                >
+                                <button onClick={() => toggleBlockDone(blk.id)} className="shrink-0">
                                   <CheckCircle2 className="w-3.5 h-3.5" />
                                 </button>
                               </div>
-
                               <div className="flex items-center justify-between text-[10px] opacity-85">
                                 <span>
                                   {Math.floor(blk.minutes / 60)}h
@@ -623,7 +741,6 @@ export default function AgendaPage() {
                                   <button
                                     onClick={() => startStopwatch(blk.subjectId)}
                                     className="p-1 rounded bg-black/15 hover:bg-black/25"
-                                    title="Iniciar"
                                   >
                                     <Play className="w-2.5 h-2.5 fill-current" />
                                   </button>
@@ -640,7 +757,6 @@ export default function AgendaPage() {
             </div>
           )}
 
-          {/* VISÃO MENSAL */}
           {viewMode === 'month' && (
             <div className="card-surface rounded-3xl p-4 overflow-x-auto">
               <div className="grid grid-cols-7 gap-2 min-w-[640px]">
@@ -666,12 +782,8 @@ export default function AgendaPage() {
                         const blkId = e.dataTransfer.getData('text/plain');
                         if (blkId) moveBlockAndRecalculate(blkId, iso);
                       }}
-                      className={`subtle-surface rounded-2xl p-2 min-h-[100px] flex flex-col gap-1 cursor-pointer transition ${
-                        isSelected
-                          ? 'ring-2 ring-teal-500'
-                          : isToday
-                          ? 'ring-1 ring-indigo-500'
-                          : ''
+                      className={`subtle-surface rounded-2xl p-2 min-h-[100px] flex flex-col gap-1 cursor-pointer ${
+                        isSelected ? 'ring-2 ring-teal-500' : isToday ? 'ring-1 ring-indigo-500' : ''
                       }`}
                     >
                       <div className="flex items-center justify-between">
@@ -691,7 +803,6 @@ export default function AgendaPage() {
                           {Number(iso.slice(8, 10))}
                         </span>
                       </div>
-
                       {dayBlocks.slice(0, 3).map((blk) => {
                         const pal = PASTEL_STYLES[subjectPaletteIndex[blk.subjectId] ?? 0];
                         return (
@@ -708,11 +819,7 @@ export default function AgendaPage() {
                               blk.done ? 'line-through opacity-70' : ''
                             }`}
                             style={{
-                              backgroundColor: blk.done
-                                ? 'rgba(16,185,129,0.18)'
-                                : blk.overdue
-                                ? 'rgba(244,63,94,0.18)'
-                                : pal.bg,
+                              backgroundColor: blk.done ? 'rgba(16,185,129,0.18)' : pal.bg,
                               color: isDark ? '#f1f5f9' : pal.text,
                             }}
                           >
@@ -720,11 +827,6 @@ export default function AgendaPage() {
                           </button>
                         );
                       })}
-                      {dayBlocks.length > 3 && (
-                        <span className="text-[10px] text-muted-theme">
-                          +{dayBlocks.length - 3}
-                        </span>
-                      )}
                     </div>
                   );
                 })}
@@ -733,49 +835,42 @@ export default function AgendaPage() {
           )}
         </div>
 
-        {/* Painel Lateral: Anotações & Lembretes do Calendário */}
+        {/* Anotações do Dia */}
         <div className="card-surface rounded-3xl p-5 flex flex-col gap-4 h-fit">
           <div>
-            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
+            <p className="text-xs font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
               <StickyNote className="w-4 h-4 text-amber-500" />
               Anotações do Dia
             </p>
             <p className="text-base font-bold mt-1">{formatDateBR(selectedNoteDate)}</p>
-            <p className="text-xs text-muted-theme">
-              Clique em qualquer dia do calendário para ver ou criar lembretes.
-            </p>
           </div>
-
           <form onSubmit={addDayNote} className="space-y-2">
             <textarea
               rows={2}
               value={noteInput}
               onChange={(e) => setNoteInput(e.target.value)}
-              placeholder="Ex: Fazer 20 questões de Crase, esqueci de revisar art. 5º..."
+              placeholder="Ex: Revisar art. 5º, fazer 20 questões de Crase..."
               className="w-full rounded-2xl subtle-surface border border-theme p-3 text-xs focus:outline-none"
             />
             <button
               type="submit"
-              className="w-full py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5"
+              className="w-full py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5"
             >
               <Plus className="w-4 h-4" />
-              Adicionar Lembrete neste Dia
+              Salvar Lembrete
             </button>
           </form>
-
           <div className="space-y-2">
             {selectedDayNotes.length === 0 ? (
-              <p className="text-xs text-muted-theme text-center py-4">
-                Nenhuma anotação para {formatDateBR(selectedNoteDate)}.
+              <p className="text-xs text-muted-theme text-center py-3">
+                Nenhuma anotação para este dia.
               </p>
             ) : (
               selectedDayNotes.map((note) => (
                 <div
                   key={note.id}
-                  className={`rounded-2xl p-3 flex items-start justify-between gap-2 border transition ${
-                    note.done
-                      ? 'bg-emerald-500/10 border-emerald-500/25'
-                      : 'subtle-surface border-transparent'
+                  className={`rounded-2xl p-3 flex items-start justify-between gap-2 border ${
+                    note.done ? 'bg-emerald-500/10 border-emerald-500/25' : 'subtle-surface border-transparent'
                   }`}
                 >
                   <button
@@ -784,25 +879,16 @@ export default function AgendaPage() {
                   >
                     <span
                       className={`mt-0.5 w-4 h-4 rounded-md flex items-center justify-center border shrink-0 ${
-                        note.done
-                          ? 'bg-emerald-600 border-emerald-600 text-white'
-                          : 'border-slate-400'
+                        note.done ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-slate-400'
                       }`}
                     >
                       {note.done && <Check className="w-3 h-3" />}
                     </span>
-                    <span
-                      className={`text-xs break-words ${
-                        note.done ? 'line-through text-muted-theme' : ''
-                      }`}
-                    >
+                    <span className={`text-xs break-words ${note.done ? 'line-through text-muted-theme' : ''}`}>
                       {note.text}
                     </span>
                   </button>
-                  <button
-                    onClick={() => deleteDayNote(note.id)}
-                    className="p-1 rounded-lg text-muted-theme hover:text-rose-500 shrink-0"
-                  >
+                  <button onClick={() => deleteDayNote(note.id)} className="p-1 text-muted-theme hover:text-rose-500">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -812,24 +898,318 @@ export default function AgendaPage() {
         </div>
       </div>
 
+      {/* WIZARD: MONTAR NOVO CRONOGRAMA EM 4 ETAPAS */}
+      {showWizard && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-surface w-full max-w-2xl rounded-3xl p-6 space-y-5 shadow-2xl my-8 animate-pop-in">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-teal-600" />
+                <h2 className="text-lg font-extrabold">Montar Cronograma de Estudos</h2>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {[1, 2, 3, 4].map((n) => (
+                  <span
+                    key={n}
+                    className={`w-7 h-7 rounded-xl text-xs font-extrabold flex items-center justify-center ${
+                      wizStep === n
+                        ? 'bg-teal-600 text-white'
+                        : wizStep > n
+                        ? 'bg-emerald-500/20 text-emerald-700'
+                        : 'subtle-surface text-muted-theme'
+                    }`}
+                  >
+                    {n}
+                  </span>
+                ))}
+                <button onClick={() => setShowWizard(false)} className="ml-2 p-2 rounded-xl subtle-surface">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Etapa 1: Escolher matérias */}
+            {wizStep === 1 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-bold">1. Escolha as matérias que farão parte</p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setWizSubjectIds(
+                        wizSubjectIds.length === subjects.length ? [] : subjects.map((s) => s.id)
+                      )
+                    }
+                    className="text-xs font-bold text-teal-600 hover:underline"
+                  >
+                    {wizSubjectIds.length === subjects.length ? 'Desmarcar todas' : 'Selecionar todas'}
+                  </button>
+                </div>
+
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {subjects.map((s) => {
+                    const checked = wizSubjectIds.includes(s.id);
+                    const tCount = topics.filter((t) => t.subject_id === s.id).length;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() =>
+                          setWizSubjectIds((prev) =>
+                            checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
+                          )
+                        }
+                        className={`w-full rounded-2xl p-3.5 flex items-center justify-between gap-3 border text-left transition ${
+                          checked ? 'border-teal-600 bg-teal-600/10' : 'border-theme subtle-surface'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span
+                            className={`w-5 h-5 rounded-md flex items-center justify-center border-2 shrink-0 ${
+                              checked ? 'bg-teal-600 border-teal-600 text-white' : 'border-slate-400'
+                            }`}
+                          >
+                            {checked && <Check className="w-3.5 h-3.5" />}
+                          </span>
+                          <span className="text-sm font-bold truncate">{s.name}</span>
+                        </div>
+                        <span className="text-xs text-muted-theme shrink-0">{tCount} tópicos</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Etapa 2: Ordem das matérias (sincroniza com o Ciclo!) */}
+            {wizStep === 2 && (
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm font-bold">2. Defina a sequência de estudos</p>
+                  <p className="text-xs text-muted-theme mt-0.5">
+                    Arraste ou use as setas. Ao ativar este cronograma, a ordem do seu <strong>Ciclo de Estudos</strong> será atualizada automaticamente!
+                  </p>
+                </div>
+
+                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                  {wizSubjectIds.map((id, idx) => {
+                    const s = subjects.find((sb) => sb.id === id);
+                    if (!s) return null;
+                    return (
+                      <div
+                        key={id}
+                        draggable
+                        onDragStart={() => setWizDragId(id)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (!wizDragId || wizDragId === id) return;
+                          const next = [...wizSubjectIds];
+                          const from = next.indexOf(wizDragId);
+                          const to = next.indexOf(id);
+                          next.splice(from, 1);
+                          next.splice(to, 0, wizDragId);
+                          setWizSubjectIds(next);
+                          setWizDragId(null);
+                        }}
+                        className="subtle-surface rounded-2xl p-3.5 flex items-center justify-between gap-3 cursor-grab"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <GripVertical className="w-4 h-4 text-muted-theme shrink-0" />
+                          <span
+                            className="w-7 h-7 rounded-xl text-white text-xs font-extrabold flex items-center justify-center shrink-0"
+                            style={{ backgroundColor: s.color }}
+                          >
+                            {idx + 1}
+                          </span>
+                          <span className="text-sm font-bold truncate">{s.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            disabled={idx === 0}
+                            onClick={() => {
+                              const next = [...wizSubjectIds];
+                              [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                              setWizSubjectIds(next);
+                            }}
+                            className="p-1.5 rounded-lg card-surface disabled:opacity-30"
+                          >
+                            <ArrowUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={idx === wizSubjectIds.length - 1}
+                            onClick={() => {
+                              const next = [...wizSubjectIds];
+                              [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
+                              setWizSubjectIds(next);
+                            }}
+                            className="p-1.5 rounded-lg card-surface disabled:opacity-30"
+                          >
+                            <ArrowDown className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Etapa 3: Carga horária por dia da semana */}
+            {wizStep === 3 && (
+              <div className="space-y-4">
+                <div>
+                  <p className="text-sm font-bold">3. Determine sua carga horária de cada dia</p>
+                  <p className="text-xs text-muted-theme mt-0.5">
+                    Coloque 0h nos dias de descanso. Se você não estudar em algum dia, a sequência não pula nenhuma matéria!
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  {[1, 2, 3, 4, 5, 6, 0].map((dow) => (
+                    <div
+                      key={dow}
+                      className="subtle-surface rounded-2xl px-4 py-2.5 flex items-center justify-between gap-3 text-sm"
+                    >
+                      <span className="font-semibold">{DAY_FULL[dow]}</span>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          max="14"
+                          value={wizDailyHours[dow] ?? 0}
+                          onChange={(e) =>
+                            setWizDailyHours((prev) => ({
+                              ...prev,
+                              [dow]: Math.max(0, Number(e.target.value)),
+                            }))
+                          }
+                          className="w-20 rounded-xl card-surface px-3 py-1.5 text-center font-bold text-sm"
+                        />
+                        <span className="text-xs text-muted-theme w-8">horas</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-between text-xs pt-1">
+                  <span className="text-muted-theme">Duração de cada bloco:</span>
+                  <select
+                    value={wizBlockMin}
+                    onChange={(e) => setWizBlockMin(Number(e.target.value))}
+                    className="rounded-xl subtle-surface border border-theme px-3 py-1.5 font-bold"
+                  >
+                    <option value={60}>1h por bloco</option>
+                    <option value={90}>1h30 por bloco</option>
+                    <option value={120}>2h por bloco</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {/* Etapa 4: Nome, Data de Início e Estimativa de Término */}
+            {wizStep === 4 && (
+              <div className="space-y-4">
+                <p className="text-sm font-bold">4. Nome do cronograma e estimativa de conclusão</p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-muted-theme mb-1">
+                      Nome do Cronograma
+                    </label>
+                    <input
+                      value={wizName}
+                      onChange={(e) => setWizName(e.target.value)}
+                      placeholder="Ex: Reta Final TRT, Rotina 4h..."
+                      className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-muted-theme mb-1">
+                      Data de Início
+                    </label>
+                    <input
+                      type="date"
+                      value={wizStartDate}
+                      onChange={(e) => setWizStartDate(e.target.value)}
+                      className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-teal-600/12 border border-teal-500/30 p-5 space-y-2 text-sm">
+                  <p className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
+                    Estimativa de Conclusão do Edital
+                  </p>
+                  <p className="text-2xl font-extrabold text-teal-700 dark:text-teal-300">
+                    {formatDateBR(wizEstimatedEnd)}
+                  </p>
+                  <p className="text-xs text-muted-theme">
+                    Baseado em <strong>{wizRemainingTopics} tópicos pendentes</strong> nas{' '}
+                    <strong>{wizSubjectIds.length} matérias escolhidas</strong> com{' '}
+                    <strong>
+                      {Object.values(wizDailyHours).reduce((a, b) => a + b, 0)}h/semana
+                    </strong>
+                    .
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Rodapé Wizard */}
+            <div className="pt-3 border-t border-theme flex items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={wizStep === 1}
+                onClick={() => setWizStep((s) => (s > 1 ? ((s - 1) as 1 | 2 | 3 | 4) : s))}
+                className="px-4 py-2.5 rounded-2xl subtle-surface text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-35"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Voltar
+              </button>
+
+              {wizStep < 4 ? (
+                <button
+                  type="button"
+                  disabled={wizStep === 1 && wizSubjectIds.length === 0}
+                  onClick={() => setWizStep((s) => (s < 4 ? ((s + 1) as 1 | 2 | 3 | 4) : s))}
+                  className="px-5 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-40"
+                >
+                  Continuar
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={finishWizard}
+                  className="px-6 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-extrabold inline-flex items-center gap-1.5 shadow-md"
+                >
+                  <Check className="w-4 h-4" />
+                  Criar e Ativar Cronograma
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal Mover Matéria */}
       {moveTargetBlock && (
         <div className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4">
           <div className="card-surface w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl">
-            <h2 className="font-bold text-base">Mover Matéria e Recalcular Agenda</h2>
+            <h2 className="font-bold text-base">Mover Matéria e Recalcular Sequência</h2>
             <p className="text-xs text-muted-theme">
-              Mover <strong>{moveTargetBlock.name}</strong> (de {formatDateBR(moveTargetBlock.date)}) para outra data vai recalcular automaticamente todas as matérias seguintes para frente.
+              Mover <strong>{moveTargetBlock.name}</strong> para outra data recalcula toda a ordem seguinte sem pular nenhuma matéria.
             </p>
-            <div>
-              <label className="block text-xs text-muted-theme mb-1">Nova data:</label>
-              <input
-                type="date"
-                value={moveToDate}
-                onChange={(e) => setMoveToDate(e.target.value)}
-                className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
-              />
-            </div>
-            <div className="flex justify-end gap-2 pt-1">
+            <input
+              type="date"
+              value={moveToDate}
+              onChange={(e) => setMoveToDate(e.target.value)}
+              className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-sm"
+            />
+            <div className="flex justify-end gap-2">
               <button
                 onClick={() => setMoveTargetBlock(null)}
                 className="px-4 py-2 rounded-xl subtle-surface text-xs font-semibold"
@@ -838,9 +1218,9 @@ export default function AgendaPage() {
               </button>
               <button
                 onClick={() => moveBlockAndRecalculate(moveTargetBlock.id, moveToDate)}
-                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                className="px-4 py-2 rounded-xl bg-teal-600 text-white text-xs font-bold"
               >
-                Mover e Recalcular <ArrowRight className="w-3.5 h-3.5" />
+                Mover e Recalcular
               </button>
             </div>
           </div>

@@ -24,6 +24,7 @@ interface StopwatchState {
   topicId: string | null;
   elapsedSeconds: number;
   startedAt: number | null;
+  quickNote?: string;
 }
 
 interface ProfileContextValue {
@@ -50,6 +51,7 @@ interface ProfileContextValue {
   startStopwatch: (subjectId: string, topicId?: string | null) => void;
   pauseStopwatch: () => void;
   resetStopwatch: () => void;
+  setStopwatchNote: (note: string) => void;
 
   // Actions (all auto-sync to Supabase)
   updateProfile: (patch: Partial<Profile>) => Promise<void>;
@@ -57,8 +59,10 @@ interface ProfileContextValue {
   updateSubject: (id: string, patch: Partial<Subject>) => Promise<void>;
   reorderSubject: (id: string, direction: 'up' | 'down') => Promise<void>;
   moveSubject: (sourceId: string, targetId: string) => Promise<void>;
+  setSubjectOrder: (orderedIds: string[]) => Promise<void>;
   addTopic: (subjectId: string, title: string) => Promise<void>;
   toggleTopicStudied: (topic: Topic) => Promise<void>;
+  toggleSubjectStudied: (subjectId: string, markAll: boolean) => Promise<void>;
   toggleTopicPriority: (topic: Topic) => Promise<void>;
   updateTopicPdf: (topicId: string, pdfPath: string, pdfName: string) => Promise<void>;
   updateTopicVideo: (topicId: string, videoUrl: string | null) => Promise<void>;
@@ -71,6 +75,7 @@ interface ProfileContextValue {
   deleteStudyLog: (id: string) => Promise<void>;
 
   completeReview: (reviewId: string) => Promise<void>;
+  postponeReview: (reviewId: string, newDueDate: string) => Promise<void>;
   addErrorEntry: (
     payload: Omit<ErrorEntry, 'id' | 'user_id' | 'profile_id' | 'created_at'>
   ) => Promise<ErrorEntry | null>;
@@ -169,7 +174,22 @@ export function ProfileProvider({
     return () => clearInterval(timer);
   }, [stopwatch.running]);
 
+  const setStopwatchNote = (note: string) => {
+    setStopwatch((prev) => ({ ...prev, quickNote: note }));
+  };
+
   const startStopwatch = (subjectId: string, topicId: string | null = null) => {
+    if (
+      stopwatch.subjectId &&
+      stopwatch.subjectId !== subjectId &&
+      stopwatch.elapsedSeconds > 10 &&
+      typeof window !== 'undefined'
+    ) {
+      const ok = window.confirm(
+        'Já existe outro cronômetro ativo em outra matéria. Deseja trocar e iniciar o novo cronômetro?'
+      );
+      if (!ok) return;
+    }
     setStopwatch((prev) => ({
       running: true,
       subjectId,
@@ -288,6 +308,14 @@ export function ProfileProvider({
     refreshAll();
   }, [refreshAll]);
 
+  useEffect(() => {
+    const onRefresh = () => {
+      refreshAll();
+    };
+    window.addEventListener('studyflow:profile-refresh', onRefresh);
+    return () => window.removeEventListener('studyflow:profile-refresh', onRefresh);
+  }, [refreshAll]);
+
   const withSync = async <T,>(fn: () => Promise<T>): Promise<T> => {
     setSyncing(true);
     try {
@@ -353,6 +381,27 @@ export function ProfileProvider({
     });
   };
 
+  const setSubjectOrder = async (orderedIds: string[]) => {
+    const idPos = new Map(orderedIds.map((id, i) => [id, i]));
+    const next = [...subjects].sort((a, b) => {
+      const pa = idPos.has(a.id) ? idPos.get(a.id)! : 9999 + a.cycle_order;
+      const pb = idPos.has(b.id) ? idPos.get(b.id)! : 9999 + b.cycle_order;
+      return pa - pb;
+    });
+    const updated = next.map((s, i) => ({ ...s, cycle_order: i }));
+    setSubjects(updated);
+
+    await withSync(async () => {
+      const supabase = createClient();
+      await Promise.all(
+        updated.map((s) =>
+          supabase.from('subjects').update({ cycle_order: s.cycle_order }).eq('id', s.id)
+        )
+      );
+      notify('Ordem do Ciclo de Estudos atualizada pelo cronograma!');
+    });
+  };
+
   const moveSubject = async (sourceId: string, targetId: string) => {
     if (sourceId === targetId) return;
     const fromIdx = subjects.findIndex((s) => s.id === sourceId);
@@ -415,6 +464,70 @@ export function ProfileProvider({
         .select('*')
         .single();
       if (data) setTopics((prev) => [...prev, data as Topic]);
+    });
+  };
+
+  const toggleSubjectStudied = async (subjectId: string, markAll: boolean) => {
+    const subTopics = topics.filter((t) => t.subject_id === subjectId);
+    if (subTopics.length === 0) return;
+    const studiedAt = markAll ? new Date().toISOString() : null;
+
+    setTopics((prev) =>
+      prev.map((t) =>
+        t.subject_id === subjectId ? { ...t, studied: markAll, studied_at: studiedAt } : t
+      )
+    );
+
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase
+        .from('topics')
+        .update({ studied: markAll, studied_at: studiedAt })
+        .eq('subject_id', subjectId);
+
+      if (markAll) {
+        const base = todayISO();
+        const intervals = [1, 7, 30];
+        const newReviewsPayload: {
+          user_id: string;
+          profile_id: string;
+          subject_id: string;
+          topic_id: string;
+          interval_days: number;
+          due_date: string;
+          completed: boolean;
+        }[] = [];
+
+        subTopics.forEach((t) => {
+          const hasRev = reviews.some((r) => r.topic_id === t.id);
+          if (!hasRev) {
+            intervals.forEach((days) => {
+              newReviewsPayload.push({
+                user_id: userId,
+                profile_id: profileId,
+                subject_id: subjectId,
+                topic_id: t.id,
+                interval_days: days,
+                due_date: addDaysISO(base, days),
+                completed: false,
+              });
+            });
+          }
+        });
+
+        if (newReviewsPayload.length > 0) {
+          const { data: createdRevs } = await supabase
+            .from('spaced_reviews')
+            .insert(newReviewsPayload)
+            .select('*');
+          if (createdRevs) {
+            setReviews((prev) => [...prev, ...(createdRevs as SpacedReview[])]);
+          }
+        }
+        notify('Todos os tópicos da matéria foram marcados como estudados!');
+      } else {
+        notify('Tópicos da matéria desmarcados.', 'info');
+      }
     });
   };
 
@@ -565,7 +678,38 @@ export function ProfileProvider({
         .from('spaced_reviews')
         .update({ completed: true, completed_at: completedAt })
         .eq('id', reviewId);
-      notify('Revisão concluída! Progresso atualizado no Edital.');
+      notify('Revisão concluída!', 'success', async () => {
+        setReviews((prev) =>
+          prev.map((r) => (r.id === reviewId ? { ...r, completed: false, completed_at: null } : r))
+        );
+        const sb = createClient();
+        await sb
+          .from('spaced_reviews')
+          .update({ completed: false, completed_at: null })
+          .eq('id', reviewId);
+      });
+    });
+  };
+
+  const postponeReview = async (reviewId: string, newDueDate: string) => {
+    const prevRev = reviews.find((r) => r.id === reviewId);
+    setReviews((prev) =>
+      prev.map((r) => (r.id === reviewId ? { ...r, due_date: newDueDate } : r))
+    );
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('spaced_reviews').update({ due_date: newDueDate }).eq('id', reviewId);
+      notify(`Revisão adiada para ${newDueDate.split('-').reverse().join('/')}.`, 'info', async () => {
+        if (!prevRev) return;
+        setReviews((prev) =>
+          prev.map((r) => (r.id === reviewId ? { ...r, due_date: prevRev.due_date } : r))
+        );
+        const sb = createClient();
+        await sb
+          .from('spaced_reviews')
+          .update({ due_date: prevRev.due_date })
+          .eq('id', reviewId);
+      });
     });
   };
 
@@ -711,10 +855,23 @@ export function ProfileProvider({
   };
 
   const deleteFlashcard = async (id: string) => {
+    const deleted = flashcards.find((c) => c.id === id);
     setFlashcards((prev) => prev.filter((c) => c.id !== id));
     await withSync(async () => {
       const supabase = createClient();
       await supabase.from('flashcards').delete().eq('id', id);
+      if (deleted) {
+        notify('Flashcard excluído.', 'info', async () => {
+          await addFlashcards([
+            {
+              subject_id: deleted.subject_id,
+              topic_id: deleted.topic_id,
+              front: deleted.front,
+              back: deleted.back,
+            },
+          ]);
+        });
+      }
     });
   };
 
@@ -742,13 +899,16 @@ export function ProfileProvider({
         startStopwatch,
         pauseStopwatch,
         resetStopwatch,
+        setStopwatchNote,
         updateProfile,
         addSubject,
         updateSubject,
         reorderSubject,
         moveSubject,
+        setSubjectOrder,
         addTopic,
         toggleTopicStudied,
+        toggleSubjectStudied,
         toggleTopicPriority,
         updateTopicPdf,
         updateTopicVideo,
@@ -757,6 +917,7 @@ export function ProfileProvider({
         addStudyLog,
         deleteStudyLog,
         completeReview,
+        postponeReview,
         addErrorEntry,
         updateErrorEntry,
         deleteErrorEntry,

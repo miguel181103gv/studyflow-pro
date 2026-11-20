@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
 import { todayISO } from '@/lib/utils';
 import type { ErrorEntry } from '@/lib/types';
@@ -54,7 +55,7 @@ export default function CadernoErrosPage() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [aiLoadingId, setAiLoadingId] = useState<string | null>(null);
+  const { aiJobs, runAiJob } = useGlobal();
 
   // Flashcard Active Review Mode
   const [flashcardMode, setFlashcardMode] = useState(false);
@@ -142,47 +143,59 @@ export default function CadernoErrosPage() {
     }
   }
 
-  async function explainWithGemini(entry: ErrorEntry) {
-    setAiLoadingId(entry.id);
-    try {
-      const sub = subjects.find((s) => s.id === entry.subject_id);
-      const top = topics.find((t) => t.id === entry.topic_id);
+  function explainWithGemini(entry: ErrorEntry) {
+    const sub = subjects.find((s) => s.id === entry.subject_id);
+    const top = topics.find((t) => t.id === entry.topic_id);
+    const signedImg = entry.image_path ? signedUrls[entry.image_path] : undefined;
 
-      let imageBase64: string | undefined;
-      if (entry.image_path && signedUrls[entry.image_path]) {
-        const imgRes = await fetch(signedUrls[entry.image_path]);
-        const buf = await imgRes.arrayBuffer();
-        const bytes = new Uint8Array(buf);
-        let bin = '';
-        for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-        imageBase64 = btoa(bin);
-      }
+    runAiJob({
+      id: `explain_error:${entry.id}`,
+      kind: 'explain_error',
+      label: `Explicando erro de ${sub?.name || 'Matéria'}`,
+      route: profile ? `/p/${profile.id}/erros` : undefined,
+      successMsg: `Explicação de ${sub?.name || 'Matéria'} salva no Caderno de Erros!`,
+      task: async () => {
+        let imageBase64: string | undefined;
+        if (signedImg) {
+          const imgRes = await fetch(signedImg);
+          const buf = await imgRes.arrayBuffer();
+          const bytes = new Uint8Array(buf);
+          let bin = '';
+          for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+          imageBase64 = btoa(bin);
+        }
 
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'explain_error',
-          subjectName: sub?.name || 'Matéria',
-          topicTitle: top?.title || '',
-          questionText: entry.question_text,
-          userAnswer: entry.user_answer,
-          correctAnswer: entry.correct_answer,
-          imageBase64,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao explicar.');
-
-      await updateErrorEntry(entry.id, {
-        explanation: json.data.explanation || '',
-        golden_rule: json.data.golden_rule || '',
-      });
-    } catch (err) {
-      alert(err instanceof Error ? err.message : 'Erro ao consultar Gemini.');
-    } finally {
-      setAiLoadingId(null);
-    }
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'explain_error',
+            subjectName: sub?.name || 'Matéria',
+            topicTitle: top?.title || '',
+            questionText: entry.question_text,
+            userAnswer: entry.user_answer,
+            correctAnswer: entry.correct_answer,
+            imageBase64,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao explicar.');
+        return {
+          explanation: json.data.explanation || '',
+          golden_rule: json.data.golden_rule || '',
+        };
+      },
+      onDone: async (data) => {
+        const supabase = createClient();
+        await supabase
+          .from('error_entries')
+          .update({
+            explanation: data.explanation,
+            golden_rule: data.golden_rule,
+          })
+          .eq('id', entry.id);
+      },
+    });
   }
 
   const visibleErrors = filterSubject
@@ -214,7 +227,7 @@ export default function CadernoErrosPage() {
           )}
           <button
             onClick={() => setShowAdd(true)}
-            className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+            className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
             Novo Erro
@@ -227,7 +240,7 @@ export default function CadernoErrosPage() {
         <button
           onClick={() => setFilterSubject('')}
           className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
-            !filterSubject ? 'bg-blue-600 text-white' : 'card-surface'
+            !filterSubject ? 'bg-teal-600 text-white' : 'card-surface'
           }`}
         >
           Todas ({errors.length})
@@ -240,7 +253,7 @@ export default function CadernoErrosPage() {
               key={s.id}
               onClick={() => setFilterSubject(s.id)}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
-                filterSubject === s.id ? 'bg-blue-600 text-white' : 'card-surface'
+                filterSubject === s.id ? 'bg-teal-600 text-white' : 'card-surface'
               }`}
             >
               {s.name} ({cnt})
@@ -326,9 +339,18 @@ export default function CadernoErrosPage() {
 
                 {entry.explanation && (
                   <div className="rounded-xl subtle-surface p-3 space-y-1">
-                    <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
-                      Explicação / Sugestão IA (confirme com o gabarito oficial)
-                    </p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
+                        Explicação / Sugestão IA (confirme com o gabarito oficial)
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard?.writeText(entry.explanation)}
+                        className="text-[10px] font-bold text-teal-600 hover:underline"
+                      >
+                        Copiar
+                      </button>
+                    </div>
                     <p className="text-xs text-muted-theme leading-relaxed">{entry.explanation}</p>
                   </div>
                 )}
@@ -336,15 +358,17 @@ export default function CadernoErrosPage() {
                 <div className="pt-1 flex justify-end">
                   <button
                     onClick={() => explainWithGemini(entry)}
-                    disabled={aiLoadingId === entry.id}
+                    disabled={aiJobs[`explain_error:${entry.id}`]?.status === 'running'}
                     className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
                   >
-                    {aiLoadingId === entry.id ? (
+                    {aiJobs[`explain_error:${entry.id}`]?.status === 'running' ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     ) : (
                       <Sparkles className="w-3.5 h-3.5" />
                     )}
-                    Explicar com Gemini
+                    {aiJobs[`explain_error:${entry.id}`]?.status === 'running'
+                      ? 'Analisando com Gemini...'
+                      : 'Explicar com Gemini'}
                   </button>
                 </div>
               </div>
@@ -369,7 +393,7 @@ export default function CadernoErrosPage() {
           onPaste={handlePaste}
           className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4 overflow-y-auto"
         >
-          <div className="card-surface w-full max-w-lg rounded-3xl p-6 my-8 shadow-2xl">
+          <div className="card-surface w-full max-w-lg rounded-3xl p-6 my-8 shadow-2xl animate-pop-in">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-lg">Adicionar ao Caderno de Erros</h2>
               <button onClick={() => setShowAdd(false)} className="p-2 rounded-xl subtle-surface">
@@ -423,7 +447,7 @@ export default function CadernoErrosPage() {
                 <p className="text-xs text-muted-theme mb-2">
                   Aperte <strong>Ctrl+V</strong> para colar o print ou selecione abaixo:
                 </p>
-                <label className="cursor-pointer inline-block px-3 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold">
+                <label className="cursor-pointer inline-block px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold">
                   Escolher Imagem
                   <input
                     type="file"
@@ -481,7 +505,7 @@ export default function CadernoErrosPage() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="px-5 py-2 rounded-xl bg-blue-600 text-white text-xs font-semibold"
+                  className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
                 >
                   {saving ? 'Salvando...' : 'Salvar Erro'}
                 </button>
@@ -494,7 +518,7 @@ export default function CadernoErrosPage() {
       {/* Flashcards Modal */}
       {flashcardMode && visibleErrors[fcIndex] && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-          <div className="card-surface w-full max-w-xl rounded-3xl p-6 space-y-4">
+          <div className="card-surface w-full max-w-xl rounded-3xl p-6 space-y-4 animate-pop-in">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-amber-500">
                 Flashcard {fcIndex + 1} de {visibleErrors.length}
@@ -537,7 +561,7 @@ export default function CadernoErrosPage() {
             ) : (
               <button
                 onClick={() => setFcRevealed(true)}
-                className="w-full py-3 rounded-xl bg-blue-600 text-white text-xs font-semibold inline-flex items-center justify-center gap-2"
+                className="w-full py-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-2"
               >
                 <RotateCw className="w-4 h-4" />
                 Mostrar Resposta e Regra de Ouro

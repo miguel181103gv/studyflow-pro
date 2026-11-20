@@ -443,6 +443,12 @@ export default function DashboardPage() {
           <p className="text-xs text-muted-theme">
             de uma meta diária de <strong>{dailyGoalHours}h</strong>
           </p>
+          <div className="h-1.5 w-full rounded-full subtle-surface overflow-hidden">
+            <div
+              className="h-full rounded-full bg-teal-600 transition-all duration-300"
+              style={{ width: `${Math.min(100, Math.round((todaySeconds / (dailyGoalHours * 3600)) * 100))}%` }}
+            />
+          </div>
         </Link>
 
         <Link
@@ -481,6 +487,12 @@ export default function DashboardPage() {
           <p className="text-xs text-muted-theme">
             tópicos concluídos ({editalProgress}% do edital)
           </p>
+          <div className="h-1.5 w-full rounded-full subtle-surface overflow-hidden">
+            <div
+              className="h-full rounded-full bg-teal-600 transition-all duration-300"
+              style={{ width: `${editalProgress}%` }}
+            />
+          </div>
         </Link>
 
         <Link
@@ -544,7 +556,20 @@ export default function DashboardPage() {
                 <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.18} />
                 <XAxis dataKey="day" fontSize={12} axisLine={false} tickLine={false} />
                 <YAxis fontSize={12} allowDecimals={false} axisLine={false} tickLine={false} />
-                <Tooltip />
+                <Tooltip
+                  cursor={{ fill: 'rgba(13, 148, 136, 0.08)' }}
+                  contentStyle={{
+                    backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                    borderRadius: '14px',
+                    color: '#f8fafc',
+                    fontSize: '12px',
+                    boxShadow: '0 10px 25px -5px rgba(0,0,0,0.35)',
+                    padding: '10px 14px',
+                  }}
+                  itemStyle={{ color: '#f1f5f9', fontWeight: 600 }}
+                  labelStyle={{ color: '#94a3b8', fontWeight: 700, marginBottom: '4px' }}
+                />
                 <Bar dataKey="Acertos" stackId="a" fill="#0d9488" radius={[0, 0, 6, 6]} />
                 <Bar dataKey="Erros" stackId="a" fill="#f43f5e" radius={[6, 6, 0, 0]} />
               </BarChart>

@@ -57,6 +57,7 @@ export default function MateriasPage() {
   const [videoIdx, setVideoIdx] = useState(0);
   const [hlText, setHlText] = useState('');
   const [hlNote, setHlNote] = useState('');
+  const [hlPage, setHlPage] = useState('1');
   const [hlColor, setHlColor] = useState('#fef08a');
 
   const currentSubjectId = selectedSubjectId || subjects[0]?.id || '';
@@ -68,6 +69,12 @@ export default function MateriasPage() {
   async function handleAddTopic(e: React.FormEvent) {
     e.preventDefault();
     if (!currentSubjectId || !newTopicTitle.trim()) return;
+    const duplicate = currentTopics.some(
+      (t) => t.title.trim().toLowerCase() === newTopicTitle.trim().toLowerCase()
+    );
+    if (duplicate && !confirm('Já existe um tópico com nome igual nesta matéria. Deseja adicionar mesmo assim?')) {
+      return;
+    }
     await addTopic(currentSubjectId, newTopicTitle);
     setNewTopicTitle('');
   }
@@ -185,7 +192,7 @@ export default function MateriasPage() {
       text: hlText.trim(),
       note: hlNote.trim(),
       color: hlColor,
-      page_number: 1,
+      page_number: Math.max(1, Number(hlPage) || 1),
     });
     setHlText('');
     setHlNote('');
@@ -492,12 +499,23 @@ export default function MateriasPage() {
                     placeholder="Cole ou digite o trecho importante..."
                     className="w-full rounded-xl subtle-surface border border-theme p-2.5 text-xs"
                   />
-                  <input
-                    value={hlNote}
-                    onChange={(e) => setHlNote(e.target.value)}
-                    placeholder="Observação rápida (opcional)"
-                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      value={hlNote}
+                      onChange={(e) => setHlNote(e.target.value)}
+                      placeholder="Observação rápida (opcional)"
+                      className="flex-1 rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      value={hlPage}
+                      onChange={(e) => setHlPage(e.target.value)}
+                      placeholder="Pág."
+                      title="Página do PDF"
+                      className="w-16 rounded-xl subtle-surface border border-theme px-2 py-2 text-xs text-center"
+                    />
+                  </div>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
                       {['#fef08a', '#bbf7d0', '#bae6fd', '#fbcfe8'].map((c) => (
@@ -535,7 +553,7 @@ export default function MateriasPage() {
                         <Trash2 className="w-3 h-3" />
                       </button>
                       <p className="font-medium pr-5">{h.text}</p>
-                      {h.note && <p className="mt-1 opacity-80">Obs: {h.note}</p>}
+                      <p className="mt-1 text-[10px] font-bold opacity-70">Pág. {h.page_number || 1}{h.note ? ` · ${h.note}` : ''}</p>
                     </div>
                   ))}
                 </div>
