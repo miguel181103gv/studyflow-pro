@@ -26,7 +26,6 @@ import {
   ChevronDown,
   ChevronUp,
   AlertTriangle,
-  Check,
   Pencil,
   Sparkles,
 } from 'lucide-react';
@@ -154,11 +153,17 @@ export default function DashboardPage() {
     .sort((a, b) => b.riskScore - a.riskScore)
     .slice(0, 3);
 
-  // Constância 30 dias (detalhe recolhível)
+  // Constância 30 dias (da esquerda para a direita a partir do início dos estudos ou janela de 30 dias)
   const studyDateSet = new Set(studyLogs.map((l) => l.study_date));
+  const windowMinISO = addDaysISO(today, -29);
+  const recentStudyDates = Array.from(studyDateSet)
+    .filter((d) => d >= windowMinISO && d <= today)
+    .sort();
+  const consistencyStartISO =
+    recentStudyDates.length > 0 ? recentStudyDates[0] : today;
   const last30Days = Array.from({ length: 30 }, (_, i) => {
-    const iso = addDaysISO(today, i - 29);
-    return { iso, studied: studyDateSet.has(iso) };
+    const iso = addDaysISO(consistencyStartISO, i);
+    return { iso, studied: studyDateSet.has(iso), isFuture: iso > today };
   });
   let streakDays = 0;
   let cursorDate = studyDateSet.has(today) ? today : addDaysISO(today, -1);
@@ -667,18 +672,16 @@ export default function DashboardPage() {
               {last30Days.map((d) => (
                 <div
                   key={d.iso}
-                  title={`${formatDateBR(d.iso)} — ${d.studied ? 'Estudado' : 'Sem registro'}`}
-                  className={`h-8 rounded-xl flex items-center justify-center border ${
+                  title={`${formatDateBR(d.iso)} — ${
+                    d.studied ? 'Estudado' : d.isFuture ? 'Próximo dia' : 'Sem registro'
+                  }`}
+                  className={`h-8 rounded-xl flex items-center justify-center border transition-colors ${
                     d.studied
-                      ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-300'
-                      : 'subtle-surface border-transparent text-muted-theme/40'
+                      ? 'bg-orange-500/15 border-orange-500/40 text-orange-500'
+                      : 'subtle-surface border-transparent'
                   }`}
                 >
-                  {d.studied ? (
-                    <Check className="w-4 h-4 stroke-[2.5]" />
-                  ) : (
-                    <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                  )}
+                  {d.studied && <Flame className="w-4 h-4 fill-orange-500 text-orange-500" />}
                 </div>
               ))}
             </div>

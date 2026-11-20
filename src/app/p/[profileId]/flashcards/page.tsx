@@ -17,9 +17,11 @@ import {
   Globe2,
   FileText,
   PenLine,
-  BookOpen,
-  FolderOpen,
+  ChevronRight,
+  ChevronDown,
+  ArrowLeft,
   Check,
+  BookOpen,
 } from 'lucide-react';
 
 function plural(count: number, singular: string, pluralForm: string) {
@@ -57,6 +59,12 @@ function parseBulkFlashcards(raw: string): { front: string; back: string }[] {
   return results;
 }
 
+type SelectedDeck =
+  | null
+  | { type: 'course' }
+  | { type: 'subject'; subjectId: string }
+  | { type: 'topic'; subjectId: string; topicId: string };
+
 type CreateTab = 'manual' | 'ai' | 'bulk';
 
 export default function FlashcardsPage() {
@@ -74,19 +82,23 @@ export default function FlashcardsPage() {
   } = useProfile();
 
   const { aiJobs, runAiJob } = useGlobal();
-
   const today = todayISO();
-  const [selectedSubjectId, setSelectedSubjectId] = useState(subjects[0]?.id || '');
-  const [selectedTopicId, setSelectedTopicId] = useState<string>('');
 
-  // Ações secundárias recolhíveis para criar matéria / tópico
+  // Passo 1: Seleção limpa de baralho (Curso todo | Matéria | Tópico)
+  const [selectedDeck, setSelectedDeck] = useState<SelectedDeck>(null);
+  const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
+
+  // Criar matéria / tópico discretamente na tela inicial
   const [showNewSubject, setShowNewSubject] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
-  const [showNewTopic, setShowNewTopic] = useState(false);
+  const [addingTopicForSubject, setAddingTopicForSubject] = useState<string | null>(null);
   const [newTopicName, setNewTopicName] = useState('');
 
-  // Aba única de criação: Manual (padrão) | Gerar com IA | Importar lista
+  // Passo 2: Painel de criação (só abre ao clicar em "+ Adicionar")
+  const [showCreatePanel, setShowCreatePanel] = useState(false);
   const [createTab, setCreateTab] = useState<CreateTab>('manual');
+  const [targetSubjectId, setTargetSubjectId] = useState('');
+  const [targetTopicId, setTargetTopicId] = useState('');
 
   // Form Manual
   const [front, setFront] = useState('');
@@ -105,60 +117,106 @@ export default function FlashcardsPage() {
   const generating = flashcardJob?.status === 'running';
   const aiError = flashcardJob?.status === 'error' ? flashcardJob.error || null : null;
 
-  // Modo Estudo Espaçado (SM-2)
+  // Modo Estudo SM-2
   const [studying, setStudying] = useState(false);
-  const [studyScopeLabel, setStudyScopeLabel] = useState('');
   const [studyQueueIds, setStudyQueueIds] = useState<string[]>([]);
   const [studyHistoryIds, setStudyHistoryIds] = useState<string[]>([]);
   const [studyTotalCount, setStudyTotalCount] = useState(0);
   const [revealed, setRevealed] = useState(false);
 
-  const currentSubjectId = selectedSubjectId || subjects[0]?.id || '';
-  const currentSubject = subjects.find((s) => s.id === currentSubjectId);
-  const subjectTopics = topics.filter((t) => t.subject_id === currentSubjectId);
-  const currentTopic = subjectTopics.find((t) => t.id === selectedTopicId);
+  // Mantém destino de criação alinhado ao baralho escolhido
+  useEffect(() => {
+    if (!selectedDeck) {
+      setShowCreatePanel(false);
+      return;
+    }
+    if (selectedDeck.type === 'topic') {
+      setTargetSubjectId(selectedDeck.subjectId);
+      setTargetTopicId(selectedDeck.topicId);
+    } else if (selectedDeck.type === 'subject') {
+      setTargetSubjectId(selectedDeck.subjectId);
+      setTargetTopicId('');
+    } else {
+      setTargetSubjectId(subjects[0]?.id || '');
+      setTargetTopicId('');
+    }
+  }, [selectedDeck, subjects]);
 
-  // Contagens por escopo (sem ambiguidade)
-  const subjectCards = flashcards.filter((c) => c.subject_id === currentSubjectId);
-  const subjectDueCards = subjectCards.filter((c) => c.due_date <= today);
+  const allDueCount = flashcards.filter((c) => c.due_date <= today).length;
 
-  const topicCards = selectedTopicId
-    ? subjectCards.filter((c) => c.topic_id === selectedTopicId)
-    : subjectCards;
-  const topicDueCards = topicCards.filter((c) => c.due_date <= today);
+  // Dados do baralho ativo (Passo 2)
+  const activeSubject =
+    selectedDeck && selectedDeck.type !== 'course'
+      ? subjects.find((s) => s.id === selectedDeck.subjectId)
+      : undefined;
+  const activeTopic =
+    selectedDeck && selectedDeck.type === 'topic'
+      ? topics.find((t) => t.id === selectedDeck.topicId)
+      : undefined;
 
-  const allDueCards = flashcards.filter((c) => c.due_date <= today);
+  const deckCards = !selectedDeck
+    ? []
+    : selectedDeck.type === 'course'
+    ? flashcards
+    : selectedDeck.type === 'subject'
+    ? flashcards.filter((c) => c.subject_id === selectedDeck.subjectId)
+    : flashcards.filter(
+        (c) => c.subject_id === selectedDeck.subjectId && c.topic_id === selectedDeck.topicId
+      );
+
+  const deckDueCards = deckCards.filter((c) => c.due_date <= today);
+
+  const deckTitle = !selectedDeck
+    ? ''
+    : selectedDeck.type === 'course'
+    ? `${profile?.name || 'Concurso'} (Curso completo)`
+    : selectedDeck.type === 'subject'
+    ? activeSubject?.name || 'Matéria'
+    : activeTopic?.title || 'Tópico';
+
+  const deckSubtitle = !selectedDeck
+    ? ''
+    : selectedDeck.type === 'course'
+    ? 'Todas as matérias e tópicos juntos'
+    : selectedDeck.type === 'subject'
+    ? 'Todos os tópicos desta matéria'
+    : activeSubject?.name || '';
 
   const parsedBulk = parseBulkFlashcards(bulkText);
+
+  const effectiveSubjectId = targetSubjectId || subjects[0]?.id || '';
+  const effectiveSubject = subjects.find((s) => s.id === effectiveSubjectId);
+  const effectiveSubjectTopics = topics.filter((t) => t.subject_id === effectiveSubjectId);
+  const effectiveTopic = effectiveSubjectTopics.find((t) => t.id === targetTopicId);
+
+  function toggleExpandSubject(subjectId: string) {
+    setExpandedSubjects((prev) => ({ ...prev, [subjectId]: !prev[subjectId] }));
+  }
 
   async function handleAddSubject(e: React.FormEvent) {
     e.preventDefault();
     if (!newSubjectName.trim()) return;
-    const created = await addSubject(newSubjectName.trim());
-    if (created) {
-      setSelectedSubjectId(created.id);
-      setSelectedTopicId('');
-    }
+    await addSubject(newSubjectName.trim());
     setNewSubjectName('');
     setShowNewSubject(false);
   }
 
-  async function handleAddTopic(e: React.FormEvent) {
+  async function handleAddTopic(e: React.FormEvent, subjectId: string) {
     e.preventDefault();
-    if (!currentSubjectId || !newTopicName.trim()) return;
-    await addTopic(currentSubjectId, newTopicName.trim());
+    if (!newTopicName.trim()) return;
+    await addTopic(subjectId, newTopicName.trim());
     setNewTopicName('');
-    setShowNewTopic(false);
+    setAddingTopicForSubject(null);
   }
 
   async function handleAddCard(e: React.FormEvent) {
     e.preventDefault();
-    if (!currentSubjectId || !front.trim() || !back.trim()) return;
+    if (!effectiveSubjectId || !front.trim() || !back.trim()) return;
     setSaving(true);
     await addFlashcards([
       {
-        subject_id: currentSubjectId,
-        topic_id: selectedTopicId || null,
+        subject_id: effectiveSubjectId,
+        topic_id: targetTopicId || null,
         front,
         back,
       },
@@ -169,12 +227,12 @@ export default function FlashcardsPage() {
   }
 
   async function handleBulkImport() {
-    if (!currentSubjectId || parsedBulk.length === 0) return;
+    if (!effectiveSubjectId || parsedBulk.length === 0) return;
     setImportingBulk(true);
     await addFlashcards(
       parsedBulk.map((c) => ({
-        subject_id: currentSubjectId,
-        topic_id: selectedTopicId || null,
+        subject_id: effectiveSubjectId,
+        topic_id: targetTopicId || null,
         front: c.front,
         back: c.back,
       }))
@@ -184,17 +242,17 @@ export default function FlashcardsPage() {
   }
 
   function handleGenerateWithGemini() {
-    if (!currentSubject || !profile || !userId) return;
-    const subjectIdSnap = currentSubject.id;
-    const subjectNameSnap = currentSubject.name;
-    const topicIdSnap = selectedTopicId || null;
+    if (!effectiveSubject || !profile || !userId) return;
+    const subjectIdSnap = effectiveSubject.id;
+    const subjectNameSnap = effectiveSubject.name;
+    const topicIdSnap = targetTopicId || null;
     const profileIdSnap = profile.id;
     const profileNameSnap = profile.name || 'Concurso Público';
     const userIdSnap = userId;
     const countSnap = genCount;
     const topicPrompt =
       customTheme.trim() ||
-      currentTopic?.title ||
+      effectiveTopic?.title ||
       `Principais pontos cobrados em prova de ${subjectNameSnap}`;
 
     runAiJob({
@@ -202,7 +260,7 @@ export default function FlashcardsPage() {
       kind: 'flashcards',
       label: `Gerando ${countSnap} flashcards de ${subjectNameSnap}`,
       route: `/p/${profileIdSnap}/flashcards`,
-      successMsg: `${countSnap} flashcards de ${subjectNameSnap} salvos no baralho!`,
+      successMsg: `${countSnap} flashcards de ${subjectNameSnap} salvos!`,
       task: async () => {
         const res = await fetch('/api/gemini', {
           method: 'POST',
@@ -241,10 +299,9 @@ export default function FlashcardsPage() {
     });
   }
 
-  function startStudySession(cardsPool: typeof flashcards, scopeLabel: string) {
+  function startStudySession(cardsPool: typeof flashcards) {
     if (cardsPool.length === 0) return;
     const shuffled = [...cardsPool].sort(() => Math.random() - 0.5);
-    setStudyScopeLabel(scopeLabel);
     setStudyQueueIds(shuffled.map((c) => c.id));
     setStudyHistoryIds([]);
     setStudyTotalCount(shuffled.length);
@@ -298,27 +355,58 @@ export default function FlashcardsPage() {
     'w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2.5 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500';
 
   return (
-    <div className="space-y-6">
-      {/* Cabeçalho limpo */}
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <Layers className="w-6 h-6 text-teal-600" />
-          Flashcards & Revisão Espaçada
-        </h1>
-        <p className="text-sm text-muted-theme mt-0.5">
-          Escolha a matéria e o tópico, crie seus cards e estude por tópico, por matéria ou no baralho completo.
-        </p>
-      </div>
+    <div className="space-y-6 max-w-4xl mx-auto">
+      {/* ============================================================
+          TELA 1: ESCOLHER BARALHO (CURSO TODO · MATÉRIA · TÓPICO)
+          ============================================================ */}
+      {!selectedDeck ? (
+        <div className="space-y-5 animate-fade-in-up">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+                <Layers className="w-6 h-6 text-teal-600" />
+                Flashcards
+              </h1>
+              <p className="text-sm text-muted-theme mt-0.5">
+                Escolha o curso todo, uma matéria ou um tópico para estudar ou adicionar cards.
+              </p>
+            </div>
+          </div>
 
-      {/* 1. ESCOLHA ONDE OS CARDS FICAM (MATÉRIA + TÓPICO + RESUMO COMPACTO) */}
-      <div className="card-surface rounded-2xl p-5 space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Seletor de Matéria */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="fc-subject" className="text-xs font-bold uppercase tracking-wider text-muted-theme">
-                1. Matéria
-              </label>
+          {/* Opção 1: Curso completo */}
+          <button
+            type="button"
+            onClick={() => setSelectedDeck({ type: 'course' })}
+            className="w-full text-left card-surface rounded-2xl p-5 hover:border-teal-500/50 flex items-center justify-between gap-4 group"
+          >
+            <div className="flex items-center gap-3.5 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-teal-600/12 text-teal-600 flex items-center justify-center shrink-0">
+                <Globe2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="font-bold text-base truncate">
+                  {profile?.name || 'Concurso'} — Curso todo
+                </p>
+                <p className="text-xs text-muted-theme mt-0.5">
+                  {plural(flashcards.length, 'card', 'cards')} no total
+                  {allDueCount > 0 && (
+                    <span className="text-emerald-600 font-semibold">
+                      {' '}
+                      · {plural(allDueCount, 'pendente hoje', 'pendentes hoje')}
+                    </span>
+                  )}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-muted-theme group-hover:text-teal-600 shrink-0" />
+          </button>
+
+          {/* Opção 2 e 3: Matérias e subopções de Tópicos */}
+          <div className="card-surface rounded-2xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-theme flex items-center justify-between gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-theme">
+                Por Matéria e Tópico
+              </span>
               <button
                 type="button"
                 onClick={() => setShowNewSubject((v) => !v)}
@@ -328,27 +416,12 @@ export default function FlashcardsPage() {
                 {showNewSubject ? 'Cancelar' : 'Nova matéria'}
               </button>
             </div>
-            <select
-              id="fc-subject"
-              value={currentSubjectId}
-              onChange={(e) => {
-                setSelectedSubjectId(e.target.value);
-                setSelectedTopicId('');
-              }}
-              className={inputClass}
-            >
-              {subjects.map((s) => {
-                const cnt = flashcards.filter((c) => c.subject_id === s.id).length;
-                return (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({plural(cnt, 'card', 'cards')})
-                  </option>
-                );
-              })}
-            </select>
 
             {showNewSubject && (
-              <form onSubmit={handleAddSubject} className="flex gap-2 pt-1 animate-fade-in-up">
+              <form
+                onSubmit={handleAddSubject}
+                className="px-5 py-3 border-b border-theme subtle-surface flex gap-2 animate-fade-in-up"
+              >
                 <input
                   autoFocus
                   value={newSubjectName}
@@ -358,490 +431,486 @@ export default function FlashcardsPage() {
                 />
                 <button
                   type="submit"
-                  className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold shrink-0 inline-flex items-center gap-1"
+                  className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold shrink-0 inline-flex items-center gap-1"
                 >
                   <Check className="w-3.5 h-3.5" />
                   Salvar
                 </button>
               </form>
             )}
-          </div>
 
-          {/* Seletor de Tópico */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between gap-2">
-              <label htmlFor="fc-topic" className="text-xs font-bold uppercase tracking-wider text-muted-theme">
-                2. Tópico
-              </label>
-              <button
-                type="button"
-                onClick={() => setShowNewTopic((v) => !v)}
-                className="text-xs font-semibold text-teal-600 hover:underline inline-flex items-center gap-1"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                {showNewTopic ? 'Cancelar' : 'Novo tópico'}
-              </button>
-            </div>
-            <select
-              id="fc-topic"
-              value={selectedTopicId}
-              onChange={(e) => setSelectedTopicId(e.target.value)}
-              className={inputClass}
-            >
-              <option value="">Todos os tópicos de {currentSubject?.name || 'matéria'}</option>
-              {subjectTopics.map((t) => {
-                const cnt = flashcards.filter((c) => c.topic_id === t.id).length;
+            <div className="divide-y divide-[var(--border-main)]">
+              {subjects.map((sub) => {
+                const subCards = flashcards.filter((c) => c.subject_id === sub.id);
+                const subDue = subCards.filter((c) => c.due_date <= today).length;
+                const subTopics = topics.filter((t) => t.subject_id === sub.id);
+                const isOpen = !!expandedSubjects[sub.id];
+
                 return (
-                  <option key={t.id} value={t.id}>
-                    {t.title} ({plural(cnt, 'card', 'cards')})
-                  </option>
+                  <div key={sub.id}>
+                    <div className="px-4 py-3.5 flex items-center justify-between gap-3 hover:bg-[var(--bg-subtle)]/60 transition-colors">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <button
+                          type="button"
+                          onClick={() => toggleExpandSubject(sub.id)}
+                          aria-label={isOpen ? 'Recolher tópicos' : 'Expandir tópicos'}
+                          className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-muted-theme shrink-0"
+                        >
+                          {isOpen ? (
+                            <ChevronDown className="w-4 h-4" />
+                          ) : (
+                            <ChevronRight className="w-4 h-4" />
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setSelectedDeck({ type: 'subject', subjectId: sub.id })}
+                          className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                        >
+                          <span
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: sub.color }}
+                          />
+                          <div className="min-w-0">
+                            <p className="font-semibold text-sm truncate">{sub.name}</p>
+                            <p className="text-xs text-muted-theme">
+                              {plural(subCards.length, 'card', 'cards')}
+                              {subDue > 0 && (
+                                <span className="text-emerald-600 font-semibold">
+                                  {' '}
+                                  · {plural(subDue, 'pendente', 'pendentes')}
+                                </span>
+                              )}
+                              {subTopics.length > 0 && ` · ${plural(subTopics.length, 'tópico', 'tópicos')}`}
+                            </p>
+                          </div>
+                        </button>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDeck({ type: 'subject', subjectId: sub.id })}
+                        className="px-3 py-1.5 rounded-xl subtle-surface hover:bg-teal-600 hover:text-white text-xs font-semibold shrink-0"
+                      >
+                        Abrir
+                      </button>
+                    </div>
+
+                    {/* Subopções de tópicos */}
+                    {isOpen && (
+                      <div className="bg-[var(--bg-subtle)]/40 border-t border-theme pl-11 pr-4 py-2 space-y-1 animate-fade-in-up">
+                        {subTopics.map((tp) => {
+                          const tpCards = flashcards.filter((c) => c.topic_id === tp.id);
+                          const tpDue = tpCards.filter((c) => c.due_date <= today).length;
+                          return (
+                            <button
+                              key={tp.id}
+                              type="button"
+                              onClick={() =>
+                                setSelectedDeck({
+                                  type: 'topic',
+                                  subjectId: sub.id,
+                                  topicId: tp.id,
+                                })
+                              }
+                              className="w-full text-left px-3 py-2 rounded-xl hover:bg-[var(--bg-card)] flex items-center justify-between gap-3 transition-colors"
+                            >
+                              <span className="text-xs font-medium truncate">{tp.title}</span>
+                              <span className="text-[11px] text-muted-theme shrink-0">
+                                {plural(tpCards.length, 'card', 'cards')}
+                                {tpDue > 0 && (
+                                  <span className="text-emerald-600 font-semibold">
+                                    {' '}
+                                    · {tpDue} hoje
+                                  </span>
+                                )}
+                              </span>
+                            </button>
+                          );
+                        })}
+
+                        {addingTopicForSubject === sub.id ? (
+                          <form
+                            onSubmit={(e) => handleAddTopic(e, sub.id)}
+                            className="flex gap-2 py-1.5"
+                          >
+                            <input
+                              autoFocus
+                              value={newTopicName}
+                              onChange={(e) => setNewTopicName(e.target.value)}
+                              placeholder="Nome do novo tópico..."
+                              className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs"
+                            />
+                            <button
+                              type="submit"
+                              className="px-3 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-semibold"
+                            >
+                              Salvar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAddingTopicForSubject(null);
+                                setNewTopicName('');
+                              }}
+                              className="px-2.5 py-1.5 rounded-xl card-surface text-xs"
+                            >
+                              Cancelar
+                            </button>
+                          </form>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setAddingTopicForSubject(sub.id)}
+                            className="px-3 py-1.5 text-xs font-semibold text-teal-600 hover:underline inline-flex items-center gap-1"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            Novo tópico em {sub.name}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
-            </select>
-
-            {showNewTopic && (
-              <form onSubmit={handleAddTopic} className="flex gap-2 pt-1 animate-fade-in-up">
-                <input
-                  autoFocus
-                  value={newTopicName}
-                  onChange={(e) => setNewTopicName(e.target.value)}
-                  placeholder="Nome do novo tópico..."
-                  className={inputClass}
-                />
-                <button
-                  type="submit"
-                  className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold shrink-0 inline-flex items-center gap-1"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  Salvar
-                </button>
-              </form>
-            )}
-          </div>
-        </div>
-
-        {/* Linha de resumo compacta e sem ambiguidade */}
-        <div className="pt-3 border-t border-theme flex flex-wrap items-center justify-between gap-2 text-xs text-muted-theme">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            {currentTopic ? (
-              <>
-                <span>
-                  <strong className="text-[var(--text-main)]">
-                    {plural(topicCards.length, 'card', 'cards')}
-                  </strong>{' '}
-                  neste tópico
-                </span>
-                <span>·</span>
-                <span>
-                  <strong className="text-emerald-600">
-                    {plural(topicDueCards.length, 'revisão pendente', 'revisões pendentes')}
-                  </strong>{' '}
-                  neste tópico
-                </span>
-                <span>·</span>
-              </>
-            ) : (
-              <>
-                <span>
-                  <strong className="text-[var(--text-main)]">
-                    {plural(subjectCards.length, 'card', 'cards')}
-                  </strong>{' '}
-                  nesta matéria
-                </span>
-                <span>·</span>
-                <span>
-                  <strong className="text-emerald-600">
-                    {plural(subjectDueCards.length, 'revisão pendente', 'revisões pendentes')}
-                  </strong>{' '}
-                  nesta matéria
-                </span>
-                <span>·</span>
-              </>
-            )}
-            <span>
-              <strong className="text-[var(--text-main)]">
-                {plural(flashcards.length, 'card', 'cards')}
-              </strong>{' '}
-              no baralho completo
-            </span>
-          </div>
-
-          <span className="text-[11px] font-medium">
-            Novos cards salvos em:{' '}
-            <strong className="text-teal-700 dark:text-teal-300">
-              {currentSubject?.name || 'Matéria'}
-              {currentTopic ? ` › ${currentTopic.title}` : ' (geral)'}
-            </strong>
-          </span>
-        </div>
-      </div>
-
-      {/* 2. FAIXA DEDICADA PARA ESTUDAR (ESCOPO EXPLÍCITO: TÓPICO · MATÉRIA · GERAL) */}
-      <div className="card-surface rounded-2xl p-5 space-y-4">
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <h2 className="font-bold text-sm flex items-center gap-2">
-            <BookOpen className="w-4 h-4 text-teal-600" />
-            Estudar Flashcards
-          </h2>
-          <span className="text-[11px] text-muted-theme">
-            O algoritmo SM-2 agenda automaticamente a próxima revisão conforme você responde.
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {/* Nível A: Tópico selecionado */}
-          <div className="subtle-surface rounded-xl p-3.5 flex flex-col justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
-                <FolderOpen className="w-3.5 h-3.5 text-teal-600" />
-                {currentTopic ? 'Este Tópico' : 'Tópico'}
-              </p>
-              <p className="text-xs font-semibold mt-1 truncate">
-                {currentTopic ? currentTopic.title : 'Selecione um tópico acima'}
-              </p>
-              <p className="text-[11px] text-muted-theme mt-0.5">
-                {currentTopic
-                  ? `${plural(topicCards.length, 'card', 'cards')} · ${plural(topicDueCards.length, 'pendente', 'pendentes')} hoje`
-                  : 'Filtre por tópico para estudar isoladamente.'}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {currentTopic && topicDueCards.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    startStudySession(topicDueCards, `Pendentes · ${currentTopic.title}`)
-                  }
-                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  Revisar pendentes ({topicDueCards.length})
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={!currentTopic || topicCards.length === 0}
-                onClick={() =>
-                  currentTopic &&
-                  startStudySession(topicCards, `Tópico · ${currentTopic.title}`)
-                }
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-45 ${
-                  currentTopic && topicDueCards.length === 0 && topicCards.length > 0
-                    ? 'bg-teal-600 hover:bg-teal-500 text-white'
-                    : 'card-surface hover:opacity-85'
-                }`}
-              >
-                Estudar tópico ({currentTopic ? topicCards.length : 0})
-              </button>
-            </div>
-          </div>
-
-          {/* Nível B: Matéria selecionada */}
-          <div className="subtle-surface rounded-xl p-3.5 flex flex-col justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
-                <Layers className="w-3.5 h-3.5 text-teal-600" />
-                Esta Matéria
-              </p>
-              <p className="text-xs font-semibold mt-1 truncate">
-                {currentSubject?.name || 'Matéria'}
-              </p>
-              <p className="text-[11px] text-muted-theme mt-0.5">
-                {plural(subjectCards.length, 'card', 'cards')} ·{' '}
-                {plural(subjectDueCards.length, 'pendente', 'pendentes')} hoje
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {subjectDueCards.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    startStudySession(
-                      subjectDueCards,
-                      `Pendentes · ${currentSubject?.name || 'Matéria'}`
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  Revisar matéria ({subjectDueCards.length})
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={subjectCards.length === 0}
-                onClick={() =>
-                  startStudySession(
-                    subjectCards,
-                    `Matéria completa · ${currentSubject?.name || 'Matéria'}`
-                  )
-                }
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold disabled:opacity-45 ${
-                  subjectDueCards.length === 0 && subjectCards.length > 0
-                    ? 'bg-teal-600 hover:bg-teal-500 text-white'
-                    : 'card-surface hover:opacity-85'
-                }`}
-              >
-                Todos da matéria ({subjectCards.length})
-              </button>
-            </div>
-          </div>
-
-          {/* Nível C: Baralho Completo (todas as matérias) */}
-          <div className="subtle-surface rounded-xl p-3.5 flex flex-col justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme flex items-center gap-1.5">
-                <Globe2 className="w-3.5 h-3.5 text-teal-600" />
-                Baralho Completo (Geral)
-              </p>
-              <p className="text-xs font-semibold mt-1">Todas as matérias juntas</p>
-              <p className="text-[11px] text-muted-theme mt-0.5">
-                {plural(flashcards.length, 'card', 'cards')} ·{' '}
-                {plural(allDueCards.length, 'pendente', 'pendentes')} hoje
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {allDueCards.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    startStudySession(allDueCards, 'Pendentes · Todas as matérias')
-                  }
-                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  Revisar tudo hoje ({allDueCards.length})
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={flashcards.length === 0}
-                onClick={() =>
-                  startStudySession(flashcards, 'Baralho completo · Todas as matérias')
-                }
-                className="px-3 py-1.5 rounded-xl card-surface hover:opacity-85 text-xs font-semibold disabled:opacity-45"
-              >
-                Baralho completo ({flashcards.length})
-              </button>
             </div>
           </div>
         </div>
-      </div>
-
-      {/* 3. CRIAR FLASHCARD — UMA ÚNICA FORMA VISÍVEL POR VEZ */}
-      <div className="card-surface rounded-2xl p-5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h2 className="font-bold text-sm">Criar Flashcard</h2>
-            <p className="text-xs text-muted-theme">
-              Será associado a{' '}
-              <strong className="text-[var(--text-main)]">
-                {currentSubject?.name || 'Matéria'}
-                {currentTopic ? ` › ${currentTopic.title}` : ' (todos os tópicos)'}
-              </strong>
-            </p>
-          </div>
-
-          {/* Seletor segmentado das 3 formas de criação */}
-          <div className="inline-flex p-1 rounded-xl subtle-surface gap-1 self-start sm:self-auto">
+      ) : (
+        /* ============================================================
+           TELA 2: DENTRO DO BARALHO ESCOLHIDO (ESTUDAR + ADICIONAR + CARDS)
+           ============================================================ */
+        <div className="space-y-5 animate-fade-in-up">
+          {/* Voltar + Título do baralho escolhido */}
+          <div className="space-y-3">
             <button
               type="button"
-              onClick={() => setCreateTab('manual')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
-                createTab === 'manual' ? 'bg-teal-600 text-white shadow-sm' : 'text-muted-theme hover:text-[var(--text-main)]'
-              }`}
+              onClick={() => setSelectedDeck(null)}
+              className="text-xs font-semibold text-muted-theme hover:text-teal-600 inline-flex items-center gap-1.5"
             >
-              <PenLine className="w-3.5 h-3.5" />
-              Manual
+              <ArrowLeft className="w-4 h-4" />
+              Voltar para todos os baralhos
             </button>
-            <button
-              type="button"
-              onClick={() => setCreateTab('ai')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
-                createTab === 'ai' ? 'bg-violet-600 text-white shadow-sm' : 'text-muted-theme hover:text-[var(--text-main)]'
-              }`}
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              Gerar com IA
-            </button>
-            <button
-              type="button"
-              onClick={() => setCreateTab('bulk')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
-                createTab === 'bulk' ? 'bg-teal-600 text-white shadow-sm' : 'text-muted-theme hover:text-[var(--text-main)]'
-              }`}
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Importar lista
-            </button>
-          </div>
-        </div>
 
-        {/* Aba 1: Manual (padrão) */}
-        {createTab === 'manual' && (
-          <form onSubmit={handleAddCard} className="space-y-3 animate-fade-in-up">
-            <div>
-              <label className="block text-xs font-semibold mb-1">Frente (Pergunta)</label>
-              <input
-                required
-                value={front}
-                onChange={(e) => setFront(e.target.value)}
-                placeholder="Ex: Qual é a aplicabilidade das normas de eficácia plena?"
-                className={inputClass}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold mb-1">Verso (Resposta)</label>
-              <textarea
-                required
-                rows={3}
-                value={back}
-                onChange={(e) => setBack(e.target.value)}
-                placeholder="Ex: Direta, imediata e integral."
-                className={inputClass}
-              />
-            </div>
-            <div className="flex justify-end">
-              <button
-                type="submit"
-                disabled={saving}
-                className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
-              >
-                <Plus className="w-4 h-4" />
-                {saving ? 'Salvando...' : 'Adicionar Flashcard'}
-              </button>
-            </div>
-          </form>
-        )}
-
-        {/* Aba 2: Gerar com IA (Gemini em segundo plano) */}
-        {createTab === 'ai' && (
-          <div className="space-y-3 animate-fade-in-up">
-            <p className="text-xs text-muted-theme">
-              Digite um tema específico ou deixe em branco para o Gemini gerar cards sobre{' '}
-              <strong>{currentTopic?.title || currentSubject?.name}</strong>. Você pode trocar de tela enquanto ele trabalha.
-            </p>
-            <div className="flex flex-col sm:flex-row gap-2.5">
-              <input
-                value={customTheme}
-                onChange={(e) => setCustomTheme(e.target.value)}
-                placeholder="Tema livre (ex: Súmulas TST, Crase, Prazos Lei 8.112)..."
-                className={`flex-1 ${inputClass}`}
-              />
-              <select
-                value={genCount}
-                onChange={(e) => setGenCount(Number(e.target.value) as 5 | 10 | 15)}
-                className="rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2.5 text-xs font-semibold"
-              >
-                <option value={5}>5 cards</option>
-                <option value={10}>10 cards</option>
-                <option value={15}>15 cards</option>
-              </select>
-              <button
-                type="button"
-                onClick={handleGenerateWithGemini}
-                disabled={generating || !currentSubject}
-                className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 disabled:opacity-60 shrink-0"
-              >
-                {generating ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Sparkles className="w-4 h-4" />
+            <div className="card-surface rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="min-w-0">
+                {deckSubtitle && (
+                  <p className="text-xs font-semibold text-teal-600 mb-0.5">{deckSubtitle}</p>
                 )}
-                {generating ? 'Gerando com Gemini...' : 'Gerar com Gemini'}
-              </button>
+                <h1 className="text-xl sm:text-2xl font-bold tracking-tight truncate">
+                  {deckTitle}
+                </h1>
+                <p className="text-xs text-muted-theme mt-1">
+                  {plural(deckCards.length, 'card', 'cards')} ·{' '}
+                  <strong className="text-emerald-600">
+                    {plural(deckDueCards.length, 'revisão pendente', 'revisões pendentes')} hoje
+                  </strong>
+                </p>
+              </div>
+
+              {/* Ações principais limpas: Estudar e Adicionar */}
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {deckDueCards.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => startStudySession(deckDueCards)}
+                    className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+                  >
+                    <Zap className="w-4 h-4" />
+                    Revisar pendentes ({deckDueCards.length})
+                  </button>
+                )}
+                {deckCards.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => startStudySession(deckCards)}
+                    className={`px-4 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 ${
+                      deckDueCards.length === 0
+                        ? 'bg-teal-600 hover:bg-teal-500 text-white shadow-sm'
+                        : 'subtle-surface hover:opacity-85'
+                    }`}
+                  >
+                    <BookOpen className="w-4 h-4" />
+                    Estudar todos ({deckCards.length})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowCreatePanel((v) => !v)}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 ${
+                    showCreatePanel
+                      ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900'
+                      : 'card-surface border border-theme hover:border-teal-500/50'
+                  }`}
+                >
+                  {showCreatePanel ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                  {showCreatePanel ? 'Fechar' : 'Adicionar flashcards'}
+                </button>
+              </div>
             </div>
-            {aiError && (
-              <div className="p-3 rounded-xl bg-rose-500/15 text-rose-600 text-xs">{aiError}</div>
-            )}
           </div>
-        )}
 
-        {/* Aba 3: Importar Lista em Lote */}
-        {createTab === 'bulk' && (
-          <div className="space-y-3 animate-fade-in-up">
-            <textarea
-              rows={6}
-              value={bulkText}
-              onChange={(e) => setBulkText(e.target.value)}
-              placeholder={
-                'Cole aqui sua lista, por exemplo:\n1.\n- Frente: O que é norma de eficácia plena?\n- Verso: Produz todos os seus efeitos desde a entrada em vigor.'
-              }
-              className={`${inputClass} font-mono text-xs`}
-            />
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-muted-theme">
-                {parsedBulk.length > 0
-                  ? `${plural(parsedBulk.length, 'flashcard identificado', 'flashcards identificados')} automaticamente`
-                  : 'Use "Frente:" / "Verso:", "Pergunta:" / "Resposta:" ou separe por "|"'}
-              </span>
-              <button
-                type="button"
-                disabled={parsedBulk.length === 0 || importingBulk}
-                onClick={handleBulkImport}
-                className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50"
-              >
-                {importingBulk
-                  ? 'Importando...'
-                  : `Importar ${plural(parsedBulk.length, 'card', 'cards')}`}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+          {/* Painel de criação (só aparece quando o aluno clica em "Adicionar flashcards") */}
+          {showCreatePanel && (
+            <div className="card-surface rounded-2xl p-5 space-y-4 animate-fade-in-up">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h2 className="font-bold text-sm">Adicionar Flashcards</h2>
+                <div className="inline-flex p-1 rounded-xl subtle-surface gap-1 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setCreateTab('manual')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                      createTab === 'manual'
+                        ? 'bg-teal-600 text-white shadow-sm'
+                        : 'text-muted-theme hover:text-[var(--text-main)]'
+                    }`}
+                  >
+                    <PenLine className="w-3.5 h-3.5" />
+                    Manual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCreateTab('ai')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                      createTab === 'ai'
+                        ? 'bg-violet-600 text-white shadow-sm'
+                        : 'text-muted-theme hover:text-[var(--text-main)]'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Gerar com IA
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCreateTab('bulk')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                      createTab === 'bulk'
+                        ? 'bg-teal-600 text-white shadow-sm'
+                        : 'text-muted-theme hover:text-[var(--text-main)]'
+                    }`}
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Importar lista
+                  </button>
+                </div>
+              </div>
 
-      {/* 4. LISTA DE FLASHCARDS DO ESCOPO ATUAL */}
-      <div className="space-y-3">
-        <h2 className="font-bold text-sm">
-          {currentTopic
-            ? `Cards em "${currentTopic.title}" (${plural(topicCards.length, 'card', 'cards')})`
-            : `Cards em ${currentSubject?.name || 'Matéria'} (${plural(topicCards.length, 'card', 'cards')})`}
-        </h2>
-
-        {topicCards.length === 0 ? (
-          <div className="card-surface rounded-2xl p-8 text-center text-sm text-muted-theme">
-            Nenhum flashcard neste filtro ainda. Crie o primeiro acima no modo Manual, com IA ou colando uma lista.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {topicCards.map((card) => {
-              const t = topics.find((tp) => tp.id === card.topic_id);
-              const isDue = card.due_date <= today;
-              return (
-                <div key={card.id} className="card-surface rounded-2xl p-4 space-y-2 shadow-sm">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                          isDue
-                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                            : 'subtle-surface text-muted-theme'
-                        }`}
-                      >
-                        {isDue ? 'Revisar hoje' : `Próx: ${formatDateBR(card.due_date)}`}
-                      </span>
-                      {t && (
-                        <span className="text-[10px] text-muted-theme truncate max-w-[220px]">
-                          {t.title}
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => deleteFlashcard(card.id)}
-                      aria-label="Excluir flashcard"
-                      className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-500"
+              {/* Se o aluno abriu "Curso todo", permite escolher em qual matéria salvar */}
+              {selectedDeck.type === 'course' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Matéria de destino</label>
+                    <select
+                      value={effectiveSubjectId}
+                      onChange={(e) => {
+                        setTargetSubjectId(e.target.value);
+                        setTargetTopicId('');
+                      }}
+                      className={inputClass}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      {subjects.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Tópico (opcional)</label>
+                    <select
+                      value={targetTopicId}
+                      onChange={(e) => setTargetTopicId(e.target.value)}
+                      className={inputClass}
+                    >
+                      <option value="">Geral da matéria</option>
+                      {effectiveSubjectTopics.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {createTab === 'manual' && (
+                <form onSubmit={handleAddCard} className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Frente (Pergunta)</label>
+                    <input
+                      required
+                      value={front}
+                      onChange={(e) => setFront(e.target.value)}
+                      placeholder="Digite a pergunta..."
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Verso (Resposta)</label>
+                    <textarea
+                      required
+                      rows={3}
+                      value={back}
+                      onChange={(e) => setBack(e.target.value)}
+                      placeholder="Digite a resposta..."
+                      className={inputClass}
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={saving}
+                      className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+                    >
+                      <Plus className="w-4 h-4" />
+                      {saving ? 'Salvando...' : 'Salvar Flashcard'}
                     </button>
                   </div>
-                  <p className="text-sm font-semibold">{card.front}</p>
-                  <p className="text-xs text-muted-theme border-t border-theme pt-2">{card.back}</p>
+                </form>
+              )}
+
+              {createTab === 'ai' && (
+                <div className="space-y-3">
+                  <p className="text-xs text-muted-theme">
+                    Digite um tema ou deixe vazio para gerar sobre{' '}
+                    <strong>{effectiveTopic?.title || effectiveSubject?.name}</strong>. Continua rodando mesmo se você trocar de tela.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <input
+                      value={customTheme}
+                      onChange={(e) => setCustomTheme(e.target.value)}
+                      placeholder="Tema opcional (ex: Súmulas TST, Crase)..."
+                      className={`flex-1 ${inputClass}`}
+                    />
+                    <select
+                      value={genCount}
+                      onChange={(e) => setGenCount(Number(e.target.value) as 5 | 10 | 15)}
+                      className="rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2.5 text-xs font-semibold"
+                    >
+                      <option value={5}>5 cards</option>
+                      <option value={10}>10 cards</option>
+                      <option value={15}>15 cards</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={handleGenerateWithGemini}
+                      disabled={generating || !effectiveSubject}
+                      className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 disabled:opacity-60 shrink-0"
+                    >
+                      {generating ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-4 h-4" />
+                      )}
+                      {generating ? 'Gerando...' : 'Gerar com Gemini'}
+                    </button>
+                  </div>
+                  {aiError && (
+                    <div className="p-3 rounded-xl bg-rose-500/15 text-rose-600 text-xs">
+                      {aiError}
+                    </div>
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+              )}
+
+              {createTab === 'bulk' && (
+                <div className="space-y-3">
+                  <textarea
+                    rows={5}
+                    value={bulkText}
+                    onChange={(e) => setBulkText(e.target.value)}
+                    placeholder={
+                      'Cole aqui sua lista:\n1.\n- Frente: Pergunta...\n- Verso: Resposta...'
+                    }
+                    className={`${inputClass} font-mono text-xs`}
+                  />
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-muted-theme">
+                      {parsedBulk.length > 0
+                        ? `${plural(parsedBulk.length, 'card identificado', 'cards identificados')} automaticamente`
+                        : 'Use "Frente:" / "Verso:" ou separe por "|"'}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={parsedBulk.length === 0 || importingBulk}
+                      onClick={handleBulkImport}
+                      className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50"
+                    >
+                      {importingBulk
+                        ? 'Importando...'
+                        : `Importar ${plural(parsedBulk.length, 'card', 'cards')}`}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Lista de Cards do baralho escolhido */}
+          {deckCards.length === 0 ? (
+            <div className="card-surface rounded-2xl p-10 text-center space-y-3">
+              <p className="text-sm text-muted-theme">Nenhum flashcard neste baralho ainda.</p>
+              {!showCreatePanel && (
+                <button
+                  type="button"
+                  onClick={() => setShowCreatePanel(true)}
+                  className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4" />
+                  Adicionar primeiro flashcard
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {deckCards.map((card) => {
+                const s = subjects.find((sb) => sb.id === card.subject_id);
+                const t = topics.find((tp) => tp.id === card.topic_id);
+                const isDue = card.due_date <= today;
+                return (
+                  <div key={card.id} className="card-surface rounded-2xl p-4 space-y-2 shadow-sm">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            isDue
+                              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                              : 'subtle-surface text-muted-theme'
+                          }`}
+                        >
+                          {isDue ? 'Revisar hoje' : `Próx: ${formatDateBR(card.due_date)}`}
+                        </span>
+                        {selectedDeck.type === 'course' && s && (
+                          <span className="text-[10px] font-semibold text-muted-theme">
+                            {s.name}
+                          </span>
+                        )}
+                        {selectedDeck.type !== 'topic' && t && (
+                          <span className="text-[10px] text-muted-theme truncate max-w-[180px]">
+                            · {t.title}
+                          </span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => deleteFlashcard(card.id)}
+                        aria-label="Excluir flashcard"
+                        className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-500"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-sm font-semibold">{card.front}</p>
+                    <p className="text-xs text-muted-theme border-t border-theme pt-2">
+                      {card.back}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Modal de Estudo SM-2 */}
       {studying && (
@@ -862,11 +931,6 @@ export default function FlashcardsPage() {
                     ? `${Math.min(studyTotalCount, studyTotalCount - studyQueueIds.length + 1)} de ${studyTotalCount}`
                     : 'Sessão Concluída!'}
                 </span>
-                {studyScopeLabel && (
-                  <span className="text-[11px] text-muted-theme truncate max-w-[200px]">
-                    · {studyScopeLabel}
-                  </span>
-                )}
                 {studyHistoryIds.length > 0 && activeStudyCard && (
                   <button
                     onClick={handlePrevCard}
@@ -958,7 +1022,7 @@ export default function FlashcardsPage() {
                   onClick={() => setStudying(false)}
                   className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
                 >
-                  Voltar aos Flashcards
+                  Voltar ao Baralho
                 </button>
               </div>
             )}
