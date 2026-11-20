@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Sparkles, CheckCircle2, Cloud, Smartphone, ShieldCheck, BookOpen } from 'lucide-react';
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
@@ -28,48 +27,20 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 bg-[var(--bg-page)] text-[var(--text-main)]">
-      <div className="w-full max-w-md card-surface rounded-3xl p-8 space-y-6 animate-pop-in">
-        <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center shadow-md shadow-teal-600/20">
-            <BookOpen className="w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-extrabold tracking-tight">StudyFlow</h1>
-            <p className="text-xs font-medium text-muted-theme">
-              Sua rotina de estudos organizada na nuvem
-            </p>
-          </div>
-        </div>
-
-        <p className="text-sm text-muted-theme leading-relaxed">
-          Uma plataforma adaptada ao seu objetivo —{' '}
-          <strong className="text-[var(--text-main)]">
-            Concursos, Faculdade, Escola, Certificações ou Estudo livre
-          </strong>
-          . Entre com o Google e continue de onde parou no PC ou no celular.
-        </p>
-
-        <div className="space-y-3 text-sm">
-          <div className="flex items-center gap-2.5">
-            <Cloud className="w-4 h-4 text-teal-600 shrink-0" />
-            <span>Sincronização automática em tempo real na nuvem</span>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <Smartphone className="w-4 h-4 text-teal-600 shrink-0" />
-            <span>Vários perfis na mesma conta (ex: concurso + faculdade)</span>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <Sparkles className="w-4 h-4 text-violet-600 shrink-0" />
-            <span>Ciclo de estudos, flashcards, revisões e Gemini AI</span>
-          </div>
-          <div className="flex items-center gap-2.5">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>Interface adaptada para cada objetivo de estudo</span>
-          </div>
+      <div className="w-full max-w-sm card-surface rounded-3xl p-8 sm:p-10 text-center space-y-7 animate-pop-in">
+        <div className="space-y-3">
+          <img
+            src="/logo-studyflow.png"
+            alt="StudyFlow"
+            className="h-12 sm:h-14 mx-auto object-contain"
+          />
+          <p className="text-sm text-muted-theme leading-relaxed">
+            Organize seus estudos em um só lugar, sincronizado no PC e no celular.
+          </p>
         </div>
 
         {error && (
-          <div className="p-3 rounded-xl bg-rose-500/12 border border-rose-500/30 text-rose-600 text-xs">
+          <div className="p-3 rounded-xl bg-rose-500/12 border border-rose-500/30 text-rose-600 text-xs text-left">
             {error}
           </div>
         )}
@@ -77,7 +48,7 @@ export default function LoginPage() {
         <button
           onClick={handleGoogleLogin}
           disabled={loading}
-          className="w-full flex items-center justify-center gap-3 py-3.5 px-5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white font-semibold text-sm transition disabled:opacity-60 shadow-md"
+          className="w-full flex items-center justify-center gap-3 py-3.5 px-5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white font-semibold text-sm transition disabled:opacity-60 shadow-sm"
         >
           <span className="w-6 h-6 rounded-full bg-white flex items-center justify-center shrink-0">
             <svg className="w-4 h-4" viewBox="0 0 24 24">
@@ -99,13 +70,12 @@ export default function LoginPage() {
               />
             </svg>
           </span>
-          {loading ? 'Conectando...' : 'Entrar com Google'}
+          {loading ? 'Conectando...' : 'Continuar com Google'}
         </button>
 
-        <div className="flex items-center justify-center gap-1.5 text-[11px] text-muted-theme">
-          <ShieldCheck className="w-3.5 h-3.5" />
-          <span>Autenticação segura via Supabase Auth</span>
-        </div>
+        <p className="text-[11px] text-muted-theme">
+          Concursos · Faculdade · Escola · Certificações · Estudo livre
+        </p>
       </div>
     </div>
   );

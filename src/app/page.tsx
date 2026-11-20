@@ -22,7 +22,6 @@ import {
   ExternalLink,
   Layers,
   ArrowLeft,
-  BookOpen,
   CheckCircle2,
 } from 'lucide-react';
 
@@ -593,15 +592,10 @@ export default function ProfileSelectorPage() {
       <header className="w-full border-b border-theme bg-[var(--bg-card)]/90 backdrop-blur-md sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-5 py-3.5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shadow-sm">
-              <BookOpen className="w-5 h-5" />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="font-extrabold text-lg tracking-tight">StudyFlow</span>
-              <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25">
-                Nuvem ativa
-              </span>
-            </div>
+            <img src="/logo-studyflow.png" alt="StudyFlow" className="h-8 object-contain" />
+            <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/12 text-emerald-700 dark:text-emerald-300 border border-emerald-500/25">
+              Nuvem ativa
+            </span>
           </div>
           <div className="flex items-center gap-3">
             <span className="hidden sm:inline text-xs text-muted-theme">{userEmail}</span>

@@ -11,7 +11,11 @@ const jakarta = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   title: 'StudyFlow — Plataforma Inteligente de Estudos',
   description:
-    'Organize estudos para concursos, faculdade, escola, ENEM ou projetos livres com ciclo de estudos, revisões espaçadas, flashcards e Gemini AI.',
+    'Organize estudos para concursos, faculdade, escola, certificações ou projetos livres com ciclo de estudos, revisões espaçadas, flashcards e Gemini AI.',
+  icons: {
+    icon: '/icon-studyflow.png',
+    apple: '/icon-studyflow.png',
+  },
 };
 
 export const viewport: Viewport = {
