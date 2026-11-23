@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
-import { formatDurationHMS, formatDurationHM, formatDateBR, todayISO } from '@/lib/utils';
+import { addDaysISO, formatDurationHMS, formatDurationHM, formatDateBR, todayISO } from '@/lib/utils';
 import {
   Play,
   Pause,
@@ -16,6 +16,8 @@ import {
   Minus,
   Trash2,
   X,
+  BarChart3,
+  Clock,
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 
@@ -196,6 +198,33 @@ export default function CicloPage() {
   }
 
   const subjectTopics = topics.filter((t) => t.subject_id === modalSubjectId);
+
+  // Estatísticas de Horas no Ciclo de Estudos
+  const todayStr = todayISO();
+  const last7Cutoff = addDaysISO(todayStr, -6);
+  const last30Cutoff = addDaysISO(todayStr, -29);
+
+  const todaySeconds = studyLogs
+    .filter((l) => l.study_date === todayStr)
+    .reduce((acc, l) => acc + l.duration_seconds, 0);
+  const last7Seconds = studyLogs
+    .filter((l) => l.study_date >= last7Cutoff && l.study_date <= todayStr)
+    .reduce((acc, l) => acc + l.duration_seconds, 0);
+  const last30Seconds = studyLogs
+    .filter((l) => l.study_date >= last30Cutoff && l.study_date <= todayStr)
+    .reduce((acc, l) => acc + l.duration_seconds, 0);
+  const totalAllSeconds = studyLogs.reduce((acc, l) => acc + l.duration_seconds, 0);
+  const avgDaily7Seconds = Math.round(last7Seconds / 7);
+
+  const hoursBySubject = subjects
+    .map((s) => {
+      const secs = studyLogs
+        .filter((l) => l.subject_id === s.id)
+        .reduce((acc, l) => acc + l.duration_seconds, 0);
+      const pct = totalAllSeconds > 0 ? Math.round((secs / totalAllSeconds) * 100) : 0;
+      return { id: s.id, name: s.name, color: s.color || '#0d9488', secs, pct };
+    })
+    .sort((a, b) => b.secs - a.secs);
 
   return (
     <div className="space-y-6">
@@ -537,6 +566,84 @@ export default function CicloPage() {
                 </div>
               );
             })}
+          </div>
+        )}
+      </div>
+
+      {/* Estatísticas de Horas */}
+      <div className="card-surface rounded-3xl p-5 sm:p-6 space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-2xl bg-teal-500/15 text-teal-600 dark:text-teal-400 flex items-center justify-center">
+              <BarChart3 className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="font-bold text-base">Estatísticas de Horas</h2>
+              <p className="text-xs text-muted-theme">
+                Acompanhe seu tempo estudado por período e o total acumulado em cada matéria.
+              </p>
+            </div>
+          </div>
+          <span className="text-[11px] font-bold px-3 py-1 rounded-full subtle-surface border border-theme text-muted-theme inline-flex items-center gap-1">
+            <Clock className="w-3 h-3 text-teal-600" />
+            Média 7d: {formatDurationHM(avgDaily7Seconds)}/dia
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="subtle-surface rounded-2xl p-4 border border-theme">
+            <p className="text-[11px] font-semibold text-muted-theme">Hoje</p>
+            <p className="text-xl font-extrabold text-teal-600 dark:text-teal-400 mt-0.5">
+              {formatDurationHM(todaySeconds)}
+            </p>
+          </div>
+          <div className="subtle-surface rounded-2xl p-4 border border-theme">
+            <p className="text-[11px] font-semibold text-muted-theme">Últimos 7 dias</p>
+            <p className="text-xl font-extrabold mt-0.5">{formatDurationHM(last7Seconds)}</p>
+          </div>
+          <div className="subtle-surface rounded-2xl p-4 border border-theme">
+            <p className="text-[11px] font-semibold text-muted-theme">Últimos 30 dias</p>
+            <p className="text-xl font-extrabold mt-0.5">{formatDurationHM(last30Seconds)}</p>
+          </div>
+          <div className="subtle-surface rounded-2xl p-4 border border-theme">
+            <p className="text-[11px] font-semibold text-muted-theme">Total Geral</p>
+            <p className="text-xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-0.5">
+              {formatDurationHM(totalAllSeconds)}
+            </p>
+          </div>
+        </div>
+
+        {hoursBySubject.length > 0 && (
+          <div className="space-y-2.5">
+            <p className="text-xs font-bold text-muted-theme">Horas acumuladas por matéria</p>
+            <div className="space-y-2">
+              {hoursBySubject.map((item) => (
+                <div key={item.id} className="space-y-1">
+                  <div className="flex items-center justify-between text-xs gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0"
+                        style={{ backgroundColor: item.color }}
+                      />
+                      <span className="font-semibold truncate">{item.name}</span>
+                    </div>
+                    <span className="font-bold shrink-0">
+                      {formatDurationHM(item.secs)}{' '}
+                      <span className="text-muted-theme font-normal">({item.pct}%)</span>
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full subtle-surface overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${Math.max(item.secs > 0 ? 3 : 0, item.pct)}%`,
+                        backgroundColor: item.color,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

@@ -17,7 +17,7 @@ import {
   Trophy,
   X,
   Search,
-  Copy,
+  SmilePlus,
   Plus,
   Pencil,
   Trash2,
@@ -251,7 +251,7 @@ export default function ProgressoEditalPage() {
   const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
   const [activePdfIdx, setActivePdfIdx] = useState(0);
   const [loadingPdfUrl, setLoadingPdfUrl] = useState(false);
-  const [collapsedParents, setCollapsedParents] = useState<Record<string, boolean>>({});
+  const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
   const [videoInput, setVideoInput] = useState('');
   const [autoSearchingVideo, setAutoSearchingVideo] = useState(false);
   const [foundVideos, setFoundVideos] = useState<FoundVideo[]>([]);
@@ -1305,11 +1305,11 @@ export default function ProgressoEditalPage() {
                     return subTopics.map((topic) => {
                       const isSub = isSubtopicTitle(topic.title);
                       const parentId = parentOf[topic.id];
-                      if (isSub && parentId && collapsedParents[parentId]) {
+                      if (isSub && parentId && !expandedParents[parentId]) {
                         return null;
                       }
                       const mySubCount = !isSub ? subCounts[topic.id] || 0 : 0;
-                      const mySubsCollapsed = Boolean(collapsedParents[topic.id]);
+                      const mySubsExpanded = Boolean(expandedParents[topic.id]);
                       const stage = getTopicStage(topic.id, topic.studied);
                       const sc = getStageColors(stage.level);
                       const diff = difficultyMap[topic.id];
@@ -1410,20 +1410,26 @@ export default function ProgressoEditalPage() {
                                     type="button"
                                     onClick={(e) => {
                                       e.stopPropagation();
-                                      setCollapsedParents((prev) => ({
+                                      setExpandedParents((prev) => ({
                                         ...prev,
                                         [topic.id]: !prev[topic.id],
                                       }));
                                     }}
-                                    title={mySubsCollapsed ? 'Mostrar subtópicos' : 'Recolher subtópicos'}
-                                    className="px-2 py-0.5 rounded-lg subtle-surface border border-theme text-[10px] font-bold text-teal-700 dark:text-teal-300 inline-flex items-center gap-1 hover:opacity-85 shrink-0"
+                                    title={mySubsExpanded ? 'Recolher subtópicos' : 'Ver subtópicos deste tema'}
+                                    className={`px-3 py-1 rounded-xl text-xs font-extrabold inline-flex items-center gap-1.5 border transition shrink-0 shadow-xs ${
+                                      mySubsExpanded
+                                        ? 'bg-teal-600 border-teal-600 text-white hover:bg-teal-500'
+                                        : 'bg-teal-500/15 border-teal-500/40 text-teal-700 dark:text-teal-300 hover:bg-teal-500/25'
+                                    }`}
                                   >
-                                    {mySubsCollapsed ? (
-                                      <ChevronRight className="w-3 h-3" />
+                                    {mySubsExpanded ? (
+                                      <ChevronDown className="w-4 h-4" />
                                     ) : (
-                                      <ChevronDown className="w-3 h-3" />
+                                      <ChevronRight className="w-4 h-4" />
                                     )}
-                                    {mySubCount} {mySubCount === 1 ? 'subtópico' : 'subtópicos'}
+                                    {mySubsExpanded
+                                      ? `Recolher (${mySubCount})`
+                                      : `Ver ${mySubCount} ${mySubCount === 1 ? 'subtópico' : 'subtópicos'}`}
                                   </button>
                                 )}
                               </div>
@@ -1615,14 +1621,35 @@ export default function ProgressoEditalPage() {
 
                           <button
                             type="button"
-                            onClick={() => {
-                              navigator.clipboard?.writeText(topic.title);
-                              notify('Nome do tópico copiado!');
-                            }}
-                            title="Copiar nome do tópico"
-                            className="p-2 rounded-xl card-surface text-muted-theme hover:text-teal-600 transition"
+                            onClick={() => setPendingDifficultyTopic(topic)}
+                            title={
+                              diff === 'facil'
+                                ? 'Dificuldade: Fácil (clique para alterar)'
+                                : diff === 'medio'
+                                ? 'Dificuldade: Médio (clique para alterar)'
+                                : diff === 'dificil'
+                                ? 'Dificuldade: Difícil (clique para alterar)'
+                                : 'Avaliar dificuldade deste tópico'
+                            }
+                            className={`p-2 rounded-xl transition inline-flex items-center justify-center min-w-[34px] h-[34px] ${
+                              diff === 'facil'
+                                ? 'bg-emerald-500/15 border border-emerald-500/40 text-base leading-none'
+                                : diff === 'medio'
+                                ? 'bg-amber-500/15 border border-amber-500/40 text-base leading-none'
+                                : diff === 'dificil'
+                                ? 'bg-rose-500/15 border border-rose-500/40 text-base leading-none'
+                                : 'card-surface text-muted-theme hover:text-amber-500'
+                            }`}
                           >
-                            <Copy className="w-4 h-4" />
+                            {diff === 'facil' ? (
+                              <span role="img" aria-label="Fácil">😊</span>
+                            ) : diff === 'medio' ? (
+                              <span role="img" aria-label="Médio">🤔</span>
+                            ) : diff === 'dificil' ? (
+                              <span role="img" aria-label="Difícil">😰</span>
+                            ) : (
+                              <SmilePlus className="w-4 h-4" />
+                            )}
                           </button>
 
                           {!isSub && (

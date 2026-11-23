@@ -12,7 +12,9 @@ import {
   Eye,
   Filter,
   Highlighter,
+  Minus,
   Plus,
+  RotateCcw,
   Scale,
   Search,
   StickyNote,
@@ -39,6 +41,8 @@ interface LeiSecaArticle {
   rawText: string;
   note: string;
   studied: boolean;
+  readCount?: number;
+  lastReadAt?: string;
   highlights: Record<string, HighlightTone>; // keyed by block index/id
   createdAt: string;
   updatedAt: string;
@@ -513,7 +517,16 @@ export default function LeiSecaPage() {
     return counts;
   }, [articles]);
 
-  const studiedCount = useMemo(() => articles.filter((a) => a.studied).length, [articles]);
+  function getReadCount(art: LeiSecaArticle): number {
+    if (typeof art.readCount === 'number' && art.readCount >= 0) return art.readCount;
+    return art.studied ? 1 : 0;
+  }
+
+  const studiedCount = useMemo(() => articles.filter((a) => getReadCount(a) > 0).length, [articles]);
+  const totalReadsCount = useMemo(
+    () => articles.reduce((acc, a) => acc + getReadCount(a), 0),
+    [articles]
+  );
 
   function openNewForm() {
     setEditingId(null);
@@ -583,8 +596,38 @@ export default function LeiSecaPage() {
   }
 
   function handleToggleStudied(id: string) {
+    const now = new Date().toISOString();
     persist(
-      articles.map((a) => (a.id === id ? { ...a, studied: !a.studied, updatedAt: new Date().toISOString() } : a))
+      articles.map((a) => {
+        if (a.id !== id) return a;
+        const curr = getReadCount(a);
+        const nextCount = curr > 0 ? 0 : 1;
+        return {
+          ...a,
+          studied: nextCount > 0,
+          readCount: nextCount,
+          lastReadAt: nextCount > 0 ? now : a.lastReadAt,
+          updatedAt: now,
+        };
+      })
+    );
+  }
+
+  function handleChangeReadCount(id: string, delta: 1 | -1) {
+    const now = new Date().toISOString();
+    persist(
+      articles.map((a) => {
+        if (a.id !== id) return a;
+        const curr = getReadCount(a);
+        const nextCount = Math.max(0, curr + delta);
+        return {
+          ...a,
+          studied: nextCount > 0,
+          readCount: nextCount,
+          lastReadAt: delta > 0 ? now : a.lastReadAt,
+          updatedAt: now,
+        };
+      })
     );
   }
 
@@ -654,11 +697,11 @@ export default function LeiSecaPage() {
           <p className="text-2xl font-extrabold mt-0.5">{articles.length}</p>
         </div>
         <div className="card-surface rounded-2xl p-4">
-          <p className="text-[11px] font-semibold text-muted-theme">Já lidos / revisados</p>
+          <p className="text-[11px] font-semibold text-muted-theme">Lidos · Total de releituras</p>
           <p className="text-2xl font-extrabold text-emerald-600 mt-0.5">
             {studiedCount}
             <span className="text-xs font-semibold text-muted-theme ml-1.5">
-              ({articles.length > 0 ? Math.round((studiedCount / articles.length) * 100) : 0}%)
+              ({totalReadsCount}x releituras)
             </span>
           </p>
         </div>
@@ -814,6 +857,7 @@ export default function LeiSecaPage() {
             const isCollapsed = Boolean(collapsedIds[art.id]);
             const incisoCount = blocks.filter((b) => b.kind === 'inciso').length;
             const parCount = blocks.filter((b) => b.kind === 'paragrafo').length;
+            const readCount = getReadCount(art);
 
             return (
               <div
@@ -858,12 +902,38 @@ export default function LeiSecaPage() {
                       <p className="text-[11px] text-muted-theme mt-0.5">
                         {incisoCount > 0 ? `${incisoCount} ${incisoCount === 1 ? 'inciso' : 'incisos'}` : 'Texto corrido'}
                         {parCount > 0 ? ` · ${parCount} ${parCount === 1 ? 'parágrafo' : 'parágrafos'}` : ''}
-                        {art.studied ? ' · Lido' : ''}
+                        {readCount > 0 ? ` · Relido ${readCount}x` : ''}
                       </p>
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0 flex-wrap">
+                    <div className="inline-flex items-center rounded-xl border border-emerald-500/35 bg-emerald-500/10 overflow-hidden">
+                      {readCount > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleChangeReadCount(art.id, -1)}
+                            title="Diminuir 1 releitura"
+                            className="px-1.5 py-1.5 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+                          <span className="px-1.5 text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
+                            {readCount}x
+                          </span>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleChangeReadCount(art.id, 1)}
+                        title="Registrar mais uma releitura deste artigo"
+                        className="px-2.5 py-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/20 inline-flex items-center gap-1"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        {readCount === 0 ? 'Relido (1x)' : '+1 Relido'}
+                      </button>
+                    </div>
                     <button
                       type="button"
                       onClick={() => toggleCollapse(art.id)}

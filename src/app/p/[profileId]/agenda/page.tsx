@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -31,6 +31,8 @@ import {
   UserCheck,
   MapPin,
   RefreshCw,
+  Pencil,
+  ArrowRightCircle,
 } from 'lucide-react';
 
 interface ScheduledBlock {
@@ -86,6 +88,7 @@ interface StudyPlan {
   dailyHoursByDow: Record<number, number>;
   blockMinutes: number;
   dailyReviewMinutes?: number;
+  subjectsPerDay?: number;
   followCycle?: boolean;
   startDate: string;
   estimatedEndDate: string;
@@ -172,7 +175,7 @@ function estimateFinishDate(
 type AgendaTab = 'aulas' | 'avaliacoes' | 'cronograma';
 
 export default function AgendaPage() {
-  const { profile, subjects, topics, reviews, startStopwatch, setSubjectOrder } = useProfile();
+  const { profile, subjects, topics, reviews, studyLogs, startStopwatch, setSubjectOrder } = useProfile();
   const { notify } = useGlobal();
 
   const studyMode = getStudyMode(profile);
@@ -233,8 +236,10 @@ export default function AgendaPage() {
     5: 3,
     6: 0,
   });
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [wizBlockMin, setWizBlockMin] = useState(90);
   const [wizReviewMin, setWizReviewMin] = useState(30);
+  const [wizSubjectsPerDay, setWizSubjectsPerDay] = useState(0); // 0 = automático
   const [wizFollowCycle, setWizFollowCycle] = useState(false);
   const [openReviewDays, setOpenReviewDays] = useState<Record<string, boolean>>({});
   const [wizName, setWizName] = useState('');
@@ -304,6 +309,7 @@ export default function AgendaPage() {
   }
 
   function openNewPlanWizard(followCyclePreset = false) {
+    setEditingPlanId(null);
     setWizFollowCycle(followCyclePreset);
     setWizStep(followCyclePreset ? 3 : 1);
     setWizSubjectIds(subjects.map((s) => s.id));
@@ -311,6 +317,7 @@ export default function AgendaPage() {
     setWizDailyHours({ 0: 0, 1: goal, 2: goal, 3: goal, 4: goal, 5: goal, 6: 0 });
     setWizBlockMin(90);
     setWizReviewMin(30);
+    setWizSubjectsPerDay(0);
     setWizName(
       followCyclePreset
         ? 'Agenda do Ciclo de Estudos'
@@ -322,12 +329,62 @@ export default function AgendaPage() {
     setShowWizard(true);
   }
 
+  function openEditPlanWizard(plan: StudyPlan) {
+    setEditingPlanId(plan.id);
+    setWizFollowCycle(Boolean(plan.followCycle));
+    setWizStep(plan.followCycle ? 3 : 1);
+    setWizSubjectIds(
+      plan.subjectIds.length > 0 ? plan.subjectIds : subjects.map((s) => s.id)
+    );
+    setWizDailyHours({ ...plan.dailyHoursByDow });
+    setWizBlockMin(plan.blockMinutes || 90);
+    setWizReviewMin(plan.dailyReviewMinutes ?? 30);
+    setWizSubjectsPerDay(plan.subjectsPerDay || 0);
+    setWizName(plan.name);
+    setWizStartDate(plan.startDate || today);
+    setShowWizard(true);
+  }
+
   async function finishWizard() {
     if (wizSubjectIds.length === 0) return;
     const remainingTopics = topics.filter(
       (t) => wizSubjectIds.includes(t.subject_id) && !t.studied
     ).length;
     const estEnd = estimateFinishDate(wizStartDate, remainingTopics, wizDailyHours, wizReviewMin);
+
+    if (editingPlanId) {
+      const nextPlans = store.plans.map((p) =>
+        p.id === editingPlanId
+          ? {
+              ...p,
+              name: wizName.trim() || p.name,
+              subjectIds: wizSubjectIds,
+              dailyHoursByDow: wizDailyHours,
+              blockMinutes: wizBlockMin,
+              dailyReviewMinutes: wizReviewMin,
+              subjectsPerDay: wizSubjectsPerDay,
+              followCycle: wizFollowCycle,
+              startDate: wizStartDate,
+              estimatedEndDate: estEnd,
+              movedOverrides: {},
+            }
+          : p
+      );
+      saveStore({
+        ...store,
+        activePlanId: editingPlanId,
+        plans: nextPlans,
+      });
+      if (!wizFollowCycle) {
+        await setSubjectOrder(wizSubjectIds);
+      }
+      setEditingPlanId(null);
+      setShowWizard(false);
+      setActiveTab('cronograma');
+      notify('Cronograma atualizado e agenda reorganizada!', 'success');
+      return;
+    }
+
     const newPlan: StudyPlan = {
       id: `plan-${Date.now()}`,
       name: wizName.trim() || 'Cronograma de Estudos',
@@ -335,6 +392,7 @@ export default function AgendaPage() {
       dailyHoursByDow: wizDailyHours,
       blockMinutes: wizBlockMin,
       dailyReviewMinutes: wizReviewMin,
+      subjectsPerDay: wizSubjectsPerDay,
       followCycle: wizFollowCycle,
       startDate: wizStartDate,
       estimatedEndDate: estEnd,
@@ -354,8 +412,19 @@ export default function AgendaPage() {
     notify(`Cronograma "${newPlan.name}" criado e ordem sincronizada com o Ciclo!`, 'success');
   }
 
+  // Mapa de sessões registradas no Ciclo de Estudos por (data + matéria)
+  const loggedByDateSubject = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const log of studyLogs) {
+      if (!log.subject_id || !log.study_date) continue;
+      const key = `${log.study_date}__${log.subject_id}`;
+      map[key] = (map[key] || 0) + 1;
+    }
+    return map;
+  }, [studyLogs]);
+
   // Gera blocos SOMENTE se existir um cronograma ativo!
-  // Se followCycle === true, segue AO VIVO a ordem e as horas/minutos exatos de cada matéria no Ciclo de Estudos!
+  // Sincroniza automaticamente com o Ciclo de Estudos (quem estudou no Ciclo já aparece como concluído na Agenda!)
   const scheduledBlocks: ScheduledBlock[] = useMemo(() => {
     if (!activePlan) return [];
     const orderedSubjects = activePlan.followCycle
@@ -369,13 +438,27 @@ export default function AgendaPage() {
     const completedSet = new Set(activePlan.completedBlockIds || []);
     const overrides = activePlan.movedOverrides || {};
     const genStart = activePlan.startDate || startOfWeekMonday(today);
+    const usedLogs: Record<string, number> = {};
+    const fixedPerDay = Number(activePlan.subjectsPerDay || 0);
+
+    const isDoneWithCycleSync = (id: string, finalDate: string, subjectId: string) => {
+      if (completedSet.has(id)) return true;
+      const key = `${finalDate}__${subjectId}`;
+      const avail = loggedByDateSubject[key] || 0;
+      const used = usedLogs[key] || 0;
+      if (used < avail) {
+        usedLogs[key] = used + 1;
+        return true;
+      }
+      return false;
+    };
 
     if (activePlan.followCycle) {
-      let subjectIdx = 0;
-      let remainingSubMin = Math.max(
-        15,
-        orderedSubjects[0].cycle_hours * 60 + orderedSubjects[0].cycle_minutes
-      );
+      // Distribuição equilibrada seguindo a ordem e carga proporcional do Ciclo (evita blocos gigantes tipo 210 min + 30 min)
+      const resetCyclePool = () =>
+        orderedSubjects.map((s) => Math.max(30, s.cycle_hours * 60 + s.cycle_minutes));
+      let remainingPool = resetCyclePool();
+      let cursorIdx = 0;
 
       for (let dayOffset = 0; dayOffset < 42; dayOffset++) {
         const iso = addDaysISO(genStart, dayOffset);
@@ -384,14 +467,56 @@ export default function AgendaPage() {
         if (hours <= 0) continue;
 
         let availableDayMin = Math.max(30, Math.round(hours * 60 - (activePlan.dailyReviewMinutes || 0)));
-        let blockIdx = 0;
+        const targetSlots =
+          fixedPerDay > 0
+            ? fixedPerDay
+            : Math.max(1, Math.round(availableDayMin / (activePlan.blockMinutes || 90)));
+        const slotCap = Math.max(30, Math.round(availableDayMin / targetSlots));
+        const usedToday = new Set<number>();
 
-        while (availableDayMin >= 15 && blockIdx < 8) {
-          const sub = orderedSubjects[subjectIdx % orderedSubjects.length];
-          const sliceMin = Math.min(availableDayMin, remainingSubMin);
+        for (let blockIdx = 0; blockIdx < targetSlots && availableDayMin >= 20; blockIdx++) {
+          if (remainingPool.every((m) => m <= 0)) {
+            remainingPool = resetCyclePool();
+          }
+
+          // Procura próxima matéria na ordem do ciclo que ainda tem tempo e ainda não foi usada hoje
+          let chosen = -1;
+          for (let step = 0; step < orderedSubjects.length; step++) {
+            const idx = (cursorIdx + step) % orderedSubjects.length;
+            if (remainingPool[idx] > 0 && !usedToday.has(idx)) {
+              chosen = idx;
+              break;
+            }
+          }
+          // Se todas com saldo já foram usadas hoje, pega a próxima com saldo
+          if (chosen === -1) {
+            for (let step = 0; step < orderedSubjects.length; step++) {
+              const idx = (cursorIdx + step) % orderedSubjects.length;
+              if (remainingPool[idx] > 0) {
+                chosen = idx;
+                break;
+              }
+            }
+          }
+          if (chosen === -1) break;
+
+          const sub = orderedSubjects[chosen];
+          const remainingSlots = targetSlots - blockIdx;
+          const idealSlot = Math.max(25, Math.round(availableDayMin / remainingSlots));
+          const maxForThisBlock = Math.min(availableDayMin, Math.max(slotCap, idealSlot));
+          let sliceMin = Math.min(maxForThisBlock, remainingPool[chosen]);
+          // Evita sobrar um restinho minúsculo (< 20 min) na matéria
+          if (remainingPool[chosen] - sliceMin > 0 && remainingPool[chosen] - sliceMin < 20 && remainingPool[chosen] <= availableDayMin) {
+            sliceMin = remainingPool[chosen];
+          }
+          // Se o saldo final da matéria for bem menor que o bloco ideal, usa pelo menos 30 min quando houver tempo
+          if (sliceMin < 25 && availableDayMin >= 30) {
+            sliceMin = Math.min(availableDayMin, 30);
+          }
+
           const id = `${activePlan.id}-${iso}-${blockIdx}`;
           const finalDate = overrides[id] || iso;
-          const done = completedSet.has(id);
+          const done = isDoneWithCycleSync(id, finalDate, sub.id);
 
           out.push({
             id,
@@ -405,14 +530,9 @@ export default function AgendaPage() {
           });
 
           availableDayMin -= sliceMin;
-          remainingSubMin -= sliceMin;
-          blockIdx++;
-
-          if (remainingSubMin <= 0) {
-            subjectIdx++;
-            const nextSub = orderedSubjects[subjectIdx % orderedSubjects.length];
-            remainingSubMin = Math.max(15, nextSub.cycle_hours * 60 + nextSub.cycle_minutes);
-          }
+          remainingPool[chosen] = Math.max(0, remainingPool[chosen] - sliceMin);
+          usedToday.add(chosen);
+          cursorIdx = (chosen + 1) % orderedSubjects.length;
         }
       }
       return out;
@@ -426,38 +546,131 @@ export default function AgendaPage() {
       if (hours <= 0) continue;
 
       const netStudyMinutes = Math.max(30, hours * 60 - (activePlan.dailyReviewMinutes || 0));
-      const blocksToday = Math.max(1, Math.round(netStudyMinutes / (activePlan.blockMinutes || 90)));
+      const blocksToday =
+        fixedPerDay > 0
+          ? fixedPerDay
+          : Math.max(1, Math.round(netStudyMinutes / (activePlan.blockMinutes || 90)));
+      const perBlockMinutes =
+        fixedPerDay > 0
+          ? Math.max(20, Math.round(netStudyMinutes / blocksToday))
+          : activePlan.blockMinutes || 90;
+
       for (let b = 0; b < blocksToday; b++) {
         const sub = orderedSubjects[subjectIdx % orderedSubjects.length];
         subjectIdx++;
         const id = `${activePlan.id}-${iso}-${b}`;
         const finalDate = overrides[id] || iso;
-        const done = completedSet.has(id);
+        const done = isDoneWithCycleSync(id, finalDate, sub.id);
         out.push({
           id,
           date: finalDate,
           subjectId: sub.id,
           name: sub.name,
           color: sub.color,
-          minutes: activePlan.blockMinutes || 90,
+          minutes: perBlockMinutes,
           done,
           overdue: !done && finalDate < today,
         });
       }
     }
     return out;
-  }, [activePlan, subjects, today]);
+  }, [activePlan, subjects, today, loggedByDateSubject]);
 
   const overdueBlocks = scheduledBlocks.filter((b) => b.overdue);
+  const todayPendingBlocks = scheduledBlocks.filter((b) => b.date === today && !b.done);
+
+  function reorganizePendingFrom(targetStartDate: string, includeTodayPending: boolean) {
+    if (!activePlan) return;
+    const delayed = scheduledBlocks
+      .filter((b) => !b.done && (includeTodayPending ? b.date <= today : b.date < targetStartDate))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (delayed.length === 0) return;
+
+    const delayedIds = new Set(delayed.map((b) => b.id));
+    const upcoming = scheduledBlocks
+      .filter((b) => !b.done && b.date >= targetStartDate && !delayedIds.has(b.id))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    const queue = [...delayed, ...upcoming];
+    const nextOverrides = { ...(activePlan.movedOverrides || {}) };
+    const fixedPerDay = Number(activePlan.subjectsPerDay || 0);
+
+    let cursor = targetStartDate;
+    let cursorCap = 0;
+    let usedToday = 0;
+
+    const getDayCapacity = (iso: string) => {
+      const dow = parseISO(iso).getDay();
+      const hours = Number(activePlan.dailyHoursByDow[dow] || 0);
+      if (hours <= 0) return 0;
+      if (fixedPerDay > 0) return fixedPerDay;
+      const netMin = Math.max(30, hours * 60 - (activePlan.dailyReviewMinutes || 0));
+      return Math.max(1, Math.round(netMin / (activePlan.blockMinutes || 90)));
+    };
+
+    const advanceToStudyDay = (fromIso: string) => {
+      let d = fromIso;
+      for (let i = 0; i < 14; i++) {
+        const cap = getDayCapacity(d);
+        if (cap > 0) return { date: d, cap };
+        d = addDaysISO(d, 1);
+      }
+      return { date: fromIso, cap: Math.max(1, fixedPerDay || 2) };
+    };
+
+    const first = advanceToStudyDay(cursor);
+    cursor = first.date;
+    cursorCap = first.cap;
+    usedToday = 0;
+
+    for (const blk of queue) {
+      if (usedToday >= cursorCap) {
+        const nxt = advanceToStudyDay(addDaysISO(cursor, 1));
+        cursor = nxt.date;
+        cursorCap = nxt.cap;
+        usedToday = 0;
+      }
+      nextOverrides[blk.id] = cursor;
+      usedToday++;
+    }
+
+    updateActivePlan((p) => ({ ...p, movedOverrides: nextOverrides }));
+    return delayed.length;
+  }
+
+  // Reorganização automática ao virar o dia: matérias não estudadas de dias anteriores vão para hoje e empurram o resto em cascata!
+  const autoRolloverKeyRef = useRef<string>('');
+  useEffect(() => {
+    if (!activePlan || overdueBlocks.length === 0) return;
+    const key = `${activePlan.id}_${today}`;
+    if (autoRolloverKeyRef.current === key) return;
+    autoRolloverKeyRef.current = key;
+    const movedCount = reorganizePendingFrom(today, false);
+    if (movedCount && movedCount > 0) {
+      notify(
+        `${movedCount} ${movedCount === 1 ? 'matéria não estudada foi movida' : 'matérias não estudadas foram movidas'} para hoje e a agenda foi reorganizada!`,
+        'info'
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePlan?.id, overdueBlocks.length, today]);
 
   function pullOverdueForward() {
-    if (!activePlan || overdueBlocks.length === 0) return;
-    const nextOverrides = { ...(activePlan.movedOverrides || {}) };
-    overdueBlocks.forEach((b, idx) => {
-      nextOverrides[b.id] = addDaysISO(today, Math.floor(idx / 2));
-    });
-    updateActivePlan((p) => ({ ...p, movedOverrides: nextOverrides }));
-    notify('Matérias atrasadas puxadas sem pular a ordem do ciclo!', 'success');
+    const moved = reorganizePendingFrom(today, false);
+    if (moved) {
+      notify('Matérias atrasadas movidas para hoje e agenda reorganizada!', 'success');
+    }
+  }
+
+  function moveTodayPendingToTomorrow() {
+    const tomorrow = addDaysISO(today, 1);
+    const moved = reorganizePendingFrom(tomorrow, true);
+    if (moved) {
+      notify(
+        `${moved} ${moved === 1 ? 'matéria pendente de hoje foi movida' : 'matérias pendentes de hoje foram movidas'} para o próximo dia de estudo e a agenda foi reorganizada!`,
+        'success'
+      );
+    }
   }
 
   function toggleBlockDone(blockId: string) {
@@ -1123,6 +1336,14 @@ export default function AgendaPage() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => openEditPlanWizard(p)}
+                          className="p-1.5 rounded-lg text-muted-theme hover:text-teal-600"
+                          title="Editar cronograma (matérias/dia, horários e ordem)"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => deletePlan(p.id)}
                           className="p-1.5 rounded-lg text-muted-theme hover:text-rose-600"
                           title="Excluir cronograma"
@@ -1167,6 +1388,17 @@ export default function AgendaPage() {
                       ? 'Seguindo Ciclo de Estudos'
                       : 'Seguir Ciclo de Estudos'}
                   </button>
+                  {todayPendingBlocks.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={moveTodayPendingToTomorrow}
+                      className="px-3 py-1.5 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 border border-amber-500/35 bg-amber-500/10 text-amber-800 dark:text-amber-300 hover:bg-amber-500/20 transition"
+                      title="Move as matérias ainda não estudadas de hoje para amanhã e reorganiza os próximos dias"
+                    >
+                      <ArrowRightCircle className="w-3.5 h-3.5" />
+                      Passar {todayPendingBlocks.length} pendente{todayPendingBlocks.length > 1 ? 's' : ''} de hoje p/ amanhã
+                    </button>
+                  )}
                   <span>
                     Término estimado:{' '}
                     <strong className="text-teal-700 dark:text-teal-300">
@@ -1324,7 +1556,11 @@ export default function AgendaPage() {
                                 <p className={`font-bold leading-snug ${b.done ? 'line-through' : ''}`}>
                                   {b.name}
                                 </p>
-                                <p className="text-[10px] text-muted-theme">{b.minutes} min</p>
+                                <p className="text-[10px] text-muted-theme">
+                                  {b.minutes >= 60
+                                    ? `${Math.floor(b.minutes / 60)}h${b.minutes % 60 > 0 ? ` ${b.minutes % 60}m` : ''}`
+                                    : `${b.minutes} min`}
+                                </p>
                                 <div className="flex items-center gap-1 pt-0.5">
                                   <button
                                     type="button"
@@ -1766,7 +2002,7 @@ export default function AgendaPage() {
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-[11px] font-bold text-teal-600">
-                  Etapa {wizStep} de 4
+                  {editingPlanId ? 'Editar Cronograma · ' : ''}Etapa {wizStep} de 4
                 </span>
                 <h2 className="font-bold text-lg">
                   {wizStep === 1 && 'Escolha as matérias do cronograma'}
@@ -1914,6 +2150,36 @@ export default function AgendaPage() {
                     </div>
                   ))}
                 </div>
+                <div className="subtle-surface rounded-2xl p-3.5 border border-theme space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-bold">Quantas matérias estudar por dia?</label>
+                    <span className="text-[11px] text-teal-600 dark:text-teal-400 font-bold">
+                      {wizSubjectsPerDay === 0
+                        ? 'Automático (pela carga horária)'
+                        : `${wizSubjectsPerDay} ${wizSubjectsPerDay === 1 ? 'matéria' : 'matérias'}/dia`}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[0, 1, 2, 3, 4, 5, 6].map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        onClick={() => setWizSubjectsPerDay(n)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                          wizSubjectsPerDay === n
+                            ? 'bg-teal-600 text-white border-teal-600 shadow-xs'
+                            : 'card-surface border-theme hover:border-teal-500/50'
+                        }`}
+                      >
+                        {n === 0 ? 'Auto' : `${n}/dia`}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted-theme">
+                    Ao definir um número fixo (ex: 2/dia ou 3/dia), a agenda reorganiza todos os dias dividindo suas horas entre essa quantidade de matérias.
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   {wizFollowCycle ? (
                     <div className="flex items-center gap-2 rounded-xl bg-teal-600/10 border border-teal-500/30 px-3 py-2 text-xs text-teal-800 dark:text-teal-200 font-semibold">
@@ -2024,7 +2290,7 @@ export default function AgendaPage() {
                   onClick={finishWizard}
                   className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
                 >
-                  Criar Cronograma
+                  {editingPlanId ? 'Salvar Alterações' : 'Criar Cronograma'}
                 </button>
               )}
             </div>
