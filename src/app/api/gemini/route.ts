@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 export const maxDuration = 60;
 
 // Prioriza modelos mais recentes (Gemini 3.8 Flash) + descoberta automática de modelos ativos na chave
-const PREFERRED_MODELS = ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.0-flash', 'gemini-2.5-flash-lite'];
+const PREFERRED_MODELS = ['gemini-3.8-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash-lite', 'gemini-3.0-flash'];
 
 let cachedDiscoveredModels: { models: string[]; fetchedAt: number } | null = null;
 
@@ -57,11 +57,12 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
   );
   const timeoutMs = hasBinary ? 45000 : 25000;
 
-  // Monta fila de modelos: preferidos + modelos ativos descobertos na API do usuário (sem duplicar)
+  // Monta fila de modelos ativos (usa preferidos primeiro e completa com modelos descobertos na chave)
   const discovered = await discoverActiveFlashModels(apiKey);
-  const modelsQueue = Array.from(new Set([...PREFERRED_MODELS, ...discovered])).slice(0, 5);
+  const modelsQueue = Array.from(new Set([...PREFERRED_MODELS, ...discovered])).slice(0, 6);
 
   let lastError = 'Os servidores do Gemini estão temporariamente ocupados. Tente novamente em alguns segundos.';
+  let rateLimitedCount = 0;
 
   for (const model of modelsQueue) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -115,10 +116,17 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
         continue;
       }
 
-      lastError =
-        res.status === 503 || res.status === 429
-          ? 'O Gemini gratuito está com pico de uso agora (503/429). Aguarde 10 segundos e tente novamente.'
-          : rawMsg;
+      if (res.status === 503 || res.status === 429) {
+        rateLimitedCount++;
+        lastError =
+          'O Gemini gratuito está com pico de uso agora (503/429). Aguarde alguns segundos e tente novamente.';
+        // Pequena pausa antes de tentar o próximo modelo para escapar de picos momentâneos
+        if (rateLimitedCount <= 2) {
+          await new Promise((r) => setTimeout(r, 1200));
+        }
+        continue;
+      }
+      lastError = rawMsg;
 
       if ((res.status === 400 || res.status === 403) && !rawMsg.toLowerCase().includes('model')) {
         throw new Error(lastError);

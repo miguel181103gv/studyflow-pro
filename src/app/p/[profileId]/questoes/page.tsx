@@ -19,6 +19,7 @@ import {
   ArrowRight,
   Image as ImageIcon,
   FileText,
+  Upload,
   AlertTriangle,
   Globe2,
   BookOpen,
@@ -120,6 +121,271 @@ function plural(n: number, s: string, p: string) {
   return `${n} ${n === 1 ? s : p}`;
 }
 
+interface ParsedLocalQuestion {
+  header: string;
+  statement: string;
+  options: QuizOption[];
+  correct_answer: string;
+  explanation: string;
+}
+
+/**
+ * Parser 100% local (0ms, sem gastar cota do Gemini) para transformar texto colado
+ * de uma ou várias questões de concurso em formato de Quiz interativo.
+ */
+function parseLocalTextQuestions(rawText: string): ParsedLocalQuestion[] {
+  const cleaned = rawText.replace(/\r\n/g, '\n').replace(/\u00a0/g, ' ').trim();
+  if (!cleaned) return [];
+
+  const lines = cleaned.split('\n');
+  const chunks: string[][] = [];
+  let current: string[] = [];
+
+  const isNewQuestionStart = (line: string, hasOptionsAlready: boolean) => {
+    const t = line.trim();
+    if (!t) return false;
+    if (/^(?:Quest[ãa]o|Q)\s*\d+[\s.:)-]*/i.test(t)) return true;
+    if (hasOptionsAlready && /^\d{1,3}[.)]\s+\S/.test(t)) return true;
+    return false;
+  };
+
+  let seenOptInCurrent = false;
+  let seenGabInCurrent = false;
+  let prevWasBlank = false;
+  const optStartRe = /^(?:\(([A-Ea-e])\)|([A-Ea-e])[).:\-–—])\s+(.+)$/;
+  const gabLineRe = /^(?:Gabarito|Resposta|Resp\.?|Alternativa\s+correta)\s*[:\-–—]?\s*\(?([A-Ea-e]|Certo|Errado)\)?/i;
+  const expLineRe = /^(?:Coment[áa]rio|Explica[çc][ãa]o|Justificativa|Resolu[çc][ãa]o)\s*[:\-–—]/i;
+
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) {
+      prevWasBlank = true;
+      current.push(line);
+      continue;
+    }
+    const isOpt = optStartRe.test(t);
+    const isGab = gabLineRe.test(t);
+    const isExp = expLineRe.test(t);
+    const splitAfterBlank =
+      prevWasBlank &&
+      (seenGabInCurrent || seenOptInCurrent) &&
+      !isOpt &&
+      !isGab &&
+      !isExp;
+
+    if (current.length > 0 && (isNewQuestionStart(t, seenOptInCurrent) || splitAfterBlank)) {
+      chunks.push(current);
+      current = [line];
+      seenOptInCurrent = isOpt;
+      seenGabInCurrent = isGab;
+      prevWasBlank = false;
+      continue;
+    }
+    if (isOpt) seenOptInCurrent = true;
+    if (isGab) seenGabInCurrent = true;
+    prevWasBlank = false;
+    current.push(line);
+  }
+  if (current.length > 0) chunks.push(current);
+
+  const results: ParsedLocalQuestion[] = [];
+
+  for (const chunk of chunks) {
+    let header = '';
+    const statementLines: string[] = [];
+    const options: QuizOption[] = [];
+    let correctAnswer = '';
+    const explanationLines: string[] = [];
+    let inExplanation = false;
+
+    for (const rawLine of chunk) {
+      const t = rawLine.trim();
+      if (!t) continue;
+
+      const gabMatch = t.match(
+        /^(?:Gabarito|Resposta|Resp\.?|Alternativa\s+correta)\s*[:\-–—]?\s*\(?([A-Ea-e]|Certo|Errado)\)?(?:[\s.,;\-–—]+(.*))?$/i
+      );
+      if (gabMatch) {
+        const val = gabMatch[1].trim().toUpperCase();
+        correctAnswer = val === 'CERTO' ? 'C' : val === 'ERRADO' ? 'E' : val;
+        if (gabMatch[2]?.trim()) explanationLines.push(gabMatch[2].trim());
+        inExplanation = true;
+        continue;
+      }
+
+      const expMatch = t.match(/^(?:Coment[áa]rio|Explica[çc][ãa]o|Justificativa|Resolu[çc][ãa]o)\s*[:\-–—]\s*(.*)$/i);
+      if (expMatch) {
+        if (expMatch[1]?.trim()) explanationLines.push(expMatch[1].trim());
+        inExplanation = true;
+        continue;
+      }
+
+      if (inExplanation) {
+        explanationLines.push(t);
+        continue;
+      }
+
+      if (
+        statementLines.length === 0 &&
+        options.length === 0 &&
+        !header &&
+        (/^(?:Quest[ãa]o|Q)\s*\d+/i.test(t) ||
+          (/\b(19|20)\d{2}\b/.test(t) && t.length <= 95 && !t.endsWith('.')))
+      ) {
+        header = t;
+        continue;
+      }
+
+      const optMatch = t.match(optStartRe);
+      if (optMatch) {
+        const letter = (optMatch[1] || optMatch[2] || '').toUpperCase();
+        const text = (optMatch[3] || '').trim();
+        if (letter && text) {
+          options.push({ letter, text });
+          continue;
+        }
+      }
+
+      if (options.length > 0) {
+        options[options.length - 1].text = `${options[options.length - 1].text} ${t}`.trim();
+      } else {
+        statementLines.push(t.replace(/^\d{1,3}[.)]\s+/, ''));
+      }
+    }
+
+    const statement = statementLines.join(' ').trim();
+    if (!statement && options.length === 0) continue;
+
+    let finalOptions = options;
+    if (finalOptions.length === 0) {
+      finalOptions = [
+        { letter: 'C', text: 'Certo' },
+        { letter: 'E', text: 'Errado' },
+      ];
+    }
+
+    results.push({
+      header,
+      statement: statement || header || 'Enunciado da questão',
+      options: finalOptions,
+      correct_answer: correctAnswer,
+      explanation: explanationLines.join(' ').trim(),
+    });
+  }
+
+  return results;
+}
+
+function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
+  let list: unknown[] = [];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    const candidate = obj.questions || obj.questoes || obj.items || obj.data || obj.perguntas;
+    if (Array.isArray(candidate)) list = candidate;
+  }
+
+  const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+  const out: ParsedLocalQuestion[] = [];
+
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const q = item as Record<string, unknown>;
+    const statement = String(
+      q.statement || q.enunciado || q.pergunta || q.question || q.texto || q.text || ''
+    ).trim();
+    if (!statement) continue;
+
+    const header = String(q.header || q.cabecalho || q.banca || q.titulo || q.title || '').trim();
+    const explanation = String(
+      q.explanation || q.comentario || q.explicacao || q.justificativa || q.resolucao || ''
+    ).trim();
+
+    const rawOpts = q.options || q.alternativas || q.opcoes || q.choices;
+    const options: QuizOption[] = [];
+
+    if (Array.isArray(rawOpts)) {
+      rawOpts.forEach((opt, idx) => {
+        if (typeof opt === 'string') {
+          const clean = opt.trim().replace(/^\(?[A-Fa-f]\)?[).:\-–—]\s+/, '');
+          if (clean) options.push({ letter: letters[idx] || String(idx + 1), text: clean });
+        } else if (opt && typeof opt === 'object') {
+          const o = opt as Record<string, unknown>;
+          const letter = String(o.letter || o.letra || o.id || letters[idx] || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const text = String(o.text || o.texto || o.label || o.value || '').trim();
+          if (text) options.push({ letter: letter || letters[idx] || String(idx + 1), text });
+        }
+      });
+    } else if (rawOpts && typeof rawOpts === 'object') {
+      Object.entries(rawOpts as Record<string, unknown>).forEach(([k, v]) => {
+        const text = String(v || '').trim();
+        if (text) options.push({ letter: k.trim().toUpperCase(), text });
+      });
+    }
+
+    // Suporta também chaves planas no JSON (ex: a, b, c, d, e ou alternativa_a..e ou opcao_a..e)
+    if (options.length === 0) {
+      for (const l of ['A', 'B', 'C', 'D', 'E']) {
+        const lower = l.toLowerCase();
+        const val =
+          q[lower] ??
+          q[l] ??
+          q[`alternativa_${lower}`] ??
+          q[`alternativa_${l}`] ??
+          q[`opcao_${lower}`] ??
+          q[`option_${lower}`];
+        if (typeof val === 'string' && val.trim()) {
+          options.push({ letter: l, text: val.trim() });
+        }
+      }
+    }
+
+    // Se ainda não vieram opções separadas, tenta extrair alternativas coladas dentro do próprio enunciado
+    let finalStatement = statement;
+    if (options.length === 0 && /(?:^|\n)\s*(?:\([A-Ea-e]\)|[A-Ea-e][).:\-–—])\s+/.test(statement)) {
+      const embedded = parseLocalTextQuestions(statement);
+      if (embedded.length > 0 && embedded[0].options.length > 0) {
+        finalStatement = embedded[0].statement;
+        options.push(...embedded[0].options);
+      }
+    }
+
+    const finalOptions =
+      options.length > 0
+        ? options
+        : [
+            { letter: 'C', text: 'Certo' },
+            { letter: 'E', text: 'Errado' },
+          ];
+
+    const rawAns =
+      q.correct_answer ?? q.gabarito ?? q.resposta ?? q.answer ?? q.correta ?? q.correct ?? '';
+    let correctAnswer = '';
+    if (typeof rawAns === 'number' && finalOptions[rawAns]) {
+      correctAnswer = finalOptions[rawAns].letter;
+    } else {
+      const s = String(rawAns).trim().toUpperCase();
+      if (s === 'CERTO' || s === 'TRUE' || s === 'VERDADEIRO') correctAnswer = 'C';
+      else if (s === 'ERRADO' || s === 'FALSE' || s === 'FALSO') correctAnswer = 'E';
+      else {
+        const m = s.match(/^\(?([A-F])\)?/);
+        correctAnswer = m ? m[1] : s;
+      }
+    }
+
+    out.push({
+      header,
+      statement: finalStatement,
+      options: finalOptions,
+      correct_answer: correctAnswer,
+      explanation,
+    });
+  }
+
+  return out;
+}
+
 export default function QuestoesPage() {
   const { profile, subjects, topics, errors } = useProfile();
   const { notify } = useGlobal();
@@ -132,7 +398,8 @@ export default function QuestoesPage() {
 
   // Adicionar questões (Gerar com IA por Tópico, Texto ou Imagem -> Quiz)
   const [showAddPanel, setShowAddPanel] = useState(false);
-  const [addMode, setAddMode] = useState<AddMode>('ai');
+  const [addMode, setAddMode] = useState<AddMode>('text');
+  const [manualAnswers, setManualAnswers] = useState<Record<number, string>>({});
   const [aiCount, setAiCount] = useState(5);
   const [aiStyle, setAiStyle] = useState<'Múltipla escolha (A-E)' | 'Certo ou Errado'>('Múltipla escolha (A-E)');
   const [aiBoard, setAiBoard] = useState('');
@@ -284,58 +551,74 @@ export default function QuestoesPage() {
     }
   }
 
-    async function handleConvertTextToQuiz(e: React.FormEvent) {
+  const parsedPreviewQuestions = rawTextInput.trim()
+    ? parseLocalTextQuestions(rawTextInput)
+    : [];
+
+  function handleConvertTextToQuiz(e: React.FormEvent) {
     e.preventDefault();
     if (!rawTextInput.trim() || !effectiveSubjectId) return;
-    setConverting(true);
+    const list = parseLocalTextQuestions(rawTextInput);
+    if (list.length === 0) {
+      notify('Não consegui identificar o enunciado e as alternativas. Confira o formato do texto.', 'error');
+      return;
+    }
+
+    const created: BankQuestion[] = list.map((q, i) => ({
+      id: `q-${Date.now()}-${i}`,
+      subject_id: effectiveSubjectId,
+      topic_id: targetTopicId || null,
+      header: q.header || '',
+      statement: q.statement,
+      options: q.options,
+      correct_answer: (manualAnswers[i] || q.correct_answer || '').trim().toUpperCase(),
+      explanation: q.explanation || '',
+      created_at: new Date().toISOString(),
+    }));
+
+    saveBank([...created, ...questions]);
+    setRawTextInput('');
+    setManualAnswers({});
+    setShowAddPanel(false);
+    notify(
+      `${plural(created.length, 'questão adicionada', 'questões adicionadas')} ao quiz na hora!`,
+      'success'
+    );
+  }
+
+  async function handleImportJsonQuestions(file: File) {
+    if (!effectiveSubjectId) return;
     try {
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'digitize_text_questions',
-          rawText: rawTextInput,
-          subjectName: effectiveSubject?.name || '',
-          topicTitle: effectiveTopic?.title || '',
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao transformar em quiz.');
-      const list = Array.isArray(json.data?.questions) ? json.data.questions : [];
-      if (list.length === 0) throw new Error('Nenhuma questão encontrada no texto enviado.');
-
-      const created: BankQuestion[] = list.map(
-        (q: {
-          header?: string;
-          statement: string;
-          options?: QuizOption[];
-          correct_answer?: string;
-          explanation?: string;
-        }, i: number) => ({
-          id: `q-${Date.now()}-${i}`,
-          subject_id: effectiveSubjectId,
-          topic_id: targetTopicId || null,
-          header: q.header || '',
-          statement: q.statement,
-          options: Array.isArray(q.options) ? q.options : [],
-          correct_answer: String(q.correct_answer || '').trim().toUpperCase(),
-          explanation: q.explanation || '',
-          created_at: new Date().toISOString(),
-        })
-      );
-
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const list = parseJsonQuestionsPayload(parsed);
+      if (list.length === 0) {
+        notify('Nenhuma questão válida encontrada nesse arquivo JSON.', 'error');
+        return;
+      }
+      const created: BankQuestion[] = list.map((q, i) => ({
+        id: `q-json-${Date.now()}-${i}`,
+        subject_id: effectiveSubjectId,
+        topic_id: targetTopicId || null,
+        header: q.header || '',
+        statement: q.statement,
+        options: q.options,
+        correct_answer: q.correct_answer,
+        explanation: q.explanation,
+        created_at: new Date().toISOString(),
+      }));
       saveBank([...created, ...questions]);
-      setRawTextInput('');
       setShowAddPanel(false);
-      notify(`${plural(created.length, 'questão transformada', 'questões transformadas')} em quiz!`, 'success');
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Erro ao converter texto.', 'error');
-    } finally {
-      setConverting(false);
+      notify(
+        `${plural(created.length, 'questão importada', 'questões importadas')} do arquivo JSON!`,
+        'success'
+      );
+    } catch {
+      notify('Arquivo JSON inválido. Verifique se o formato está correto.', 'error');
     }
   }
 
-  async function handleConvertImageToQuiz(file: File) {
+    async function handleConvertImageToQuiz(file: File) {
     if (!effectiveSubjectId) return;
     setConverting(true);
     try {
@@ -746,6 +1029,23 @@ export default function QuestoesPage() {
                     <ImageIcon className="w-3.5 h-3.5" />
                     Enviar Foto / Print
                   </button>
+                  <label
+                    title="Importar perguntas de um arquivo .json para a matéria/tópico selecionado"
+                    className="cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 text-muted-theme hover:text-teal-600 hover:bg-[var(--bg-card)] transition"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    .json
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleImportJsonQuestions(f);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
 
@@ -861,22 +1161,67 @@ export default function QuestoesPage() {
                     rows={6}
                     required
                     value={rawTextInput}
-                    onChange={(e) => setRawTextInput(e.target.value)}
-                    placeholder="Cole aqui uma ou várias questões em texto (com ou sem gabarito) — o Gemini separa o enunciado, cria as alternativas clicáveis e comenta o gabarito!"
-                    className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 p-3 text-xs"
+                    onChange={(e) => {
+                      setRawTextInput(e.target.value);
+                      setManualAnswers({});
+                    }}
+                    placeholder={'Cole aqui uma ou várias questões em texto (100% instantâneo, sem usar Gemini!):\n\nEnunciado da questão...\nA) Primeira alternativa\nB) Segunda alternativa\nC) Terceira alternativa\nD) Quarta alternativa\nGabarito: B (opcional)'}
+                    className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 p-3 text-xs leading-relaxed"
                   />
-                  <div className="flex justify-end">
+
+                  {parsedPreviewQuestions.length > 0 && (
+                    <div className="rounded-2xl border border-teal-500/30 bg-teal-500/[0.04] p-3.5 space-y-2.5 max-h-60 overflow-y-auto">
+                      <p className="text-[11px] font-extrabold text-teal-700 dark:text-teal-300">
+                        Prévia instantânea: {plural(parsedPreviewQuestions.length, 'questão identificada', 'questões identificadas')}
+                      </p>
+                      {parsedPreviewQuestions.map((pq, idx) => {
+                        const chosenAns = (manualAnswers[idx] ?? pq.correct_answer ?? '').toUpperCase();
+                        return (
+                          <div key={idx} className="rounded-xl card-surface border border-theme p-3 space-y-2 text-xs">
+                            <p className="font-semibold leading-snug line-clamp-2">
+                              {idx + 1}. {pq.statement}
+                            </p>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[10px] font-bold text-muted-theme">
+                                Gabarito:
+                              </span>
+                              {pq.options.map((opt) => (
+                                <button
+                                  key={opt.letter}
+                                  type="button"
+                                  onClick={() =>
+                                    setManualAnswers((prev) => ({ ...prev, [idx]: opt.letter }))
+                                  }
+                                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold border transition ${
+                                    chosenAns === opt.letter
+                                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                                      : 'subtle-surface border-theme hover:border-teal-500'
+                                  }`}
+                                >
+                                  {opt.letter}
+                                </button>
+                              ))}
+                              <span className="text-[10px] text-muted-theme ml-auto">
+                                {pq.options.length} opções
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className="text-[11px] text-muted-theme">
+                      Formatação 100% local e instantânea — não usa cota do Gemini.
+                    </p>
                     <button
                       type="submit"
-                      disabled={converting || !rawTextInput.trim()}
-                      className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                      disabled={parsedPreviewQuestions.length === 0}
+                      className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
                     >
-                      {converting ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-4 h-4" />
-                      )}
-                      {converting ? 'Transformando em Quiz...' : 'Transformar em Quiz'}
+                      <CheckCircle2 className="w-4 h-4" />
+                      Salvar {parsedPreviewQuestions.length > 0 ? parsedPreviewQuestions.length : ''} no Quiz (Instantâneo)
                     </button>
                   </div>
                 </form>
