@@ -1,0 +1,1084 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import { useProfile } from '@/components/ProfileProvider';
+import {
+  BookOpen,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Circle,
+  Edit3,
+  Eye,
+  Filter,
+  Highlighter,
+  Plus,
+  Scale,
+  Search,
+  StickyNote,
+  Trash2,
+  X,
+} from 'lucide-react';
+
+type BlockKind = 'artigo' | 'inciso' | 'paragrafo' | 'alinea' | 'item' | 'texto';
+type HighlightTone = 'none' | 'yellow' | 'green' | 'red';
+
+interface LegalBlock {
+  id: string;
+  kind: BlockKind;
+  marker: string;
+  body: string;
+  annotations: string[];
+}
+
+interface LeiSecaArticle {
+  id: string;
+  subjectId: string; // '' = Geral / Sem matéria
+  lawName: string; // ex: CF/88, CLT, Lei 8.112/90
+  title: string; // ex: Art. 7º - Direitos dos Trabalhadores
+  rawText: string;
+  note: string;
+  studied: boolean;
+  highlights: Record<string, HighlightTone>; // keyed by block index/id
+  createdAt: string;
+  updatedAt: string;
+}
+
+const LAW_PRESETS = ['CF/88', 'CLT', 'Lei 8.112/90', 'CPC', 'Código Civil', 'Lei 14.133/21', 'LGPD'];
+
+const HIGHLIGHT_STYLES: Record<HighlightTone, { bg: string; border: string; label: string }> = {
+  none: { bg: '', border: '', label: 'Sem destaque' },
+  yellow: {
+    bg: 'bg-amber-400/15 dark:bg-amber-400/15',
+    border: 'border-l-4 border-l-amber-400',
+    label: 'Importante',
+  },
+  green: {
+    bg: 'bg-emerald-500/15 dark:bg-emerald-500/15',
+    border: 'border-l-4 border-l-emerald-500',
+    label: 'Dominado',
+  },
+  red: {
+    bg: 'bg-rose-500/15 dark:bg-rose-500/15',
+    border: 'border-l-4 border-l-rose-500',
+    label: 'Pegadinha / Atenção',
+  },
+};
+
+function nextTone(current: HighlightTone | undefined): HighlightTone {
+  if (!current || current === 'none') return 'yellow';
+  if (current === 'yellow') return 'red';
+  if (current === 'red') return 'green';
+  return 'none';
+}
+
+function extractAnnotations(text: string): { clean: string; annotations: string[] } {
+  const annotations: string[] = [];
+  const regex =
+    /\((?:Redação dada|Incluíd[oa]|Revogad[oa]|Vide|Acrescid[oa]|Alterad[oa]|Vigência|Vetad[oa]|Regulamento|Produção de efeito)[^)]*\)/gi;
+  const clean = text
+    .replace(regex, (match) => {
+      annotations.push(match.slice(1, -1).trim());
+      return '';
+    })
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return { clean, annotations };
+}
+
+function detectArticleTitle(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  const m = trimmed.match(/^(Art\.?\s*\d+[º°oª]?(?:-[A-Z])?)/i);
+  if (m) return m[1].replace(/\s+/g, ' ').trim();
+  const firstLine = trimmed.split(/\r?\n/)[0] || '';
+  return firstLine.slice(0, 60).trim();
+}
+
+/**
+ * Parser instantâneo (0ms) para textos de Lei Seca brasileira:
+ * separa Caput (Art.), Incisos (I, II, III...), Parágrafos (§ 1º / Parágrafo único),
+ * Alíneas (a), b), c)) e Itens (1., 2.), mesmo quando colados com quebras de PDF.
+ */
+function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
+  if (!rawText.trim()) return [];
+
+  // Normaliza espaços e insere quebras antes de marcadores legais colados no meio da linha
+  let normalized = rawText
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+
+  // Quebra antes de Art. / Parágrafo único / § Xº se vierem após pontuação na mesma linha
+  normalized = normalized
+    .replace(/([.;:])\s+(Art\.?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
+    .replace(/([.;:])\s+(Parágrafo\s+único\.?)/gi, '$1\n$2')
+    .replace(/([.;:])\s+(§§?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
+    .replace(
+      /([.;:])\s+((?:X{0,3}(?:IX|IV|V?I{0,3})|L(?:X{0,3}(?:IX|IV|V?I{0,3}))?|C)\s*[-–—])/g,
+      '$1\n$2'
+    );
+
+  const rawLines = normalized
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  // Regex para detectar início de bloco legal
+  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/i;
+  const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
+  const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
+  const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
+  const alineaRe = /^([a-z])\)\s+(.*)$/;
+  const itemRe = /^(\d{1,2})\.\s+(.*)$/;
+
+  const blocks: LegalBlock[] = [];
+
+  for (const line of rawLines) {
+    let matched: { kind: BlockKind; marker: string; body: string } | null = null;
+
+    const mArt = line.match(artRe);
+    const mParU = !mArt ? line.match(parUnicoRe) : null;
+    const mParN = !mArt && !mParU ? line.match(parNumRe) : null;
+    const mInc = !mArt && !mParU && !mParN ? line.match(incisoRe) : null;
+    const mAli = !mArt && !mParU && !mParN && !mInc ? line.match(alineaRe) : null;
+    const mItem = !mArt && !mParU && !mParN && !mInc && !mAli ? line.match(itemRe) : null;
+
+    if (mArt) {
+      matched = { kind: 'artigo', marker: mArt[1].trim(), body: mArt[2].trim() };
+    } else if (mParU) {
+      matched = { kind: 'paragrafo', marker: 'Parágrafo único', body: mParU[2].trim() };
+    } else if (mParN) {
+      matched = { kind: 'paragrafo', marker: mParN[1].replace(/\s+/g, ' ').trim(), body: mParN[2].trim() };
+    } else if (mInc) {
+      matched = { kind: 'inciso', marker: mInc[1].trim(), body: mInc[2].trim() };
+    } else if (mAli) {
+      matched = { kind: 'alinea', marker: `${mAli[1]})`, body: mAli[2].trim() };
+    } else if (mItem) {
+      matched = { kind: 'item', marker: `${mItem[1]}.`, body: mItem[2].trim() };
+    }
+
+    if (matched) {
+      const { clean, annotations } = extractAnnotations(matched.body);
+      blocks.push({
+        id: `b_${blocks.length}`,
+        kind: matched.kind,
+        marker: matched.marker,
+        body: clean,
+        annotations,
+      });
+    } else if (blocks.length > 0) {
+      // Continuação de linha quebrada de PDF -> junta no bloco anterior
+      const prev = blocks[blocks.length - 1];
+      const { clean, annotations } = extractAnnotations(line);
+      prev.body = [prev.body, clean].filter(Boolean).join(' ');
+      if (annotations.length > 0) prev.annotations.push(...annotations);
+    } else {
+      const { clean, annotations } = extractAnnotations(line);
+      blocks.push({
+        id: `b_${blocks.length}`,
+        kind: 'texto',
+        marker: '',
+        body: clean,
+        annotations,
+      });
+    }
+  }
+
+  return blocks;
+}
+
+function LegalBlocksView({
+  blocks,
+  highlights,
+  onToggleHighlight,
+  interactive = true,
+}: {
+  blocks: LegalBlock[];
+  highlights?: Record<string, HighlightTone>;
+  onToggleHighlight?: (blockId: string) => void;
+  interactive?: boolean;
+}) {
+  if (blocks.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      {blocks.map((b) => {
+        const tone: HighlightTone = highlights?.[b.id] || 'none';
+        const style = HIGHLIGHT_STYLES[tone];
+
+        if (b.kind === 'artigo') {
+          return (
+            <div
+              key={b.id}
+              className={`group rounded-2xl p-3.5 border border-teal-500/25 ${
+                tone !== 'none' ? `${style.bg} ${style.border}` : 'bg-teal-500/5'
+              } transition`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm leading-relaxed">
+                  <span className="inline-flex items-center px-2 py-0.5 mr-2 rounded-lg bg-teal-600 text-white text-xs font-extrabold tracking-wide">
+                    {b.marker}
+                  </span>
+                  <span className="font-medium">{b.body}</span>
+                </p>
+                {interactive && onToggleHighlight && (
+                  <button
+                    type="button"
+                    onClick={() => onToggleHighlight(b.id)}
+                    title={`Destacar (${style.label})`}
+                    className={`p-1.5 rounded-lg shrink-0 transition ${
+                      tone !== 'none'
+                        ? 'opacity-100 text-amber-600 dark:text-amber-300'
+                        : 'opacity-40 group-hover:opacity-100 text-muted-theme'
+                    }`}
+                  >
+                    <Highlighter className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {b.annotations.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {b.annotations.map((ann, i) => (
+                    <span
+                      key={i}
+                      className="text-[10px] italic px-2 py-0.5 rounded-full subtle-surface border border-theme text-muted-theme"
+                    >
+                      {ann}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        if (b.kind === 'inciso') {
+          return (
+            <div
+              key={b.id}
+              className={`group ml-2 sm:ml-4 rounded-2xl px-3.5 py-2.5 border border-theme flex items-start justify-between gap-2.5 transition ${
+                tone !== 'none' ? `${style.bg} ${style.border}` : 'subtle-surface border-l-4 border-l-teal-500/50'
+              }`}
+            >
+              <div className="flex items-start gap-2.5 min-w-0">
+                <span className="min-w-[2rem] text-center px-2 py-0.5 rounded-lg bg-teal-500/15 text-teal-700 dark:text-teal-300 text-xs font-extrabold shrink-0 mt-0.5">
+                  {b.marker}
+                </span>
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[13.5px] leading-relaxed">{b.body}</p>
+                  {b.annotations.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {b.annotations.map((ann, i) => (
+                        <span
+                          key={i}
+                          className="text-[10px] italic px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/5 text-muted-theme"
+                        >
+                          {ann}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {interactive && onToggleHighlight && (
+                <button
+                  type="button"
+                  onClick={() => onToggleHighlight(b.id)}
+                  title={`Destacar inciso (${style.label})`}
+                  className={`p-1.5 rounded-lg shrink-0 transition ${
+                    tone !== 'none'
+                      ? 'opacity-100 text-amber-600 dark:text-amber-300'
+                      : 'opacity-35 group-hover:opacity-100 text-muted-theme'
+                  }`}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          );
+        }
+
+        if (b.kind === 'paragrafo') {
+          return (
+            <div
+              key={b.id}
+              className={`group ml-1 sm:ml-2 rounded-2xl px-3.5 py-2.5 border border-indigo-500/25 flex items-start justify-between gap-2.5 transition ${
+                tone !== 'none' ? `${style.bg} ${style.border}` : 'bg-indigo-500/5'
+              }`}
+            >
+              <div className="min-w-0 space-y-1">
+                <p className="text-[13.5px] leading-relaxed">
+                  <span className="inline-flex items-center px-2 py-0.5 mr-2 rounded-lg bg-indigo-600/15 text-indigo-700 dark:text-indigo-300 text-xs font-extrabold">
+                    {b.marker}
+                  </span>
+                  <span>{b.body}</span>
+                </p>
+                {b.annotations.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {b.annotations.map((ann, i) => (
+                      <span
+                        key={i}
+                        className="text-[10px] italic px-2 py-0.5 rounded-full subtle-surface border border-theme text-muted-theme"
+                      >
+                        {ann}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {interactive && onToggleHighlight && (
+                <button
+                  type="button"
+                  onClick={() => onToggleHighlight(b.id)}
+                  title={`Destacar parágrafo (${style.label})`}
+                  className={`p-1.5 rounded-lg shrink-0 transition ${
+                    tone !== 'none'
+                      ? 'opacity-100 text-amber-600 dark:text-amber-300'
+                      : 'opacity-35 group-hover:opacity-100 text-muted-theme'
+                  }`}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          );
+        }
+
+        if (b.kind === 'alinea' || b.kind === 'item') {
+          return (
+            <div
+              key={b.id}
+              className={`group ${
+                b.kind === 'alinea' ? 'ml-6 sm:ml-10' : 'ml-10 sm:ml-14'
+              } rounded-xl px-3 py-2 border border-theme flex items-start justify-between gap-2 transition ${
+                tone !== 'none' ? `${style.bg} ${style.border}` : 'subtle-surface'
+              }`}
+            >
+              <div className="flex items-start gap-2 min-w-0">
+                <span className="px-1.5 py-0.5 rounded-md bg-slate-500/15 text-xs font-bold shrink-0">
+                  {b.marker}
+                </span>
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[13px] leading-relaxed">{b.body}</p>
+                  {b.annotations.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {b.annotations.map((ann, i) => (
+                        <span
+                          key={i}
+                          className="text-[10px] italic px-1.5 py-0.5 rounded-full bg-black/5 dark:bg-white/5 text-muted-theme"
+                        >
+                          {ann}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {interactive && onToggleHighlight && (
+                <button
+                  type="button"
+                  onClick={() => onToggleHighlight(b.id)}
+                  title={`Destacar (${style.label})`}
+                  className={`p-1 rounded-lg shrink-0 transition ${
+                    tone !== 'none'
+                      ? 'opacity-100 text-amber-600 dark:text-amber-300'
+                      : 'opacity-35 group-hover:opacity-100 text-muted-theme'
+                  }`}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          );
+        }
+
+        return (
+          <div
+            key={b.id}
+            className={`group rounded-2xl px-3.5 py-2.5 border border-theme flex items-start justify-between gap-2 ${
+              tone !== 'none' ? `${style.bg} ${style.border}` : 'subtle-surface'
+            }`}
+          >
+            <p className="text-[13.5px] leading-relaxed">{b.body}</p>
+            {interactive && onToggleHighlight && (
+              <button
+                type="button"
+                onClick={() => onToggleHighlight(b.id)}
+                className={`p-1.5 rounded-lg shrink-0 transition ${
+                  tone !== 'none'
+                    ? 'opacity-100 text-amber-600 dark:text-amber-300'
+                    : 'opacity-35 group-hover:opacity-100 text-muted-theme'
+                }`}
+              >
+                <Highlighter className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export default function LeiSecaPage() {
+  const { profile, subjects } = useProfile();
+  const storageKey = `sf_lei_seca_${profile?.id || 'default'}`;
+
+  const [articles, setArticles] = useState<LeiSecaArticle[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  // Filtros
+  const [selectedSubject, setSelectedSubject] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'highlighted'>('all');
+
+  // Recolher/Expandir
+  const [collapsedIds, setCollapsedIds] = useState<Record<string, boolean>>({});
+
+  // Modal Adicionar / Editar
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formSubjectId, setFormSubjectId] = useState<string>('');
+  const [formLawName, setFormLawName] = useState<string>('');
+  const [formTitle, setFormTitle] = useState<string>('');
+  const [formRawText, setFormRawText] = useState<string>('');
+  const [formNote, setFormNote] = useState<string>('');
+  const [showPreview, setShowPreview] = useState(true);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setArticles(parsed);
+      } else {
+        setArticles([]);
+      }
+    } catch {
+      setArticles([]);
+    } finally {
+      setLoaded(true);
+    }
+  }, [storageKey]);
+
+  function persist(next: LeiSecaArticle[]) {
+    setArticles(next);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  const subjectMap = useMemo(() => {
+    const m = new Map<string, { name: string; color: string }>();
+    subjects.forEach((s) => m.set(s.id, { name: s.name, color: s.color || '#0d9488' }));
+    return m;
+  }, [subjects]);
+
+  const previewBlocks = useMemo(() => parseLeiSecaBlocks(formRawText), [formRawText]);
+
+  const filteredArticles = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return articles.filter((a) => {
+      if (selectedSubject !== 'ALL') {
+        if (selectedSubject === 'NONE') {
+          if (a.subjectId) return false;
+        } else if (a.subjectId !== selectedSubject) {
+          return false;
+        }
+      }
+      if (statusFilter === 'unread' && a.studied) return false;
+      if (statusFilter === 'highlighted') {
+        const hasHl = Object.values(a.highlights || {}).some((v) => v && v !== 'none');
+        if (!hasHl) return false;
+      }
+      if (q) {
+        const subName = subjectMap.get(a.subjectId)?.name || '';
+        const hay = `${a.title} ${a.lawName} ${subName} ${a.rawText} ${a.note}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [articles, selectedSubject, searchQuery, statusFilter, subjectMap]);
+
+  const countsBySubject = useMemo(() => {
+    const counts: Record<string, number> = { ALL: articles.length, NONE: 0 };
+    for (const a of articles) {
+      if (!a.subjectId) counts.NONE += 1;
+      else counts[a.subjectId] = (counts[a.subjectId] || 0) + 1;
+    }
+    return counts;
+  }, [articles]);
+
+  const studiedCount = useMemo(() => articles.filter((a) => a.studied).length, [articles]);
+
+  function openNewForm() {
+    setEditingId(null);
+    setFormSubjectId(selectedSubject !== 'ALL' && selectedSubject !== 'NONE' ? selectedSubject : subjects[0]?.id || '');
+    setFormLawName('');
+    setFormTitle('');
+    setFormRawText('');
+    setFormNote('');
+    setShowPreview(true);
+    setShowForm(true);
+  }
+
+  function openEditForm(art: LeiSecaArticle) {
+    setEditingId(art.id);
+    setFormSubjectId(art.subjectId);
+    setFormLawName(art.lawName);
+    setFormTitle(art.title);
+    setFormRawText(art.rawText);
+    setFormNote(art.note);
+    setShowPreview(true);
+    setShowForm(true);
+  }
+
+  function handleSaveArticle(e: React.FormEvent) {
+    e.preventDefault();
+    if (!formRawText.trim()) return;
+    const autoTitle = formTitle.trim() || detectArticleTitle(formRawText) || 'Artigo sem título';
+    const now = new Date().toISOString();
+
+    if (editingId) {
+      const next = articles.map((a) =>
+        a.id === editingId
+          ? {
+              ...a,
+              subjectId: formSubjectId,
+              lawName: formLawName.trim(),
+              title: autoTitle,
+              rawText: formRawText.trim(),
+              note: formNote.trim(),
+              updatedAt: now,
+            }
+          : a
+      );
+      persist(next);
+    } else {
+      const created: LeiSecaArticle = {
+        id: `ls_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        subjectId: formSubjectId,
+        lawName: formLawName.trim(),
+        title: autoTitle,
+        rawText: formRawText.trim(),
+        note: formNote.trim(),
+        studied: false,
+        highlights: {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      persist([created, ...articles]);
+    }
+    setShowForm(false);
+    setEditingId(null);
+  }
+
+  function handleDeleteArticle(id: string) {
+    if (!window.confirm('Apagar este artigo da Lei Seca?')) return;
+    persist(articles.filter((a) => a.id !== id));
+  }
+
+  function handleToggleStudied(id: string) {
+    persist(
+      articles.map((a) => (a.id === id ? { ...a, studied: !a.studied, updatedAt: new Date().toISOString() } : a))
+    );
+  }
+
+  function handleToggleHighlight(articleId: string, blockId: string) {
+    persist(
+      articles.map((a) => {
+        if (a.id !== articleId) return a;
+        const curr = a.highlights?.[blockId] || 'none';
+        const nextHl = { ...(a.highlights || {}), [blockId]: nextTone(curr) };
+        if (nextHl[blockId] === 'none') delete nextHl[blockId];
+        return { ...a, highlights: nextHl, updatedAt: new Date().toISOString() };
+      })
+    );
+  }
+
+  function toggleCollapse(id: string) {
+    setCollapsedIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  const allCollapsed =
+    filteredArticles.length > 0 && filteredArticles.every((a) => Boolean(collapsedIds[a.id]));
+
+  function toggleCollapseAll() {
+    if (allCollapsed) {
+      setCollapsedIds({});
+    } else {
+      const next: Record<string, boolean> = {};
+      filteredArticles.forEach((a) => {
+        next[a.id] = true;
+      });
+      setCollapsedIds(next);
+    }
+  }
+
+  return (
+    <div className="max-w-5xl space-y-6">
+      {/* Cabeçalho */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <div className="w-10 h-10 rounded-2xl bg-teal-500/15 text-teal-600 dark:text-teal-400 flex items-center justify-center">
+              <Scale className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Lei Seca</h1>
+              <p className="text-xs sm:text-sm text-muted-theme">
+                Cole o artigo e o StudyFlow organiza automaticamente caput, incisos, parágrafos e alíneas.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={openNewForm}
+          className="px-5 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
+        >
+          <Plus className="w-4 h-4" />
+          Adicionar Artigo
+        </button>
+      </div>
+
+      {/* Resumo rápido */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <div className="card-surface rounded-2xl p-4">
+          <p className="text-[11px] font-semibold text-muted-theme">Artigos salvos</p>
+          <p className="text-2xl font-extrabold mt-0.5">{articles.length}</p>
+        </div>
+        <div className="card-surface rounded-2xl p-4">
+          <p className="text-[11px] font-semibold text-muted-theme">Já lidos / revisados</p>
+          <p className="text-2xl font-extrabold text-emerald-600 mt-0.5">
+            {studiedCount}
+            <span className="text-xs font-semibold text-muted-theme ml-1.5">
+              ({articles.length > 0 ? Math.round((studiedCount / articles.length) * 100) : 0}%)
+            </span>
+          </p>
+        </div>
+        <div className="card-surface rounded-2xl p-4 col-span-2 sm:col-span-1">
+          <p className="text-[11px] font-semibold text-muted-theme">Dica de leitura</p>
+          <p className="text-xs text-muted-theme mt-1">
+            Clique no ícone <Highlighter className="w-3 h-3 inline text-amber-500" /> em qualquer inciso para grifar (amarelo, vermelho ou verde).
+          </p>
+        </div>
+      </div>
+
+      {/* Filtros por Matéria + Busca */}
+      <div className="card-surface rounded-3xl p-4 sm:p-5 space-y-3.5">
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="relative flex-1">
+            <Search className="w-4 h-4 text-muted-theme absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar por artigo, lei (ex: CF/88, CLT) ou palavra dentro dos incisos..."
+              className="w-full rounded-2xl subtle-surface border border-theme pl-10 pr-4 py-2.5 text-sm"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Filter className="w-3.5 h-3.5 text-muted-theme absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <select
+                value={selectedSubject}
+                onChange={(e) => setSelectedSubject(e.target.value)}
+                className="rounded-2xl subtle-surface border border-theme pl-8 pr-4 py-2.5 text-xs font-bold"
+              >
+                <option value="ALL">Todas as matérias ({countsBySubject.ALL || 0})</option>
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({countsBySubject[s.id] || 0})
+                  </option>
+                ))}
+                {countsBySubject.NONE > 0 && (
+                  <option value="NONE">Geral / Sem matéria ({countsBySubject.NONE})</option>
+                )}
+              </select>
+            </div>
+
+            {filteredArticles.length > 0 && (
+              <button
+                type="button"
+                onClick={toggleCollapseAll}
+                className="px-3 py-2.5 rounded-2xl subtle-surface border border-theme text-xs font-bold whitespace-nowrap hover:opacity-85"
+              >
+                {allCollapsed ? 'Expandir todos' : 'Recolher todos'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Pills rápidas de matéria + status */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setSelectedSubject('ALL')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+              selectedSubject === 'ALL'
+                ? 'bg-teal-600 text-white border-teal-600'
+                : 'subtle-surface border-theme hover:opacity-85'
+            }`}
+          >
+            Todas ({countsBySubject.ALL || 0})
+          </button>
+          {subjects.map((s) => {
+            const count = countsBySubject[s.id] || 0;
+            const active = selectedSubject === s.id;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setSelectedSubject(s.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition inline-flex items-center gap-1.5 ${
+                  active
+                    ? 'bg-teal-600 text-white border-teal-600'
+                    : 'subtle-surface border-theme hover:opacity-85'
+                }`}
+              >
+                <span
+                  className="w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: active ? '#ffffff' : s.color || '#0d9488' }}
+                />
+                <span className="truncate max-w-[160px]">{s.name}</span>
+                <span className="opacity-75">({count})</span>
+              </button>
+            );
+          })}
+
+          <div className="ml-auto flex items-center gap-1">
+            {(
+              [
+                { id: 'all', label: 'Todos' },
+                { id: 'unread', label: 'Não lidos' },
+                { id: 'highlighted', label: 'Com grifo' },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setStatusFilter(f.id)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                  statusFilter === f.id
+                    ? 'bg-slate-800 text-white dark:bg-white dark:text-slate-900'
+                    : 'text-muted-theme hover:opacity-80'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Lista de Artigos */}
+      {!loaded ? null : filteredArticles.length === 0 ? (
+        <div className="card-surface rounded-3xl p-10 text-center space-y-3 border border-dashed border-theme">
+          <div className="w-12 h-12 rounded-2xl bg-teal-500/15 text-teal-600 mx-auto flex items-center justify-center">
+            <BookOpen className="w-6 h-6" />
+          </div>
+          <div>
+            <p className="font-bold text-base">
+              {articles.length === 0
+                ? 'Nenhum artigo salvo na Lei Seca ainda'
+                : 'Nenhum artigo encontrado com esse filtro'}
+            </p>
+            <p className="text-xs text-muted-theme mt-1 max-w-md mx-auto">
+              {articles.length === 0
+                ? 'Clique em "Adicionar Artigo", cole o texto da lei (ex: Art. 7º da CF/88) e veja cada inciso organizado automaticamente.'
+                : 'Tente trocar a matéria selecionada ou limpar a busca.'}
+            </p>
+          </div>
+          {articles.length === 0 && (
+            <button
+              type="button"
+              onClick={openNewForm}
+              className="px-5 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" />
+              Adicionar primeiro artigo
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredArticles.map((art) => {
+            const sub = subjectMap.get(art.subjectId);
+            const blocks = parseLeiSecaBlocks(art.rawText);
+            const isCollapsed = Boolean(collapsedIds[art.id]);
+            const incisoCount = blocks.filter((b) => b.kind === 'inciso').length;
+            const parCount = blocks.filter((b) => b.kind === 'paragrafo').length;
+
+            return (
+              <div
+                key={art.id}
+                className={`card-surface rounded-3xl border transition ${
+                  art.studied ? 'border-emerald-500/35' : 'border-theme'
+                }`}
+              >
+                {/* Cabeçalho do Artigo */}
+                <div className="p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleStudied(art.id)}
+                      title={art.studied ? 'Marcar como não lido' : 'Marcar como lido'}
+                      className="shrink-0"
+                    >
+                      {art.studied ? (
+                        <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                      ) : (
+                        <Circle className="w-5 h-5 text-muted-theme hover:text-teal-500" />
+                      )}
+                    </button>
+
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <h2 className="font-extrabold text-base truncate">{art.title}</h2>
+                        {art.lawName && (
+                          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-teal-500/15 text-teal-700 dark:text-teal-300">
+                            {art.lawName}
+                          </span>
+                        )}
+                        {sub && (
+                          <span
+                            className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
+                            style={{ backgroundColor: sub.color }}
+                          >
+                            {sub.name}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-muted-theme mt-0.5">
+                        {incisoCount > 0 ? `${incisoCount} ${incisoCount === 1 ? 'inciso' : 'incisos'}` : 'Texto corrido'}
+                        {parCount > 0 ? ` · ${parCount} ${parCount === 1 ? 'parágrafo' : 'parágrafos'}` : ''}
+                        {art.studied ? ' · Lido' : ''}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => toggleCollapse(art.id)}
+                      className="px-2.5 py-1.5 rounded-xl subtle-surface border border-theme text-xs font-bold inline-flex items-center gap-1 hover:opacity-85"
+                    >
+                      {isCollapsed ? (
+                        <>
+                          <ChevronDown className="w-3.5 h-3.5" /> Expandir
+                        </>
+                      ) : (
+                        <>
+                          <ChevronUp className="w-3.5 h-3.5" /> Recolher
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openEditForm(art)}
+                      title="Editar artigo"
+                      className="p-2 rounded-xl subtle-surface border border-theme text-muted-theme hover:text-teal-600"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteArticle(art.id)}
+                      title="Apagar artigo"
+                      className="p-2 rounded-xl subtle-surface border border-theme text-muted-theme hover:text-rose-500"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Corpo formatado */}
+                {!isCollapsed && (
+                  <div className="px-4 sm:px-5 pb-5 space-y-3 border-t border-theme pt-4">
+                    <LegalBlocksView
+                      blocks={blocks}
+                      highlights={art.highlights}
+                      onToggleHighlight={(blockId) => handleToggleHighlight(art.id, blockId)}
+                      interactive
+                    />
+
+                    {art.note && (
+                      <div className="rounded-2xl bg-amber-500/10 border border-amber-500/25 px-4 py-3 text-xs flex items-start gap-2">
+                        <StickyNote className="w-4 h-4 text-amber-600 dark:text-amber-300 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-amber-800 dark:text-amber-200 mb-0.5">
+                            Anotação pessoal
+                          </p>
+                          <p className="whitespace-pre-wrap leading-relaxed">{art.note}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Modal Adicionar / Editar Artigo */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-surface rounded-3xl max-w-3xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-theme overflow-hidden">
+            <div className="px-6 py-4 border-b border-theme flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-teal-500/15 text-teal-600 flex items-center justify-center">
+                  <Scale className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-base">
+                    {editingId ? 'Editar Artigo da Lei Seca' : 'Adicionar Artigo na Lei Seca'}
+                  </h2>
+                  <p className="text-xs text-muted-theme">
+                    Cole o texto da lei — caput, incisos, parágrafos e alíneas são formatados na hora.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowForm(false)}
+                className="p-2 rounded-xl hover:opacity-75 text-muted-theme"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveArticle} className="p-6 space-y-4 overflow-y-auto">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div>
+                  <label className="block text-xs font-semibold text-muted-theme mb-1">
+                    Matéria
+                  </label>
+                  <select
+                    value={formSubjectId}
+                    onChange={(e) => setFormSubjectId(e.target.value)}
+                    className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                  >
+                    <option value="">Geral / Sem matéria</option>
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-muted-theme mb-1">
+                    Lei / Norma (opcional)
+                  </label>
+                  <input
+                    value={formLawName}
+                    onChange={(e) => setFormLawName(e.target.value)}
+                    placeholder="Ex: CF/88, CLT, Lei 8.112/90"
+                    className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                  />
+                  <div className="flex flex-wrap gap-1 mt-1.5">
+                    {LAW_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setFormLawName(preset)}
+                        className="text-[10px] font-bold px-2 py-0.5 rounded-full subtle-surface border border-theme hover:border-teal-500"
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Título / Número do Artigo (opcional — detectado automaticamente se deixar em branco)
+                </label>
+                <input
+                  value={formTitle}
+                  onChange={(e) => setFormTitle(e.target.value)}
+                  placeholder="Ex: Art. 7º - Direitos dos Trabalhadores"
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-semibold text-muted-theme">
+                    Texto do Artigo *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview((v) => !v)}
+                    className="text-[11px] font-bold text-teal-600 dark:text-teal-400 inline-flex items-center gap-1"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    {showPreview ? 'Ocultar prévia' : 'Ver prévia formatada'}
+                  </button>
+                </div>
+                <textarea
+                  required
+                  rows={7}
+                  value={formRawText}
+                  onChange={(e) => setFormRawText(e.target.value)}
+                  placeholder={'Cole aqui o artigo completo, por exemplo:\nArt. 7º São direitos dos trabalhadores urbanos e rurais...\nI - relação de emprego protegida...\nII - seguro-desemprego...\n§ 1º ...'}
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-3 text-sm font-mono leading-relaxed"
+                />
+              </div>
+
+              {showPreview && previewBlocks.length > 0 && (
+                <div className="rounded-2xl border border-teal-500/30 p-4 space-y-2.5 bg-teal-500/[0.03]">
+                  <p className="text-xs font-extrabold text-teal-700 dark:text-teal-300">
+                    Prévia formatada ({previewBlocks.length}{' '}
+                    {previewBlocks.length === 1 ? 'bloco' : 'blocos'})
+                  </p>
+                  <div className="max-h-64 overflow-y-auto pr-1">
+                    <LegalBlocksView blocks={previewBlocks} interactive={false} />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Anotação / Mnemonico / Pegadinha de Banca (opcional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={formNote}
+                  onChange={(e) => setFormNote(e.target.value)}
+                  placeholder="Ex: FCC adora trocar 'prazo de 30 dias' por '15 dias' neste inciso..."
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowForm(false)}
+                  className="px-4 py-2.5 rounded-2xl subtle-surface border border-theme text-xs font-bold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold shadow-sm"
+                >
+                  {editingId ? 'Salvar Alterações' : 'Salvar Artigo Formatado'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

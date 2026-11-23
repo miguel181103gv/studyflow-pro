@@ -32,6 +32,8 @@ import {
   PanelRightClose,
   PanelRightOpen,
   CornerDownRight,
+  CheckSquare,
+  AlertTriangle,
 } from 'lucide-react';
 
 type Difficulty = 'facil' | 'medio' | 'dificil';
@@ -102,6 +104,15 @@ function cleanSubtopicDisplay(title: string): string {
   return title.trim().replace(/^↳\s*/, '');
 }
 
+const PDF_JUNK_PATTERNS = [
+  /^p[áa]gina\s+\d+\s+de\s+\d+$/i,
+  /^conte[úu]do\s*quest[õo]es$/i,
+  /^(pdfs?|lei\s*seca|videoaulas?|revis[ãa]o|quest[õo]es|conte[úu]do)$/i,
+  /^24\s*h\s*7\s*dias/i,
+  /clique\s*aqui/i,
+  /^prova\s+discursiva\s*\(/i,
+];
+
 function parseTopicList(raw: string): string[] {
   const normalized = raw.replace(/\r\n/g, '\n').trim();
   if (!normalized) return [];
@@ -122,6 +133,7 @@ function parseTopicList(raw: string): string[] {
         .replace(/;+$/, '')
         .trim();
       if (!cleaned) return '';
+      if (PDF_JUNK_PATTERNS.some((rx) => rx.test(cleaned))) return '';
       return isIndentedSub ? `↳ ${cleaned}` : cleaned;
     })
     .filter((item) => item.length > 0);
@@ -139,11 +151,13 @@ export default function ProgressoEditalPage() {
     theme,
     addSubject,
     updateSubject,
-    deleteSubject,
     addTopic,
     addTopicsBatch,
     updateTopicTitle,
-    deleteTopic,
+    migrateAndDeleteTopics,
+    deleteSubjectsBatch,
+    flashcards,
+    errors,
     toggleTopicStudied,
     toggleSubjectStudied,
     toggleTopicPriority,
@@ -175,6 +189,18 @@ export default function ProgressoEditalPage() {
   const [editTopicTitle, setEditTopicTitle] = useState('');
   const [addingSubForTopicId, setAddingSubForTopicId] = useState<string | null>(null);
   const [newSubtopicTitle, setNewSubtopicTitle] = useState('');
+
+  // Modo Seleção Múltipla (apagar várias matérias ou tópicos de uma vez) + Modal de Migração
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedSubjectIds, setSelectedSubjectIds] = useState<string[]>([]);
+  const [selectedTopicIds, setSelectedTopicIds] = useState<string[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<{
+    subjectIds: string[];
+    topicIds: string[];
+    assetsSummary: string[];
+  } | null>(null);
+  const [migrateTargetTopicId, setMigrateTargetTopicId] = useState('');
+  const [deletingBusy, setDeletingBusy] = useState(false);
 
   // Upload PDF + Modal de Vídeo / PDF / Grifos
   const [uploadingTopicId, setUploadingTopicId] = useState<string | null>(null);
@@ -248,6 +274,101 @@ export default function ProgressoEditalPage() {
     }
   }
 
+  function inspectAndRequestDelete(subjectIds: string[], topicIds: string[]) {
+    const subSet = new Set(subjectIds);
+    const affectedTopicIds = Array.from(
+      new Set([
+        ...topicIds,
+        ...topics.filter((t) => subSet.has(t.subject_id)).map((t) => t.id),
+      ])
+    );
+    const affectedTopicSet = new Set(affectedTopicIds);
+    const affectedTopics = topics.filter((t) => affectedTopicSet.has(t.id));
+
+    const pdfCount = affectedTopics.filter((t) => Boolean(t.pdf_path)).length;
+    const videoCount = affectedTopics.filter((t) => Boolean(t.video_url)).length;
+    const hlCount = highlights.filter((h) => affectedTopicSet.has(h.topic_id)).length;
+    const noteCount = affectedTopicIds.filter((id) => Boolean(topicNotesMap[id]?.rawText?.trim())).length;
+    const fcCount = flashcards.filter(
+      (c) => (c.topic_id && affectedTopicSet.has(c.topic_id)) || subSet.has(c.subject_id)
+    ).length;
+    const errCount = errors.filter(
+      (e) => (e.topic_id && affectedTopicSet.has(e.topic_id)) || subSet.has(e.subject_id)
+    ).length;
+
+    const summary: string[] = [];
+    if (pdfCount > 0) summary.push(`${pdfCount} PDF(s)`);
+    if (videoCount > 0) summary.push(`${videoCount} videoaula(s)`);
+    if (hlCount > 0) summary.push(`${hlCount} grifo(s)`);
+    if (noteCount > 0) summary.push(`${noteCount} texto(s)/resumo(s)`);
+    if (fcCount > 0) summary.push(`${fcCount} flashcard(s)`);
+    if (errCount > 0) summary.push(`${errCount} erro(s)`);
+
+    // Se tem qualquer conteúdo salvo, abre modal perguntando se quer migrar!
+    if (summary.length > 0) {
+      const remainingTopics = topics.filter(
+        (t) => !affectedTopicSet.has(t.id) && !subSet.has(t.subject_id)
+      );
+      setMigrateTargetTopicId(remainingTopics[0]?.id || '');
+      setPendingDelete({
+        subjectIds,
+        topicIds: affectedTopicIds,
+        assetsSummary: summary,
+      });
+      return;
+    }
+
+    // Sem conteúdo salvo: confirmação simples
+    const label =
+      subjectIds.length > 0 && topicIds.length > 0
+        ? `${subjectIds.length} matéria(s) e ${topicIds.length} tópico(s)`
+        : subjectIds.length > 0
+        ? `${subjectIds.length} matéria(s)`
+        : `${topicIds.length} tópico(s)`;
+    if (!confirm(`Excluir ${label}?`)) return;
+    executeDelete(subjectIds, affectedTopicIds, null);
+  }
+
+  async function executeDelete(
+    subjectIds: string[],
+    topicIds: string[],
+    targetTopicId: string | null
+  ) {
+    setDeletingBusy(true);
+    try {
+      // Migrar textos locais (topicNotesMap) se houver destino
+      if (targetTopicId && topicIds.length > 0) {
+        const mergedTexts = topicIds
+          .map((id) => topicNotesMap[id]?.rawText?.trim())
+          .filter(Boolean);
+        if (mergedTexts.length > 0) {
+          const existingTarget = topicNotesMap[targetTopicId] || { rawText: '', formatted: null };
+          const combined = [existingTarget.rawText?.trim(), ...mergedTexts]
+            .filter(Boolean)
+            .join('\n\n---\n\n');
+          saveTopicNote(targetTopicId, {
+            rawText: combined,
+            formatted: existingTarget.formatted || null,
+          });
+        }
+      }
+
+      if (topicIds.length > 0) {
+        await migrateAndDeleteTopics(topicIds, targetTopicId);
+      }
+      if (subjectIds.length > 0) {
+        await deleteSubjectsBatch(subjectIds);
+      }
+
+      setPendingDelete(null);
+      setSelectedSubjectIds([]);
+      setSelectedTopicIds([]);
+      setSelectMode(false);
+    } finally {
+      setDeletingBusy(false);
+    }
+  }
+
   const diffStorageKey = `sf_topic_difficulty_${profile?.id || 'default'}`;
 
   useEffect(() => {
@@ -292,24 +413,28 @@ export default function ProgressoEditalPage() {
 
   function getTopicStage(topicId: string, studied: boolean) {
     if (!studied) {
-      return { level: 0, label: 'Pendente', rev1: false, rev7: false, rev30: false };
+      return { level: 0, label: 'Pendente', rev1: false, rev7: false, rev30: false, rev90: false };
     }
     const tRevs = reviews.filter((r) => r.topic_id === topicId);
     const rev1 = tRevs.some((r) => r.interval_days === 1 && r.completed);
     const rev7 = tRevs.some((r) => r.interval_days === 7 && r.completed);
     const rev30 = tRevs.some((r) => r.interval_days === 30 && r.completed);
-    const completedCount = [rev1, rev7, rev30].filter(Boolean).length;
+    const rev90 = tRevs.some((r) => r.interval_days === 90 && r.completed);
+    const completedCount = [rev1, rev7, rev30, rev90].filter(Boolean).length;
 
+    if (completedCount >= 4) {
+      return { level: 4, label: 'Dominado (4/4 revisões)', rev1, rev7, rev30, rev90 };
+    }
     if (completedCount === 3) {
-      return { level: 4, label: 'Dominado (3/3 revisões)', rev1, rev7, rev30 };
+      return { level: 3, label: 'Revisado 3x (falta 90d)', rev1, rev7, rev30, rev90 };
     }
     if (completedCount === 2) {
-      return { level: 3, label: 'Revisado 2x (falta 30d)', rev1, rev7, rev30 };
+      return { level: 2, label: 'Revisado 2x', rev1, rev7, rev30, rev90 };
     }
     if (completedCount === 1) {
-      return { level: 2, label: 'Revisado 1x', rev1, rev7, rev30 };
+      return { level: 2, label: 'Revisado 1x', rev1, rev7, rev30, rev90 };
     }
-    return { level: 1, label: 'Estudado (aguardando revisões)', rev1, rev7, rev30 };
+    return { level: 1, label: 'Estudado (aguardando revisões)', rev1, rev7, rev30, rev90 };
   }
 
   function getStageColors(level: number) {
@@ -475,6 +600,28 @@ export default function ProgressoEditalPage() {
     );
   }
 
+  const totalMissingVideos = topics.filter((t) => !t.video_url).length;
+
+  function handleBatchAutoVideosAll() {
+    const subNameMap = new Map(subjects.map((s) => [s.id, s.name]));
+    const missing = topics.filter((t) => !t.video_url && subNameMap.has(t.subject_id));
+    if (missing.length === 0) {
+      notify('Todos os tópicos já possuem videoaula cadastrada!', 'info');
+      return;
+    }
+    startBatchVideoJob(
+      `${profile?.name || 'Plano'} · Todas as matérias`,
+      missing.map((t) => ({
+        topicId: t.id,
+        subjectName: subNameMap.get(t.subject_id) || '',
+        topicTitle: t.title,
+      })),
+      (topicId, url) => {
+        updateTopicVideo(topicId, url);
+      }
+    );
+  }
+
   async function handleSaveVideo(e: React.FormEvent) {
     e.preventDefault();
     if (!activeTopicId) return;
@@ -544,6 +691,40 @@ export default function ProgressoEditalPage() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          {(totalMissingVideos > 0 || videoJob.running) && (
+            <button
+              type="button"
+              disabled={videoJob.running}
+              onClick={handleBatchAutoVideosAll}
+              className="px-3.5 py-2 rounded-2xl bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm transition"
+              title="Busca automaticamente videoaulas no YouTube para todos os tópicos sem vídeo"
+            >
+              {videoJob.running ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Youtube className="w-4 h-4" />
+              )}
+              {videoJob.running
+                ? `Buscando vídeos (${videoJob.done}/${videoJob.total})...`
+                : `Buscar vídeos de todas (${totalMissingVideos})`}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setSelectMode((v) => !v);
+              setSelectedSubjectIds([]);
+              setSelectedTopicIds([]);
+            }}
+            className={`px-3.5 py-2 rounded-2xl text-xs font-bold inline-flex items-center gap-1.5 transition ${
+              selectMode
+                ? 'bg-rose-600 text-white shadow-sm'
+                : 'card-surface hover:opacity-85'
+            }`}
+          >
+            <CheckSquare className="w-4 h-4" />
+            {selectMode ? 'Cancelar seleção' : 'Selecionar p/ excluir'}
+          </button>
           <button
             type="button"
             onClick={() => setShowNewSubject((v) => !v)}
@@ -640,10 +821,34 @@ export default function ProgressoEditalPage() {
             3. Rev. 7d
           </span>
           <span className="px-3 py-1 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200">
-            4. Dominado (30d)
+            4. Dominado (30/90d)
           </span>
         </div>
       </div>
+
+      {/* Barra de Exclusão Múltipla */}
+      {selectMode && (
+        <div className="card-surface rounded-2xl p-4 border-2 border-rose-500/40 bg-rose-500/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in-up">
+          <p className="text-xs font-bold">
+            Modo seleção ativo: marque as matérias ou tópicos que deseja apagar (
+            <span className="text-rose-600">
+              {selectedSubjectIds.length} matéria(s) · {selectedTopicIds.length} tópico(s)
+            </span>
+            )
+          </p>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={selectedSubjectIds.length === 0 && selectedTopicIds.length === 0}
+              onClick={() => inspectAndRequestDelete(selectedSubjectIds, selectedTopicIds)}
+              className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-40"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Excluir selecionados
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Busca rápida dentro do Edital */}
       <div className="card-surface rounded-2xl px-4 py-2.5 flex items-center gap-2.5">
@@ -701,7 +906,28 @@ export default function ProgressoEditalPage() {
             >
               <div className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                  {/* Checkbox para marcar/desmarcar a matéria inteira */}
+                  {/* Checkbox para selecionar p/ excluir (no selectMode) OU marcar matéria inteira estudada */}
+                  {selectMode ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedSubjectIds((prev) =>
+                          prev.includes(sub.id)
+                            ? prev.filter((id) => id !== sub.id)
+                            : [...prev, sub.id]
+                        );
+                      }}
+                      title="Selecionar matéria para excluir"
+                      className={`w-6 h-6 rounded-lg flex items-center justify-center border-2 shrink-0 transition ${
+                        selectedSubjectIds.includes(sub.id)
+                          ? 'bg-rose-600 border-rose-600 text-white'
+                          : 'bg-white dark:bg-slate-800 border-rose-400'
+                      }`}
+                    >
+                      {selectedSubjectIds.includes(sub.id) && <Check className="w-4 h-4 stroke-[3]" />}
+                    </button>
+                  ) : (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -730,6 +956,7 @@ export default function ProgressoEditalPage() {
                   >
                     {isCompletedSubject && <Check className="w-4 h-4 stroke-[3]" />}
                   </button>
+                  )}
 
                   <button
                     type="button"
@@ -887,15 +1114,7 @@ export default function ProgressoEditalPage() {
                           </button>
                           <button
                             type="button"
-                            onClick={async () => {
-                              if (
-                                confirm(
-                                  `Remover a matéria "${sub.name}" e todos os seus ${allSubTopics.length} tópicos?`
-                                )
-                              ) {
-                                await deleteSubject(sub.id);
-                              }
-                            }}
+                            onClick={() => inspectAndRequestDelete([sub.id], [])}
                             className="px-2.5 py-1.5 rounded-xl subtle-surface hover:bg-rose-500/15 text-xs font-semibold inline-flex items-center gap-1 text-muted-theme hover:text-rose-600"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -931,33 +1150,15 @@ export default function ProgressoEditalPage() {
                           placeholder="Digite um tópico, cole uma lista do edital ou use > para subtópicos (ex: > Justas causas)..."
                           className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2 text-xs resize-y"
                         />
-                        <div className="flex flex-row sm:flex-col gap-1.5 shrink-0">
-                          {parsedNewTopics.length > 1 && (
-                            <button
-                              type="button"
-                              disabled={cleaningTopicsAi}
-                              onClick={() => handleCleanTopicsWithGemini(sub.name)}
-                              title="Remove lixo de PDF (números de página, cabeçalhos) e agrupa linhas quebradas com Gemini"
-                              className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
-                            >
-                              {cleaningTopicsAi ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : (
-                                <Sparkles className="w-3.5 h-3.5" />
-                              )}
-                              {cleaningTopicsAi ? 'Limpando...' : 'Limpar com Gemini'}
-                            </button>
-                          )}
-                          <button
-                            type="submit"
-                            disabled={parsedNewTopics.length === 0 || cleaningTopicsAi}
-                            className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
-                          >
-                            {parsedNewTopics.length > 1
-                              ? `Criar ${parsedNewTopics.length} checklists`
-                              : 'Salvar tópico'}
-                          </button>
-                        </div>
+                        <button
+                          type="submit"
+                          disabled={parsedNewTopics.length === 0}
+                          className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50 shrink-0"
+                        >
+                          {parsedNewTopics.length > 1
+                            ? `Criar ${parsedNewTopics.length} checklists`
+                            : 'Salvar tópico'}
+                        </button>
                       </div>
 
                       {parsedNewTopics.length > 1 && (
@@ -1012,6 +1213,27 @@ export default function ProgressoEditalPage() {
                         }}
                       >
                         <div className="flex items-start gap-3.5 flex-1 min-w-0">
+                          {selectMode ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedTopicIds((prev) =>
+                                  prev.includes(topic.id)
+                                    ? prev.filter((id) => id !== topic.id)
+                                    : [...prev, topic.id]
+                                )
+                              }
+                              className={`mt-0.5 w-6 h-6 rounded-lg flex items-center justify-center border-2 shrink-0 transition ${
+                                selectedTopicIds.includes(topic.id)
+                                  ? 'bg-rose-600 border-rose-600 text-white'
+                                  : 'bg-white dark:bg-slate-800 border-rose-400'
+                              }`}
+                            >
+                              {selectedTopicIds.includes(topic.id) && (
+                                <Check className="w-4 h-4 stroke-[3]" />
+                              )}
+                            </button>
+                          ) : (
                           <button
                             type="button"
                             onClick={() => handleTopicCheck(topic)}
@@ -1024,6 +1246,7 @@ export default function ProgressoEditalPage() {
                           >
                             {topic.studied && <Check className="w-4 h-4 stroke-[3]" />}
                           </button>
+                          )}
 
                           <div className="min-w-0 flex-1 space-y-1.5">
                             {editingTopicId === topic.id ? (
@@ -1141,6 +1364,15 @@ export default function ProgressoEditalPage() {
                                     }`}
                                   >
                                     {stage.rev30 ? '✓ 30d' : '30d'}
+                                  </span>
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full ${
+                                      stage.rev90
+                                        ? 'bg-emerald-700 text-white'
+                                        : 'bg-black/5 text-muted-theme'
+                                    }`}
+                                  >
+                                    {stage.rev90 ? '✓ 90d' : '90d'}
                                   </span>
                                 </div>
                               )}
@@ -1271,11 +1503,7 @@ export default function ProgressoEditalPage() {
 
                           <button
                             type="button"
-                            onClick={() => {
-                              if (confirm(`Remover o tópico "${topic.title}"?`)) {
-                                deleteTopic(topic.id);
-                              }
-                            }}
+                            onClick={() => inspectAndRequestDelete([], [topic.id])}
                             title="Remover tópico"
                             className="p-2 rounded-xl card-surface text-muted-theme hover:text-rose-600 transition"
                           >
@@ -1740,6 +1968,102 @@ export default function ProgressoEditalPage() {
                 </div>
               </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Modal de Proteção & Migração de Materiais (Grifos, PDFs, Vídeos, Textos, Flashcards) */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="card-surface w-full max-w-lg rounded-3xl p-6 space-y-4 shadow-2xl animate-pop-in">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/15 text-amber-600 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="font-extrabold text-base">
+                    Existem conteúdos salvos aqui!
+                  </h2>
+                  <p className="text-xs text-muted-theme mt-0.5">
+                    Encontramos: <strong>{pendingDelete.assetsSummary.join(' · ')}</strong>.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                className="p-1.5 rounded-xl subtle-surface"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {(() => {
+              const delSubSet = new Set(pendingDelete.subjectIds);
+              const delTopSet = new Set(pendingDelete.topicIds);
+              const candidateTopics = topics.filter(
+                (t) => !delTopSet.has(t.id) && !delSubSet.has(t.subject_id)
+              );
+              return candidateTopics.length > 0 ? (
+                <div className="subtle-surface rounded-2xl p-4 space-y-2.5">
+                  <label className="block text-xs font-bold">
+                    Deseja migrar esses materiais para outro tópico antes de apagar?
+                  </label>
+                  <select
+                    value={migrateTargetTopicId}
+                    onChange={(e) => setMigrateTargetTopicId(e.target.value)}
+                    className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-xs"
+                  >
+                    {candidateTopics.map((t) => {
+                      const s = subjects.find((sb) => sb.id === t.subject_id);
+                      return (
+                        <option key={t.id} value={t.id}>
+                          {s?.name} › {cleanSubtopicDisplay(t.title)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={deletingBusy || !migrateTargetTopicId}
+                    onClick={() =>
+                      executeDelete(
+                        pendingDelete.subjectIds,
+                        pendingDelete.topicIds,
+                        migrateTargetTopicId
+                      )
+                    }
+                    className="w-full py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
+                  >
+                    {deletingBusy ? 'Migrando e excluindo...' : 'Migrar materiais e excluir'}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-theme">
+                  Não há outro tópico disponível para migração.
+                </p>
+              );
+            })()}
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-theme">
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                className="px-4 py-2 rounded-xl subtle-surface text-xs font-semibold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deletingBusy}
+                onClick={() =>
+                  executeDelete(pendingDelete.subjectIds, pendingDelete.topicIds, null)
+                }
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold disabled:opacity-50"
+              >
+                Excluir tudo sem migrar
+              </button>
             </div>
           </div>
         </div>

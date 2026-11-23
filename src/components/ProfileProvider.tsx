@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import type {
   AIReport,
@@ -17,6 +17,7 @@ import type {
 } from '@/lib/types';
 import { addDaysISO, SUBJECT_COLORS, todayISO } from '@/lib/utils';
 import { useGlobal } from './GlobalProvider';
+import { createRestorePoint, shouldRunAutoBackup } from '@/lib/backupManager';
 
 interface StopwatchState {
   running: boolean;
@@ -65,6 +66,8 @@ interface ProfileContextValue {
   addTopicsBatch: (subjectId: string, titles: string[]) => Promise<void>;
   updateTopicTitle: (topicId: string, title: string) => Promise<void>;
   deleteTopic: (topicId: string) => Promise<void>;
+  migrateAndDeleteTopics: (topicIds: string[], targetTopicId: string | null) => Promise<void>;
+  deleteSubjectsBatch: (subjectIds: string[]) => Promise<void>;
   toggleTopicStudied: (topic: Topic) => Promise<void>;
   toggleSubjectStudied: (subjectId: string, markAll: boolean) => Promise<void>;
   toggleTopicPriority: (topic: Topic) => Promise<void>;
@@ -524,7 +527,7 @@ export function ProfileProvider({
 
       if (markAll) {
         const base = todayISO();
-        const intervals = [1, 7, 30];
+        const intervals = [1, 7, 30, 90];
         const newReviewsPayload: {
           user_id: string;
           profile_id: string;
@@ -586,7 +589,7 @@ export function ProfileProvider({
 
       if (nextStudied) {
         const base = todayISO();
-        const intervals = [1, 7, 30];
+        const intervals = [1, 7, 30, 90];
         const existingForTopic = reviews.filter((r) => r.topic_id === topic.id);
         if (existingForTopic.length === 0) {
           const { data: createdRevs } = await supabase
@@ -677,6 +680,81 @@ export function ProfileProvider({
       const supabase = createClient();
       await supabase.from('topics').delete().eq('id', topicId);
       notify('Tópico removido.', 'info');
+    });
+  };
+
+  const migrateAndDeleteTopics = async (topicIds: string[], targetTopicId: string | null) => {
+    if (topicIds.length === 0) return;
+    const idSet = new Set(topicIds);
+    const sourceTopics = topics.filter((t) => idSet.has(t.id));
+    const targetTopic = targetTopicId ? topics.find((t) => t.id === targetTopicId) : null;
+
+    await withSync(async () => {
+      const supabase = createClient();
+
+      if (targetTopic) {
+        // 1. Migrar grifos, flashcards e erros para o tópico de destino
+        await Promise.all([
+          supabase
+            .from('topic_highlights')
+            .update({ topic_id: targetTopic.id })
+            .in('topic_id', topicIds),
+          supabase
+            .from('flashcards')
+            .update({ topic_id: targetTopic.id, subject_id: targetTopic.subject_id })
+            .in('topic_id', topicIds),
+          supabase
+            .from('error_entries')
+            .update({ topic_id: targetTopic.id, subject_id: targetTopic.subject_id })
+            .in('topic_id', topicIds),
+        ]);
+
+        // 2. Migrar PDF e Videoaula se o destino ainda não tiver
+        const firstWithPdf = sourceTopics.find((t) => t.pdf_path);
+        const firstWithVideo = sourceTopics.find((t) => t.video_url);
+        const targetPatch: Partial<Topic> = {};
+        if (!targetTopic.pdf_path && firstWithPdf?.pdf_path) {
+          targetPatch.pdf_path = firstWithPdf.pdf_path;
+          targetPatch.pdf_name = firstWithPdf.pdf_name;
+        }
+        if (!targetTopic.video_url && firstWithVideo?.video_url) {
+          targetPatch.video_url = firstWithVideo.video_url;
+        }
+        if (Object.keys(targetPatch).length > 0) {
+          await supabase.from('topics').update(targetPatch).eq('id', targetTopic.id);
+        }
+      }
+
+      // 3. Excluir os tópicos de origem
+      await supabase.from('topics').delete().in('id', topicIds);
+      await refreshAll();
+      notify(
+        targetTopic
+          ? `Materiais migrados para "${targetTopic.title}" e ${topicIds.length} tópico(s) removido(s)!`
+          : `${topicIds.length} tópico(s) removido(s).`,
+        'success'
+      );
+    });
+  };
+
+  const deleteSubjectsBatch = async (subjectIds: string[]) => {
+    if (subjectIds.length === 0) return;
+    const idSet = new Set(subjectIds);
+    setSubjects((prev) => prev.filter((s) => !idSet.has(s.id)));
+    setTopics((prev) => prev.filter((t) => !idSet.has(t.subject_id)));
+    setReviews((prev) => prev.filter((r) => !idSet.has(r.subject_id)));
+    setFlashcards((prev) => prev.filter((c) => !idSet.has(c.subject_id)));
+    setErrors((prev) => prev.filter((e) => !idSet.has(e.subject_id)));
+    setStudyLogs((prev) => prev.filter((l) => !idSet.has(l.subject_id)));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('subjects').delete().in('id', subjectIds);
+      notify(
+        subjectIds.length === 1
+          ? 'Matéria removida.'
+          : `${subjectIds.length} matérias removidas.`,
+        'info'
+      );
     });
   };
 
@@ -977,6 +1055,92 @@ export function ProfileProvider({
     });
   };
 
+  // Pontos de restauração automáticos a cada 1 hora (mantém últimos 7 dias)
+  const backupDataRef = useRef({
+    userId,
+    profile,
+    subjects,
+    topics,
+    highlights,
+    studyLogs,
+    reviews,
+    errors,
+    flashcards,
+    simulados,
+    reports,
+    loading,
+  });
+  backupDataRef.current = {
+    userId,
+    profile,
+    subjects,
+    topics,
+    highlights,
+    studyLogs,
+    reviews,
+    errors,
+    flashcards,
+    simulados,
+    reports,
+    loading,
+  };
+  const autoBackupInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (loading || !profile?.id || !userId) return;
+
+    const tryAutoBackup = async () => {
+      const snap = backupDataRef.current;
+      if (snap.loading || !snap.profile || !snap.userId) return;
+      if (autoBackupInFlightRef.current) return;
+      const hasData =
+        snap.subjects.length > 0 ||
+        snap.topics.length > 0 ||
+        snap.studyLogs.length > 0 ||
+        snap.flashcards.length > 0 ||
+        snap.errors.length > 0 ||
+        snap.simulados.length > 0;
+      if (!hasData) return;
+      if (!shouldRunAutoBackup(snap.profile.id)) return;
+
+      autoBackupInFlightRef.current = true;
+      try {
+        await createRestorePoint({
+          userId: snap.userId,
+          profile: snap.profile,
+          subjects: snap.subjects,
+          topics: snap.topics,
+          highlights: snap.highlights,
+          studyLogs: snap.studyLogs,
+          reviews: snap.reviews,
+          errors: snap.errors,
+          flashcards: snap.flashcards,
+          simulados: snap.simulados,
+          reports: snap.reports,
+          reason: 'auto',
+          label: 'Automático (horário)',
+        });
+      } catch {
+        // silencioso — tenta novamente no próximo ciclo
+      } finally {
+        autoBackupInFlightRef.current = false;
+      }
+    };
+
+    const initialTimer = window.setTimeout(() => {
+      void tryAutoBackup();
+    }, 4000);
+
+    const interval = window.setInterval(() => {
+      void tryAutoBackup();
+    }, 15 * 60 * 1000);
+
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(interval);
+    };
+  }, [loading, profile?.id, userId]);
+
   return (
     <ProfileContext.Provider
       value={{
@@ -1013,6 +1177,8 @@ export function ProfileProvider({
         addTopicsBatch,
         updateTopicTitle,
         deleteTopic,
+        migrateAndDeleteTopics,
+        deleteSubjectsBatch,
         toggleTopicStudied,
         toggleSubjectStudied,
         toggleTopicPriority,

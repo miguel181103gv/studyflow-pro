@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.6-flash'];
+const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'];
 
 async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -14,23 +14,37 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
 
   for (const model of MODELS) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    const genConfig: Record<string, unknown> =
+      jsonMode && !useSearch
+        ? { responseMimeType: 'application/json', temperature: 0.15, maxOutputTokens: 8192 }
+        : { temperature: 0.3, maxOutputTokens: 8192 };
+
+    // Desativa thinking tokens no 2.5 para respostas 5x mais rápidas (evita lentidão e timeout)
+    if (model.startsWith('gemini-2.5')) {
+      genConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
+
     const body: Record<string, unknown> = {
       contents: [{ role: 'user', parts }],
-      generationConfig:
-        jsonMode && !useSearch
-          ? { responseMimeType: 'application/json', temperature: 0.15, maxOutputTokens: 8192 }
-          : { temperature: 0.3, maxOutputTokens: 8192 },
+      generationConfig: genConfig,
     };
 
     if (useSearch) {
       body.tools = [{ googleSearch: {} }];
     }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(18000),
+      });
+    } catch {
+      lastError = `Tempo esgotado (${model})`;
+      continue;
+    }
 
     if (res.ok) {
       const data = await res.json();

@@ -118,7 +118,7 @@ export default function RevisoesPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Agenda de Revisões (1 · 7 · 30 dias)</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Agenda de Revisões (1 · 7 · 30 · 90 dias)</h1>
         <p className="text-sm text-muted-theme">
           Revisões espaçadas geradas automaticamente ao concluir cada tópico do edital.
         </p>

@@ -39,6 +39,7 @@ import {
   ChevronRight,
   ListChecks,
   BookA,
+  Scale,
 } from 'lucide-react';
 
 interface NavItem {
@@ -56,12 +57,13 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: '/ciclo', label: 'Ciclo de Estudos', icon: RefreshCw },
       { href: '/agenda', label: 'Agenda & Notas', icon: CalendarDays },
       { href: '/estudos', label: 'Edital Verticalizado', icon: CheckSquare },
+      { href: '/lei-seca', label: 'Lei Seca', icon: Scale },
     ],
   },
   {
     title: 'Revisar',
     items: [
-      { href: '/revisoes', label: 'Revisões (1/7/30d)', icon: Clock, badgeKey: 'reviews' },
+      { href: '/revisoes', label: 'Revisões (1/7/30/90d)', icon: Clock, badgeKey: 'reviews' },
       { href: '/flashcards', label: 'Flashcards', icon: Layers, badgeKey: 'flashcards' },
       { href: '/questoes', label: 'Questões (Quiz)', icon: ListChecks },
       { href: '/erros', label: 'Caderno de Erros', icon: AlertTriangle },

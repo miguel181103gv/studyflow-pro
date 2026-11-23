@@ -1,11 +1,38 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
-import { createClient } from '@/lib/supabase/client';
 import type { ThemeId } from '@/lib/types';
 import { STUDY_MODES, STUDY_MODE_LIST, encodeStudyModeSlug, getStudyModeId, type StudyMode } from '@/lib/studyModes';
-import { Check, CheckCircle2, Download, Upload, Loader2 } from 'lucide-react';
+import {
+  BACKUP_RETENTION_DAYS,
+  buildBackupPayload,
+  createRestorePoint,
+  deleteRestorePoint,
+  listRestorePoints,
+  loadRestorePointPayload,
+  restoreBackupPayload,
+  type BackupPayload,
+  type RestorePointMeta,
+} from '@/lib/backupManager';
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Clock,
+  Cloud,
+  Download,
+  HardDrive,
+  History,
+  Loader2,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  ShieldCheck,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react';
 
 const THEMES: { id: ThemeId; name: string; desc: string }[] = [
   { id: 'clean', name: 'Claro Clean', desc: 'Visual moderno e leve para estudo diurno' },
@@ -13,6 +40,39 @@ const THEMES: { id: ThemeId; name: string; desc: string }[] = [
   { id: 'obsidian', name: 'Escuro Obsidian', desc: 'Ideal para estudar à noite' },
   { id: 'navy', name: 'Azul Noturno', desc: 'Foco profundo com contraste suave' },
 ];
+
+function formatDateTimeBR(ms: number): string {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toLocaleString('pt-BR');
+  }
+}
+
+function formatRelativeBR(ms: number): string {
+  const diffMin = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+  if (diffMin < 1) return 'agora mesmo';
+  if (diffMin < 60) return `há ${diffMin} min`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `há ${diffH}h`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD === 1) return 'ontem';
+  return `há ${diffD} dias`;
+}
+
+function formatBytes(bytes?: number): string {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(0)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
 
 export default function ConfigPage() {
   const {
@@ -51,6 +111,31 @@ export default function ConfigPage() {
   const [importing, setImporting] = useState(false);
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
 
+  // Pontos de Restauração (últimos 7 dias)
+  const [restorePoints, setRestorePoints] = useState<RestorePointMeta[]>([]);
+  const [loadingPoints, setLoadingPoints] = useState(false);
+  const [creatingPoint, setCreatingPoint] = useState(false);
+  const [restoringPointId, setRestoringPointId] = useState<string | null>(null);
+  const [confirmRestoreTarget, setConfirmRestoreTarget] = useState<RestorePointMeta | null>(null);
+  const [pointStatusMsg, setPointStatusMsg] = useState<string | null>(null);
+
+  const fetchPoints = useCallback(async () => {
+    if (!userId || !profile?.id) return;
+    setLoadingPoints(true);
+    try {
+      const pts = await listRestorePoints(userId, profile.id);
+      setRestorePoints(pts);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingPoints(false);
+    }
+  }, [userId, profile?.id]);
+
+  useEffect(() => {
+    void fetchPoints();
+  }, [fetchPoints]);
+
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     await updateProfile({
@@ -70,19 +155,109 @@ export default function ConfigPage() {
     setTimeout(() => setSavedMsg(false), 3000);
   }
 
+  async function handleCreateRestorePointNow() {
+    if (!profile || !userId || creatingPoint) return;
+    setCreatingPoint(true);
+    setPointStatusMsg(null);
+    try {
+      const res = await createRestorePoint({
+        userId,
+        profile,
+        subjects,
+        topics,
+        highlights,
+        studyLogs,
+        reviews,
+        errors,
+        flashcards,
+        simulados,
+        reports,
+        reason: 'manual',
+        label: 'Ponto manual',
+      });
+      await fetchPoints();
+      setPointStatusMsg(
+        res.cloudSaved
+          ? 'Ponto de restauração salvo na nuvem e no navegador!'
+          : 'Ponto de restauração salvo localmente no navegador!'
+      );
+    } catch (err) {
+      setPointStatusMsg(err instanceof Error ? err.message : 'Erro ao criar ponto de restauração.');
+    } finally {
+      setCreatingPoint(false);
+    }
+  }
+
+  async function handleConfirmRestore() {
+    if (!confirmRestoreTarget || !profile || !userId) return;
+    const target = confirmRestoreTarget;
+    setRestoringPointId(target.id);
+    setPointStatusMsg(null);
+    try {
+      const payload = await loadRestorePointPayload(target);
+      if (!payload) {
+        throw new Error('Não foi possível baixar os dados deste ponto de restauração.');
+      }
+      const { restoredCounts } = await restoreBackupPayload({
+        payload,
+        userId,
+        currentProfile: profile,
+        currentData: {
+          subjects,
+          topics,
+          highlights,
+          studyLogs,
+          reviews,
+          errors,
+          flashcards,
+          simulados,
+          reports,
+        },
+        createSafetyPoint: true,
+      });
+      await refreshAll();
+      await fetchPoints();
+      setConfirmRestoreTarget(null);
+      setPointStatusMsg(
+        `Restaurado com sucesso (${restoredCounts.subjects} matérias, ${restoredCounts.topics} tópicos, ${restoredCounts.highlights} grifos, ${restoredCounts.studyLogs} sessões). Um ponto de segurança dos dados anteriores também foi salvo!`
+      );
+    } catch (err) {
+      setPointStatusMsg(err instanceof Error ? err.message : 'Erro ao restaurar ponto.');
+    } finally {
+      setRestoringPointId(null);
+    }
+  }
+
+  async function handleDownloadPoint(point: RestorePointMeta) {
+    if (!profile) return;
+    try {
+      const payload = await loadRestorePointPayload(point);
+      if (!payload) {
+        setPointStatusMsg('Não foi possível baixar este ponto.');
+        return;
+      }
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safeName = (profile.name || 'estudos').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const stamp = new Date(point.timestampMs).toISOString().replace(/[:.]/g, '-').slice(0, 16);
+      a.download = `StudyFlow_Ponto_${safeName}_${stamp}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setPointStatusMsg('Erro ao baixar o arquivo JSON deste ponto.');
+    }
+  }
+
+  async function handleDeletePoint(point: RestorePointMeta) {
+    await deleteRestorePoint(point);
+    setRestorePoints((prev) => prev.filter((p) => p.id !== point.id));
+  }
+
   function handleExportBackup() {
     if (!profile) return;
-    let agendaPrefs: unknown = null;
-    try {
-      const raw = localStorage.getItem(`sf_agenda_prefs_${profile.id}`);
-      if (raw) agendaPrefs = JSON.parse(raw);
-    } catch {
-      // ignore
-    }
-
-    const payload = {
-      exported_at: new Date().toISOString(),
-      version: 'studyflow-pro-v7',
+    const payload = buildBackupPayload({
       profile,
       subjects,
       topics,
@@ -93,8 +268,9 @@ export default function ConfigPage() {
       flashcards,
       simulados,
       reports,
-      agendaPrefs,
-    };
+      reason: 'manual',
+      label: 'Exportação manual',
+    });
 
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -104,7 +280,7 @@ export default function ConfigPage() {
     a.download = `StudyFlow_Backup_${safeName}_${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setBackupMsg('Backup exportado com sucesso!');
+    setBackupMsg('Backup completo exportado com sucesso!');
   }
 
   async function handleImportBackup(file: File) {
@@ -113,128 +289,29 @@ export default function ConfigPage() {
     setBackupMsg(null);
     try {
       const text = await file.text();
-      const data = JSON.parse(text);
-      const supabase = createClient();
-
-      // Restaura notas da agenda local
-      if (data.agendaPrefs) {
-        try {
-          localStorage.setItem(
-            `sf_agenda_prefs_${profile.id}`,
-            JSON.stringify(data.agendaPrefs)
-          );
-        } catch {
-          // ignore
-        }
-      }
-
-      // Mapeia matérias por nome para preservar vínculos
-      const subjectMap = new Map<string, string>();
-      subjects.forEach((s) => subjectMap.set(s.name.toLowerCase(), s.id));
-
-      if (Array.isArray(data.subjects)) {
-        for (const oldSub of data.subjects) {
-          const existingId = subjectMap.get(String(oldSub.name || '').toLowerCase());
-          if (existingId) {
-            subjectMap.set(oldSub.id, existingId);
-          } else {
-            const { data: createdSub } = await supabase
-              .from('subjects')
-              .insert({
-                user_id: userId,
-                profile_id: profile.id,
-                name: oldSub.name,
-                category: oldSub.category || 'Importada',
-                color: oldSub.color || '#0d9488',
-                cycle_hours: oldSub.cycle_hours ?? 1,
-                cycle_minutes: oldSub.cycle_minutes ?? 30,
-                cycle_order: subjects.length,
-              })
-              .select('id')
-              .single();
-            if (createdSub) subjectMap.set(oldSub.id, createdSub.id);
-          }
-        }
-      }
-
-      // Restaura studyLogs
-      if (Array.isArray(data.studyLogs) && data.studyLogs.length > 0) {
-        const rows = data.studyLogs
-          .map((l: Record<string, unknown>) => ({
-            user_id: userId,
-            profile_id: profile.id,
-            subject_id: subjectMap.get(String(l.subject_id)) || subjects[0]?.id,
-            topic_id: null,
-            duration_seconds: Number(l.duration_seconds) || 0,
-            study_date: String(l.study_date || new Date().toISOString().slice(0, 10)),
-            period: String(l.period || 'Manhã'),
-            method: String(l.method || 'PDF + Questões'),
-            questions_total: Number(l.questions_total) || 0,
-            questions_correct: Number(l.questions_correct) || 0,
-            stop_point: String(l.stop_point || ''),
-            notes: String(l.notes || ''),
-          }))
-          .filter((r: { subject_id?: string }) => !!r.subject_id);
-        if (rows.length > 0) await supabase.from('study_logs').insert(rows);
-      }
-
-      // Restaura flashcards
-      if (Array.isArray(data.flashcards) && data.flashcards.length > 0) {
-        const rows = data.flashcards
-          .map((c: Record<string, unknown>) => ({
-            user_id: userId,
-            profile_id: profile.id,
-            subject_id: subjectMap.get(String(c.subject_id)) || subjects[0]?.id,
-            topic_id: null,
-            front: String(c.front || ''),
-            back: String(c.back || ''),
-            ease_factor: Number(c.ease_factor) || 2.5,
-            interval_days: Number(c.interval_days) || 0,
-            repetitions: Number(c.repetitions) || 0,
-            due_date: String(c.due_date || new Date().toISOString().slice(0, 10)),
-          }))
-          .filter((r: { subject_id?: string; front: string }) => !!r.subject_id && !!r.front);
-        if (rows.length > 0) await supabase.from('flashcards').insert(rows);
-      }
-
-      // Restaura erros
-      if (Array.isArray(data.errors) && data.errors.length > 0) {
-        const rows = data.errors
-          .map((er: Record<string, unknown>) => ({
-            user_id: userId,
-            profile_id: profile.id,
-            subject_id: subjectMap.get(String(er.subject_id)) || subjects[0]?.id,
-            topic_id: null,
-            question_text: String(er.question_text || ''),
-            user_answer: String(er.user_answer || ''),
-            correct_answer: String(er.correct_answer || ''),
-            error_cause: String(er.error_cause || 'Lacuna teórica'),
-            explanation: String(er.explanation || ''),
-            golden_rule: String(er.golden_rule || ''),
-          }))
-          .filter((r: { subject_id?: string }) => !!r.subject_id);
-        if (rows.length > 0) await supabase.from('error_entries').insert(rows);
-      }
-
-      // Restaura simulados
-      if (Array.isArray(data.simulados) && data.simulados.length > 0) {
-        const rows = data.simulados.map((sm: Record<string, unknown>) => ({
-          user_id: userId,
-          profile_id: profile.id,
-          title: String(sm.title || 'Simulado Importado'),
-          exam_date: String(sm.exam_date || new Date().toISOString().slice(0, 10)),
-          board: String(sm.board || ''),
-          total_questions: Number(sm.total_questions) || 60,
-          correct_answers: Number(sm.correct_answers) || 0,
-          duration_minutes: Number(sm.duration_minutes) || 240,
-          notes: String(sm.notes || ''),
-          subject_scores: Array.isArray(sm.subject_scores) ? sm.subject_scores : [],
-        }));
-        if (rows.length > 0) await supabase.from('simulados').insert(rows);
-      }
-
+      const data = JSON.parse(text) as BackupPayload;
+      const { restoredCounts } = await restoreBackupPayload({
+        payload: data,
+        userId,
+        currentProfile: profile,
+        currentData: {
+          subjects,
+          topics,
+          highlights,
+          studyLogs,
+          reviews,
+          errors,
+          flashcards,
+          simulados,
+          reports,
+        },
+        createSafetyPoint: true,
+      });
       await refreshAll();
-      setBackupMsg('Dados restaurados com sucesso na nuvem!');
+      await fetchPoints();
+      setBackupMsg(
+        `Backup restaurado com sucesso (${restoredCounts.subjects} matérias, ${restoredCounts.topics} tópicos, ${restoredCounts.highlights} grifos, ${restoredCounts.studyLogs} sessões)! Um ponto de segurança anterior foi salvo automaticamente.`
+      );
     } catch (err) {
       setBackupMsg(err instanceof Error ? err.message : 'Erro ao importar arquivo JSON.');
     } finally {
@@ -249,7 +326,7 @@ export default function ConfigPage() {
           Configurações & Backup
         </h1>
         <p className="text-sm text-muted-theme mt-1">
-          Escolha o modo de estudo, edite metas e datas, ajuste o tema ou faça backup dos seus dados.
+          Escolha o modo de estudo, edite metas e datas, gerencie pontos de restauração automáticos ou ajuste o tema.
         </p>
       </div>
 
@@ -266,6 +343,174 @@ export default function ConfigPage() {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Pontos de Restauração Automáticos (A cada hora · Últimos 7 dias) */}
+      <div className="card-surface rounded-3xl p-6 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-teal-500/15 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0 mt-0.5">
+              <History className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-bold text-base">Pontos de Restauração Automáticos</h2>
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" />
+                  Ativo · a cada 1h · últimos {BACKUP_RETENTION_DAYS} dias
+                </span>
+              </div>
+              <p className="text-xs text-muted-theme mt-1">
+                Enquanto você usa o StudyFlow, um ponto de restauração completo (matérias, tópicos, vídeos, links de PDFs, grifos, textos, flashcards, erros, questões, dicionário e agenda) é salvo automaticamente na nuvem e no navegador. Pontos com mais de {BACKUP_RETENTION_DAYS} dias são limpos automaticamente.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleCreateRestorePointNow}
+            disabled={creatingPoint}
+            className="px-4 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+          >
+            {creatingPoint ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Plus className="w-3.5 h-3.5" />
+            )}
+            {creatingPoint ? 'Salvando ponto...' : 'Criar ponto agora'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void fetchPoints()}
+            disabled={loadingPoints}
+            className="px-4 py-2.5 rounded-2xl subtle-surface border border-theme hover:opacity-85 text-xs font-bold inline-flex items-center gap-1.5"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingPoints ? 'animate-spin' : ''}`} />
+            Atualizar lista
+          </button>
+
+          {restorePoints.length > 0 && (
+            <span className="text-[11px] text-muted-theme ml-auto">
+              {restorePoints.length} {restorePoints.length === 1 ? 'ponto disponível' : 'pontos disponíveis'}
+            </span>
+          )}
+        </div>
+
+        {pointStatusMsg && (
+          <div className="rounded-2xl bg-teal-500/10 border border-teal-500/25 px-4 py-2.5 text-xs font-semibold text-teal-800 dark:text-teal-200">
+            {pointStatusMsg}
+          </div>
+        )}
+
+        {loadingPoints && restorePoints.length === 0 ? (
+          <div className="py-6 text-center text-xs text-muted-theme flex items-center justify-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Carregando pontos de restauração...
+          </div>
+        ) : restorePoints.length === 0 ? (
+          <div className="rounded-2xl subtle-surface border border-dashed border-theme p-5 text-center space-y-1">
+            <p className="text-xs font-bold">Nenhum ponto de restauração salvo ainda</p>
+            <p className="text-[11px] text-muted-theme">
+              Clique em &quot;Criar ponto agora&quot; ou aguarde o primeiro salvamento automático horário.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {restorePoints.map((pt) => {
+              const isRestoringThis = restoringPointId === pt.id;
+              return (
+                <div
+                  key={pt.id}
+                  className="rounded-2xl subtle-surface border border-theme px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                      <span className="text-xs font-bold">{formatDateTimeBR(pt.timestampMs)}</span>
+                      <span className="text-[11px] text-muted-theme">({formatRelativeBR(pt.timestampMs)})</span>
+                      <span
+                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                          pt.reason === 'auto'
+                            ? 'bg-sky-500/15 text-sky-700 dark:text-sky-300'
+                            : pt.reason === 'pre-restore'
+                            ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                            : 'bg-teal-500/15 text-teal-700 dark:text-teal-300'
+                        }`}
+                      >
+                        {pt.reason === 'auto'
+                          ? 'Automático'
+                          : pt.reason === 'pre-restore'
+                          ? 'Pré-restauração'
+                          : 'Manual'}
+                      </span>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-500/10 text-muted-theme inline-flex items-center gap-1">
+                        {pt.source === 'cloud+local' ? (
+                          <>
+                            <Cloud className="w-2.5 h-2.5" /> Nuvem + Local
+                          </>
+                        ) : pt.source === 'cloud' ? (
+                          <>
+                            <Cloud className="w-2.5 h-2.5" /> Nuvem
+                          </>
+                        ) : (
+                          <>
+                            <HardDrive className="w-2.5 h-2.5" /> Local
+                          </>
+                        )}
+                      </span>
+                      {pt.sizeBytes ? (
+                        <span className="text-[10px] text-muted-theme">{formatBytes(pt.sizeBytes)}</span>
+                      ) : null}
+                    </div>
+                    {pt.summary && (
+                      <p className="text-[11px] text-muted-theme truncate">
+                        {pt.summary.subjects} matérias · {pt.summary.topics} tópicos · {pt.summary.highlights} grifos ·{' '}
+                        {pt.summary.studyLogs} sessões · {pt.summary.errors} erros · {pt.summary.flashcards} cards
+                        {pt.summary.notes > 0 ? ` · ${pt.summary.notes} textos` : ''}
+                        {pt.summary.words > 0 ? ` · ${pt.summary.words} palavras` : ''}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      disabled={Boolean(restoringPointId)}
+                      onClick={() => setConfirmRestoreTarget(pt)}
+                      className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:opacity-50 text-white text-[11px] font-bold inline-flex items-center gap-1"
+                    >
+                      {isRestoringThis ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="w-3 h-3" />
+                      )}
+                      Restaurar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadPoint(pt)}
+                      title="Baixar arquivo .json deste ponto"
+                      className="p-1.5 rounded-xl border border-theme hover:opacity-80 text-muted-theme"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleDeletePoint(pt)}
+                      title="Apagar este ponto"
+                      className="p-1.5 rounded-xl border border-theme hover:text-rose-500 text-muted-theme"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Edição Completa das Informações do Edital */}
@@ -298,7 +543,7 @@ export default function ConfigPage() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
           <div>
             <label className="block text-xs font-semibold text-muted-theme mb-1">
-              {modeCfg.nameLabel.replace(" *", "")}
+              {modeCfg.nameLabel.replace(' *', '')}
             </label>
             <input
               value={name}
@@ -358,64 +603,64 @@ export default function ConfigPage() {
         </div>
 
         {modeCfg.hasSalaryRaioX && (
-        <>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-          <div>
-            <label className="block text-xs font-semibold text-muted-theme mb-1">
-              Salário Base
-            </label>
-            <input
-              value={salaryBase}
-              onChange={(e) => setSalaryBase(e.target.value)}
-              className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-muted-theme mb-1">
-              Vale-Alimentação
-            </label>
-            <input
-              value={vale}
-              onChange={(e) => setVale(e.target.value)}
-              className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-muted-theme mb-1">Jornada</label>
-            <input
-              value={workload}
-              onChange={(e) => setWorkload(e.target.value)}
-              placeholder="Ex: 40h/sem"
-              className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-            />
-          </div>
-        </div>
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Salário Base
+                </label>
+                <input
+                  value={salaryBase}
+                  onChange={(e) => setSalaryBase(e.target.value)}
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Vale-Alimentação
+                </label>
+                <input
+                  value={vale}
+                  onChange={(e) => setVale(e.target.value)}
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">Jornada</label>
+                <input
+                  value={workload}
+                  onChange={(e) => setWorkload(e.target.value)}
+                  placeholder="Ex: 40h/sem"
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+            </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-          <div>
-            <label className="block text-xs font-semibold text-muted-theme mb-1">
-              Status do Concurso
-            </label>
-            <input
-              value={statusText}
-              onChange={(e) => setStatusText(e.target.value)}
-              placeholder="Ex: Edital publicado / Autorizado"
-              className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-muted-theme mb-1">
-              Benefícios / Extras
-            </label>
-            <input
-              value={extras}
-              onChange={(e) => setExtras(e.target.value)}
-              placeholder="Ex: Aux. Saúde, Home Office, PLR..."
-              className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-            />
-          </div>
-        </div>
-        </>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Status do Concurso
+                </label>
+                <input
+                  value={statusText}
+                  onChange={(e) => setStatusText(e.target.value)}
+                  placeholder="Ex: Edital publicado / Autorizado"
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Benefícios / Extras
+                </label>
+                <input
+                  value={extras}
+                  onChange={(e) => setExtras(e.target.value)}
+                  placeholder="Ex: Aux. Saúde, Home Office, PLR..."
+                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+                />
+              </div>
+            </div>
+          </>
         )}
 
         <div className="flex items-center gap-3 pt-1">
@@ -431,12 +676,12 @@ export default function ConfigPage() {
         </div>
       </form>
 
-      {/* Exportação e Recuperação de Dados (JSON) */}
+      {/* Exportação e Recuperação Manual (JSON) */}
       <div className="card-surface rounded-3xl p-6 space-y-4">
         <div>
-          <h2 className="font-bold text-base">Exportar & Recuperar Seus Dados</h2>
+          <h2 className="font-bold text-base">Exportar & Recuperar Arquivo (.json)</h2>
           <p className="text-xs text-muted-theme mt-1">
-            Baixe uma cópia completa (sessões, progresso, flashcards, erros, simulados e notas da agenda) em JSON ou restaure um arquivo salvo anteriormente.
+            Baixe uma cópia completa para guardar no seu computador/Google Drive ou restaure um arquivo .json salvo anteriormente.
           </p>
         </div>
 
@@ -464,7 +709,7 @@ export default function ConfigPage() {
               disabled={importing}
               onChange={(e) => {
                 const f = e.target.files?.[0];
-                if (f) handleImportBackup(f);
+                if (f) void handleImportBackup(f);
                 e.target.value = '';
               }}
             />
@@ -499,6 +744,68 @@ export default function ConfigPage() {
           ))}
         </div>
       </div>
+
+      {/* Modal de Confirmação de Restauração */}
+      {confirmRestoreTarget && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="card-surface rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-theme">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/15 text-amber-600 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base">Restaurar ponto salvo?</h3>
+                  <p className="text-xs text-muted-theme">
+                    {formatDateTimeBR(confirmRestoreTarget.timestampMs)} ({formatRelativeBR(confirmRestoreTarget.timestampMs)})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmRestoreTarget(null)}
+                disabled={Boolean(restoringPointId)}
+                className="p-1.5 rounded-xl hover:opacity-75 text-muted-theme"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-2xl subtle-surface border border-theme p-3.5 text-xs space-y-1.5">
+              <p>
+                Este perfil voltará exatamente ao estado de <strong>{formatDateTimeBR(confirmRestoreTarget.timestampMs)}</strong> (matérias, tópicos, vídeos, links de PDFs, grifos, textos, sessões, revisões, erros, flashcards, simulados, questões, dicionário e agenda).
+              </p>
+              <p className="text-emerald-700 dark:text-emerald-300 font-semibold">
+                Fique tranquilo: antes de restaurar, o StudyFlow cria automaticamente um ponto de segurança com seus dados atuais caso você queira desfazer.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setConfirmRestoreTarget(null)}
+                disabled={Boolean(restoringPointId)}
+                className="px-4 py-2.5 rounded-2xl subtle-surface border border-theme text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmRestore()}
+                disabled={Boolean(restoringPointId)}
+                className="px-4 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5"
+              >
+                {restoringPointId ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-3.5 h-3.5" />
+                )}
+                {restoringPointId ? 'Restaurando...' : 'Sim, restaurar este ponto'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
