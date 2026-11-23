@@ -14,6 +14,7 @@ import {
   XCircle,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
   ArrowLeft,
   ArrowRight,
   Image as ImageIcon,
@@ -127,6 +128,7 @@ export default function QuestoesPage() {
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
   const [selectedScope, setSelectedScope] = useState<SelectedScope>(null);
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
+  const [collapsedQ, setCollapsedQ] = useState<Record<string, boolean>>({});
 
   // Adicionar questões (Texto ou Imagem -> Quiz)
   const [showAddPanel, setShowAddPanel] = useState(false);
@@ -190,6 +192,9 @@ export default function QuestoesPage() {
     .map(parseErrorToBankQuestion)
     .filter(Boolean) as BankQuestion[];
 
+  // Mescla automaticamente as questões digitalizadas do Caderno de Erros no Banco de Questões!
+  const allQuestions: BankQuestion[] = [...questions, ...digitizedErrorQuestions];
+
   const activeSubject =
     selectedScope && (selectedScope.type === 'subject' || selectedScope.type === 'topic')
       ? subjects.find((s) => s.id === selectedScope.subjectId)
@@ -202,12 +207,12 @@ export default function QuestoesPage() {
   const scopeQuestions = !selectedScope
     ? []
     : selectedScope.type === 'all'
-    ? questions
+    ? allQuestions
     : selectedScope.type === 'errors_all'
     ? digitizedErrorQuestions
     : selectedScope.type === 'subject'
-    ? questions.filter((q) => q.subject_id === selectedScope.subjectId)
-    : questions.filter(
+    ? allQuestions.filter((q) => q.subject_id === selectedScope.subjectId)
+    : allQuestions.filter(
         (q) => q.subject_id === selectedScope.subjectId && q.topic_id === selectedScope.topicId
       );
 
@@ -375,7 +380,7 @@ export default function QuestoesPage() {
                 <div className="min-w-0">
                   <p className="font-bold text-sm truncate">Todas as Questões</p>
                   <p className="text-xs text-muted-theme mt-0.5">
-                    {plural(questions.length, 'questão salva', 'questões salvas')}
+                    {plural(allQuestions.length, 'questão no plano inteiro', 'questões no plano inteiro')}
                   </p>
                 </div>
               </div>
@@ -422,7 +427,7 @@ export default function QuestoesPage() {
 
             <div className="divide-y divide-[var(--border-main)]">
               {subjects.map((sub) => {
-                const subQs = questions.filter((q) => q.subject_id === sub.id);
+                const subQs = allQuestions.filter((q) => q.subject_id === sub.id);
                 const subTopics = topics.filter((t) => t.subject_id === sub.id);
                 const isOpen = !!expandedSubjects[sub.id];
 
@@ -473,7 +478,7 @@ export default function QuestoesPage() {
                     {isOpen && (
                       <div className="bg-[var(--bg-subtle)]/40 border-t border-theme pl-11 pr-4 py-2 space-y-1 animate-fade-in-up">
                         {subTopics.map((tp) => {
-                          const tpQs = questions.filter((q) => q.topic_id === tp.id);
+                          const tpQs = allQuestions.filter((q) => q.topic_id === tp.id);
                           return (
                             <button
                               key={tp.id}
@@ -596,15 +601,18 @@ export default function QuestoesPage() {
                 </div>
               </div>
 
-              {selectedScope.type === 'all' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                    Matéria
+                  </label>
                   <select
                     value={effectiveSubjectId}
                     onChange={(e) => {
                       setTargetSubjectId(e.target.value);
                       setTargetTopicId('');
                     }}
-                    className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
                   >
                     {subjects.map((s) => (
                       <option key={s.id} value={s.id}>
@@ -612,12 +620,17 @@ export default function QuestoesPage() {
                       </option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                    Tópico da Matéria
+                  </label>
                   <select
                     value={targetTopicId}
                     onChange={(e) => setTargetTopicId(e.target.value)}
-                    className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
                   >
-                    <option value="">Tópico (opcional)</option>
+                    <option value="">Geral da matéria (sem tópico específico)</option>
                     {effectiveTopics.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.title}
@@ -625,7 +638,7 @@ export default function QuestoesPage() {
                     ))}
                   </select>
                 </div>
-              )}
+              </div>
 
               {addMode === 'text' ? (
                 <form onSubmit={handleConvertTextToQuiz} className="space-y-3">
@@ -705,32 +718,105 @@ export default function QuestoesPage() {
             </div>
           ) : (
             <div className="space-y-3">
-              {scopeQuestions.map((q, i) => (
-                <div key={q.id} className="card-surface rounded-2xl p-4 space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full subtle-surface">
-                        #{i + 1}
-                      </span>
-                      {q.header && (
-                        <span className="text-[11px] text-muted-theme font-medium">{q.header}</span>
-                      )}
-                      <span className="text-[11px] text-muted-theme">
-                        · {q.options.length} alternativas
-                      </span>
+              <div className="flex justify-end gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next: Record<string, boolean> = {};
+                    scopeQuestions.forEach((q) => (next[q.id] = true));
+                    setCollapsedQ(next);
+                  }}
+                  className="px-3 py-1 rounded-xl subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)]"
+                >
+                  Recolher todas
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCollapsedQ({})}
+                  className="px-3 py-1 rounded-xl subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)]"
+                >
+                  Expandir todas
+                </button>
+              </div>
+              {scopeQuestions.map((q, i) => {
+                const isCol = !!collapsedQ[q.id];
+                return (
+                  <div key={q.id} className="card-surface rounded-2xl p-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full subtle-surface">
+                          #{i + 1}
+                        </span>
+                        {q.id.startsWith('err-') && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                            Caderno de Erros
+                          </span>
+                        )}
+                        {q.header && (
+                          <span className="text-[11px] text-muted-theme font-medium truncate">
+                            {q.header}
+                          </span>
+                        )}
+                        <span className="text-[11px] text-muted-theme">
+                          · {q.options.length} alternativas
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setCollapsedQ((prev) => ({ ...prev, [q.id]: !isCol }))
+                          }
+                          className="px-2 py-1 rounded-lg subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)] inline-flex items-center gap-1"
+                        >
+                          {isCol ? (
+                            <>
+                              <ChevronDown className="w-3.5 h-3.5" />
+                              Expandir
+                            </>
+                          ) : (
+                            <>
+                              <ChevronUp className="w-3.5 h-3.5" />
+                              Recolher
+                            </>
+                          )}
+                        </button>
+                        {!q.id.startsWith('err-') && (
+                          <button
+                            type="button"
+                            onClick={() => saveBank(questions.filter((x) => x.id !== q.id))}
+                            className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
+                            title="Excluir questão"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => saveBank(questions.filter((x) => x.id !== q.id))}
-                      className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
-                      title="Excluir questão"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isCol ? (
+                      <p
+                        onClick={() => setCollapsedQ((prev) => ({ ...prev, [q.id]: false }))}
+                        className="text-xs text-muted-theme truncate cursor-pointer hover:text-[var(--text-main)]"
+                      >
+                        {q.statement}
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <p className="text-sm font-medium whitespace-pre-wrap">{q.statement}</p>
+                        <div className="pt-1 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => startQuiz([q], `Questão #${i + 1}`)}
+                            className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+                          >
+                            Resolver esta questão
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <p className="text-sm font-medium line-clamp-3">{q.statement}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 
-const MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+const MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.6-flash'];
 
 async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -18,8 +18,8 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
       contents: [{ role: 'user', parts }],
       generationConfig:
         jsonMode && !useSearch
-          ? { responseMimeType: 'application/json', temperature: 0.2 }
-          : { temperature: 0.3 },
+          ? { responseMimeType: 'application/json', temperature: 0.15, maxOutputTokens: 8192 }
+          : { temperature: 0.3, maxOutputTokens: 8192 },
     };
 
     if (useSearch) {
@@ -54,10 +54,16 @@ function extractJsonObject(raw: string) {
   const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start !== -1 && end !== -1 && end > start) {
-    return JSON.parse(cleaned.slice(start, end + 1));
+  const candidate = start !== -1 && end !== -1 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    // Fallback: remove trailing commas and raw control chars
+    const repaired = candidate
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/[\u0000-\u0019]+/g, ' ');
+    return JSON.parse(repaired);
   }
-  return JSON.parse(cleaned);
 }
 
 export async function POST(request: Request) {
@@ -250,8 +256,8 @@ Retorne exatamente um JSON neste formato:
       const raw = await callGemini(
         [
           {
-            inline_data: {
-              mime_type: mimeType,
+            inlineData: {
+              mimeType: mimeType,
               data: imageBase64,
             },
           },
@@ -320,6 +326,30 @@ Retorne SOMENTE um JSON válido neste formato exato:
       "explanation": "Comentário objetivo explicando o gabarito."
     }
   ]
+}`,
+          },
+        ],
+        true
+      );
+      const parsed = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data: parsed });
+    }
+
+    if (action === 'define_word') {
+      const { word, subjectName = '' } = body;
+      if (!word || !String(word).trim()) {
+        return NextResponse.json({ error: 'Informe uma palavra ou termo.' }, { status: 400 });
+      }
+      const raw = await callGemini(
+        [
+          {
+            text: `Explique o significado de "${String(word).trim()}"${
+              subjectName ? ` no contexto de ${subjectName}` : ''
+            } de forma MUITO SIMPLES, curta e direta (no máximo 1 ou 2 frases curtas, nada longo, fácil de memorizar em flashcard).
+Retorne SOMENTE um JSON válido neste formato exato:
+{
+  "meaning": "Significado curto, claro e direto em linguagem simples.",
+  "example": "Uma frase curta de exemplo (ou vazio se não precisar)."
 }`,
           },
         ],

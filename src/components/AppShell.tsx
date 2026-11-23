@@ -38,6 +38,7 @@ import {
   ChevronDown,
   ChevronRight,
   ListChecks,
+  BookA,
 } from 'lucide-react';
 
 interface NavItem {
@@ -64,6 +65,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: '/flashcards', label: 'Flashcards', icon: Layers, badgeKey: 'flashcards' },
       { href: '/questoes', label: 'Questões (Quiz)', icon: ListChecks },
       { href: '/erros', label: 'Caderno de Erros', icon: AlertTriangle },
+      { href: '/dicionario', label: 'Dicionário', icon: BookA },
     ],
   },
   {

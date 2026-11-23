@@ -24,6 +24,8 @@ import {
   BookOpen,
   Globe2,
   ArrowRight,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 const ERROR_CAUSES = [
@@ -99,6 +101,7 @@ export default function CadernoErrosPage() {
   const [submittedByCard, setSubmittedByCard] = useState<Record<string, boolean>>({});
   const [showPrevWrongByCard, setShowPrevWrongByCard] = useState<Record<string, boolean>>({});
   const [showOriginalImgByCard, setShowOriginalImgByCard] = useState<Record<string, boolean>>({});
+  const [collapsedByCard, setCollapsedByCard] = useState<Record<string, boolean>>({});
 
   const [showAdd, setShowAdd] = useState(false);
   const [subjectId, setSubjectId] = useState('');
@@ -268,6 +271,7 @@ export default function CadernoErrosPage() {
       successMsg: `Questão de ${sub?.name || 'Matéria'} digitalizada com alternativas!`,
       task: async () => {
         const imgRes = await fetch(signedImg);
+        const mimeType = imgRes.headers.get('content-type') || 'image/png';
         const buf = await imgRes.arrayBuffer();
         const bytes = new Uint8Array(buf);
         let bin = '';
@@ -280,6 +284,7 @@ export default function CadernoErrosPage() {
           body: JSON.stringify({
             action: 'digitize_error_question',
             imageBase64,
+            mimeType,
             subjectName: sub?.name || '',
           }),
         });
@@ -465,6 +470,28 @@ export default function CadernoErrosPage() {
             </button>
           );
         })}
+        {visibleErrors.length > 0 && (
+          <div className="ml-auto flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                const next: Record<string, boolean> = {};
+                visibleErrors.forEach((e) => (next[e.id] = true));
+                setCollapsedByCard(next);
+              }}
+              className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold text-muted-theme hover:text-[var(--text-main)]"
+            >
+              Recolher todas
+            </button>
+            <button
+              type="button"
+              onClick={() => setCollapsedByCard({})}
+              className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold text-muted-theme hover:text-[var(--text-main)]"
+            >
+              Expandir todas
+            </button>
+          </div>
+        )}
       </div>
 
       {visibleErrors.length === 0 ? (
@@ -483,6 +510,7 @@ export default function CadernoErrosPage() {
             const submitted = !!submittedByCard[entry.id];
             const showPrevWrong = !!showPrevWrongByCard[entry.id];
             const showOriginalImg = !!showOriginalImgByCard[entry.id];
+            const isCollapsed = !!collapsedByCard[entry.id];
             const isDigitizing = aiJobs[`digitize_error:${entry.id}`]?.status === 'running';
             const isExplaining = aiJobs[`explain_error:${entry.id}`]?.status === 'running';
             const correctLetter = (entry.correct_answer || '').trim().toUpperCase();
@@ -538,6 +566,26 @@ export default function CadernoErrosPage() {
                       </button>
                     )}
                     <button
+                      type="button"
+                      onClick={() =>
+                        setCollapsedByCard((prev) => ({ ...prev, [entry.id]: !isCollapsed }))
+                      }
+                      title={isCollapsed ? 'Expandir questão' : 'Recolher questão'}
+                      className="px-2.5 py-1.5 rounded-xl subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)] inline-flex items-center gap-1"
+                    >
+                      {isCollapsed ? (
+                        <>
+                          <ChevronDown className="w-3.5 h-3.5" />
+                          Expandir
+                        </>
+                      ) : (
+                        <>
+                          <ChevronUp className="w-3.5 h-3.5" />
+                          Recolher
+                        </>
+                      )}
+                    </button>
+                    <button
                       onClick={() => deleteErrorEntry(entry.id)}
                       aria-label="Excluir erro"
                       className="p-1.5 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
@@ -547,6 +595,17 @@ export default function CadernoErrosPage() {
                   </div>
                 </div>
 
+                {isCollapsed ? (
+                  <p
+                    onClick={() =>
+                      setCollapsedByCard((prev) => ({ ...prev, [entry.id]: false }))
+                    }
+                    className="text-xs text-muted-theme truncate cursor-pointer hover:text-[var(--text-main)]"
+                  >
+                    {dq?.statement || entry.question_text || 'Questão em imagem (clique para expandir)'}
+                  </p>
+                ) : (
+                <>
                 {imgUrl && (!dq || showOriginalImg) && (
                   <div
                     onClick={() => setZoomUrl(imgUrl)}
@@ -754,6 +813,8 @@ export default function CadernoErrosPage() {
                     )}
                   </div>
                 )}
+                </>
+                )}
               </div>
             );
           })}
@@ -817,6 +878,26 @@ export default function CadernoErrosPage() {
                     ))}
                   </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Tópico (opcional — vincula ao Banco de Questões)
+                </label>
+                <select
+                  value={topicId}
+                  onChange={(e) => setTopicId(e.target.value)}
+                  className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                >
+                  <option value="">Sem tópico específico</option>
+                  {topics
+                    .filter((t) => t.subject_id === (subjectId || subjects[0]?.id || ''))
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.title}
+                      </option>
+                    ))}
+                </select>
               </div>
 
               <div className="rounded-2xl border border-dashed border-teal-500/45 p-4 text-center space-y-2">
