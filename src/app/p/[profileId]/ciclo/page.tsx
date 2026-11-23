@@ -18,6 +18,8 @@ import {
   X,
   BarChart3,
   Clock,
+  Check,
+  CheckSquare,
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 
@@ -66,6 +68,7 @@ export default function CicloPage() {
     reorderSubject,
     addStudyLog,
     deleteStudyLog,
+    deleteSubjectsBatch,
   } = useProfile();
 
   const [showModal, setShowModal] = useState(false);
@@ -82,6 +85,8 @@ export default function CicloPage() {
   const [saving, setSaving] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [selectSubjectsMode, setSelectSubjectsMode] = useState(false);
+  const [selectedSubIds, setSelectedSubIds] = useState<string[]>([]);
   const { notify } = useGlobal();
 
   // Reiniciar Ciclo: guarda apenas o marco temporal (preserva 100% das horas e estatísticas!)
@@ -382,13 +387,71 @@ export default function CicloPage() {
 
       {/* Lista de Matérias com Controles Grandes e Confortáveis */}
       <div className="card-surface rounded-3xl p-6">
-        <div className="flex items-center justify-between mb-5">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
           <div>
             <h2 className="font-bold text-lg">Ordem e Carga Horária das Matérias</h2>
             <p className="text-xs text-muted-theme">
               Arraste os cartões para reordenar e use os botões − / + para ajustar de 15 em 15 minutos.
             </p>
           </div>
+          {subjects.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {selectSubjectsMode && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedSubIds((prev) =>
+                        prev.length === subjects.length ? [] : subjects.map((s) => s.id)
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-xl subtle-surface border border-theme text-xs font-bold"
+                  >
+                    {selectedSubIds.length === subjects.length ? 'Desmarcar todas' : 'Selecionar todas'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedSubIds.length === 0}
+                    onClick={async () => {
+                      if (selectedSubIds.length === 0) return;
+                      if (
+                        !confirm(
+                          `Excluir ${selectedSubIds.length} ${
+                            selectedSubIds.length === 1 ? 'matéria selecionada' : 'matérias selecionadas'
+                          } e seus tópicos? (Se quiser migrar grifos/vídeos antes, faça pelo Edital Verticalizado.)`
+                        )
+                      ) {
+                        return;
+                      }
+                      await deleteSubjectsBatch(selectedSubIds);
+                      setSelectedSubIds([]);
+                      setSelectSubjectsMode(false);
+                      notify('Matérias selecionadas excluídas!', 'success');
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Excluir ({selectedSubIds.length})
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectSubjectsMode((v) => !v);
+                  setSelectedSubIds([]);
+                }}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold border inline-flex items-center gap-1.5 transition ${
+                  selectSubjectsMode
+                    ? 'bg-rose-600 border-rose-600 text-white'
+                    : 'bg-rose-500/10 border-rose-500/40 text-rose-700 dark:text-rose-300 hover:bg-rose-500/20'
+                }`}
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                {selectSubjectsMode ? 'Cancelar seleção' : 'Selecionar p/ excluir'}
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -432,7 +495,26 @@ export default function CicloPage() {
                 } ${isOver ? 'ring-2 ring-teal-500 bg-teal-500/10' : ''}`}
               >
                 <div className="flex items-center gap-3.5 min-w-0 flex-1">
-                  <GripVertical className="w-5 h-5 text-muted-theme shrink-0" />
+                  {selectSubjectsMode ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedSubIds((prev) =>
+                          prev.includes(s.id) ? prev.filter((id) => id !== s.id) : [...prev, s.id]
+                        );
+                      }}
+                      className={`w-6 h-6 rounded-lg flex items-center justify-center border-2 shrink-0 transition ${
+                        selectedSubIds.includes(s.id)
+                          ? 'bg-rose-600 border-rose-600 text-white'
+                          : 'bg-white dark:bg-slate-800 border-rose-400'
+                      }`}
+                    >
+                      {selectedSubIds.includes(s.id) && <Check className="w-4 h-4 stroke-[3]" />}
+                    </button>
+                  ) : (
+                    <GripVertical className="w-5 h-5 text-muted-theme shrink-0" />
+                  )}
                   <span
                     className="w-10 h-10 rounded-2xl text-white text-sm font-extrabold flex items-center justify-center shrink-0 shadow-xs"
                     style={{ backgroundColor: s.color }}

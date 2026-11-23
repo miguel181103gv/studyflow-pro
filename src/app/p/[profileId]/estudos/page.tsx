@@ -810,10 +810,10 @@ export default function ProgressoEditalPage() {
               setSelectedSubjectIds([]);
               setSelectedTopicIds([]);
             }}
-            className={`px-3.5 py-2 rounded-2xl text-xs font-bold inline-flex items-center gap-1.5 transition ${
+            className={`px-3.5 py-2 rounded-2xl text-xs font-bold inline-flex items-center gap-1.5 border transition ${
               selectMode
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'card-surface hover:opacity-85'
+                ? 'bg-rose-600 border-rose-600 text-white shadow-sm'
+                : 'bg-rose-500/10 border-rose-500/40 text-rose-700 dark:text-rose-300 hover:bg-rose-500/20'
             }`}
           >
             <CheckSquare className="w-4 h-4" />
@@ -920,17 +920,32 @@ export default function ProgressoEditalPage() {
         </div>
       </div>
 
-      {/* Barra de Exclusão Múltipla */}
+      {/* Barra de Exclusão Múltipla (fixa no topo ao rolar) */}
       {selectMode && (
-        <div className="card-surface rounded-2xl p-4 border-2 border-rose-500/40 bg-rose-500/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in-up">
+        <div className="sticky top-3 z-20 card-surface rounded-2xl p-4 border-2 border-rose-500/50 bg-rose-500/10 backdrop-blur-md shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-xs font-bold">
             Modo seleção ativo: marque as matérias ou tópicos que deseja apagar (
-            <span className="text-rose-600">
+            <span className="text-rose-600 dark:text-rose-400">
               {selectedSubjectIds.length} matéria(s) · {selectedTopicIds.length} tópico(s)
             </span>
             )
           </p>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedSubjectIds.length === subjects.length) {
+                  setSelectedSubjectIds([]);
+                } else {
+                  setSelectedSubjectIds(subjects.map((s) => s.id));
+                }
+              }}
+              className="px-3 py-2 rounded-xl subtle-surface border border-theme text-xs font-bold hover:opacity-85"
+            >
+              {selectedSubjectIds.length === subjects.length
+                ? 'Desmarcar matérias'
+                : 'Selecionar todas as matérias'}
+            </button>
             <button
               type="button"
               disabled={selectedSubjectIds.length === 0 && selectedTopicIds.length === 0}
@@ -988,7 +1003,9 @@ export default function ProgressoEditalPage() {
           return (
             <div
               key={sub.id}
-              className="rounded-3xl overflow-hidden transition-all card-surface"
+              className={`rounded-3xl overflow-hidden transition-all card-surface ${
+                selectMode && selectedSubjectIds.includes(sub.id) ? 'ring-2 ring-rose-500' : ''
+              }`}
               style={
                 isCompletedSubject
                   ? {
