@@ -407,7 +407,7 @@ O estudante colou um texto bruto (muitas vezes copiado de um PDF de edital verti
 REGRAS OBRIGATÓRIAS:
 1. REMOVA todo lixo de PDF/tabela: "Página X de Y", "Conteúdo", "Questões", "PDFs", "Lei Seca", "Videoaulas", "Revisão", "24 h 7 dias 30 dias 90 dias", "CLIQUE AQUI", "PROVA DISCURSIVA (MATERIAL...)", cabeçalhos repetidos, etc.
 2. JUNTE linhas que foram quebradas no meio de uma frase.
-3. AGRUPE subtópicos soltos com o tema pai quando fizer sentido (por exemplo, "Da rescisão do contrato de trabalho: justas causas, despedida indireta, dispensa arbitrária, culpa recíproca e indenização"), OU deixe cada tópico claro e autossuficiente (sem depender de ler a linha anterior).
+3. IDENTIFIQUE HIERARQUIA DE TÓPICOS E SUBTÓPICOS: quando um tema principal tiver desdobramentos/subtópicos (ex: "Da rescisão do contrato de trabalho: das justas causas; da despedida indireta; da dispensa arbitrária"), coloque o tema principal como tópico pai e CADA subtópico logo abaixo começando EXATAMENTE com o prefixo "↳ " (ex: "Da rescisão do contrato de trabalho", "↳ Das justas causas", "↳ Da despedida indireta", "↳ Da dispensa arbitrária").
 4. Mantenha 100% do conteúdo programático real — não invente nem apague assuntos reais do texto.
 
 TEXTO COLADO:
@@ -417,7 +417,9 @@ Retorne SOMENTE um JSON válido neste formato exato:
 {
   "topics": [
     "Princípios e fontes do Direito do Trabalho",
-    "Direitos constitucionais dos trabalhadores (art. 7º da CF/88)"
+    "Da rescisão do contrato de trabalho",
+    "↳ Das justas causas",
+    "↳ Da despedida indireta"
   ]
 }`,
           },

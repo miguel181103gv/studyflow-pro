@@ -31,6 +31,7 @@ import {
   AlignLeft,
   PanelRightClose,
   PanelRightOpen,
+  CornerDownRight,
 } from 'lucide-react';
 
 type Difficulty = 'facil' | 'medio' | 'dificil';
@@ -93,6 +94,14 @@ function getHighlightStyle(color: string) {
   };
 }
 
+function isSubtopicTitle(title: string): boolean {
+  return title.trim().startsWith('↳');
+}
+
+function cleanSubtopicDisplay(title: string): string {
+  return title.trim().replace(/^↳\s*/, '');
+}
+
 function parseTopicList(raw: string): string[] {
   const normalized = raw.replace(/\r\n/g, '\n').trim();
   if (!normalized) return [];
@@ -103,14 +112,18 @@ function parseTopicList(raw: string): string[] {
     : [normalized];
 
   return lines
-    .map((line) =>
-      line
+    .map((line) => {
+      const isIndentedSub = /^(\s{2,}|\t)/.test(line) || /^\s*(↳|>)/.test(line);
+      const cleaned = line
         .trim()
+        .replace(/^(↳|>)\s*/, '')
         .replace(/^[-*•–—]\s+/, '')
         .replace(/^\d+(?:\.\d+)*\s*[.)-]\s+/, '')
         .replace(/;+$/, '')
-        .trim()
-    )
+        .trim();
+      if (!cleaned) return '';
+      return isIndentedSub ? `↳ ${cleaned}` : cleaned;
+    })
     .filter((item) => item.length > 0);
 }
 
@@ -160,6 +173,8 @@ export default function ProgressoEditalPage() {
   const [cleaningTopicsAi, setCleaningTopicsAi] = useState(false);
   const [editingTopicId, setEditingTopicId] = useState<string | null>(null);
   const [editTopicTitle, setEditTopicTitle] = useState('');
+  const [addingSubForTopicId, setAddingSubForTopicId] = useState<string | null>(null);
+  const [newSubtopicTitle, setNewSubtopicTitle] = useState('');
 
   // Upload PDF + Modal de Vídeo / PDF / Grifos
   const [uploadingTopicId, setUploadingTopicId] = useState<string | null>(null);
@@ -913,7 +928,7 @@ export default function ProgressoEditalPage() {
                           rows={parsedNewTopics.length > 1 ? Math.min(6, parsedNewTopics.length + 1) : 1}
                           value={newTopicText}
                           onChange={(e) => setNewTopicText(e.target.value)}
-                          placeholder="Digite um tópico ou cole uma lista (um por linha ou separado por ;)..."
+                          placeholder="Digite um tópico, cole uma lista do edital ou use > para subtópicos (ex: > Justas causas)..."
                           className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2 text-xs resize-y"
                         />
                         <div className="flex flex-row sm:flex-col gap-1.5 shrink-0">
@@ -953,7 +968,9 @@ export default function ProgressoEditalPage() {
                           {parsedNewTopics.map((item, idx) => (
                             <div
                               key={idx}
-                              className="card-surface rounded-xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs"
+                              className={`card-surface rounded-xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs ${
+                                isSubtopicTitle(item) ? 'ml-5 border-l-2 border-l-teal-500' : ''
+                              }`}
                             >
                               <span className="truncate">{item}</span>
                               <button
@@ -980,11 +997,15 @@ export default function ProgressoEditalPage() {
                     const sc = getStageColors(stage.level);
                     const diff = difficultyMap[topic.id];
                     const hlCount = highlights.filter((h) => h.topic_id === topic.id).length;
+                    const isSub = isSubtopicTitle(topic.title);
 
                     return (
+                      <div key={topic.id} className={isSub ? 'ml-5 sm:ml-9 relative' : ''}>
+                        {isSub && (
+                          <span className="absolute -left-3.5 top-5 w-2.5 h-2.5 border-l-2 border-b-2 border-teal-500/50 rounded-bl-sm" />
+                        )}
                       <div
-                        key={topic.id}
-                        className="rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border transition-all"
+                        className={`rounded-2xl ${isSub ? 'p-3 sm:p-3.5' : 'p-4'} flex flex-col sm:flex-row sm:items-center justify-between gap-3 border transition-all`}
                         style={{
                           backgroundColor: sc.bg,
                           borderColor: sc.border,
@@ -1042,7 +1063,7 @@ export default function ProgressoEditalPage() {
                                 className="text-left text-sm font-semibold leading-snug block"
                                 style={{ color: sc.titleColor }}
                               >
-                                {topic.title}
+                                {isSub ? cleanSubtopicDisplay(topic.title) : topic.title}
                               </button>
                             )}
 
@@ -1220,6 +1241,22 @@ export default function ProgressoEditalPage() {
                             <Copy className="w-4 h-4" />
                           </button>
 
+                          {!isSub && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAddingSubForTopicId(
+                                  addingSubForTopicId === topic.id ? null : topic.id
+                                );
+                                setNewSubtopicTitle('');
+                              }}
+                              title="Adicionar subtópico abaixo deste tema"
+                              className="p-2 rounded-xl card-surface text-muted-theme hover:text-teal-600 transition"
+                            >
+                              <CornerDownRight className="w-4 h-4" />
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             onClick={() => {
@@ -1245,6 +1282,40 @@ export default function ProgressoEditalPage() {
                             <Trash2 className="w-4 h-4" />
                           </button>
                         </div>
+                      </div>
+                      {addingSubForTopicId === topic.id && (
+                        <form
+                          onSubmit={async (e) => {
+                            e.preventDefault();
+                            if (!newSubtopicTitle.trim()) return;
+                            await addTopic(sub.id, `↳ ${newSubtopicTitle.trim()}`);
+                            setNewSubtopicTitle('');
+                            setAddingSubForTopicId(null);
+                          }}
+                          className="ml-6 sm:ml-10 mt-2 flex gap-2 animate-fade-in-up"
+                        >
+                          <input
+                            autoFocus
+                            value={newSubtopicTitle}
+                            onChange={(e) => setNewSubtopicTitle(e.target.value)}
+                            placeholder={`Novo subtópico de "${topic.title.slice(0, 35)}"...`}
+                            className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs"
+                          />
+                          <button
+                            type="submit"
+                            className="px-3 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-bold shrink-0"
+                          >
+                            Salvar subtópico
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAddingSubForTopicId(null)}
+                            className="px-2.5 py-1.5 rounded-xl subtle-surface text-xs"
+                          >
+                            Cancelar
+                          </button>
+                        </form>
+                      )}
                       </div>
                     );
                   })}

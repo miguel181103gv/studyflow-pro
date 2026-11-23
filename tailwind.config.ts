@@ -20,8 +20,8 @@ const config: Config = {
         },
       },
       animation: {
-        'fade-in-up': 'fadeInUp 0.28s cubic-bezier(0.16, 1, 0.3, 1) both',
-        'pop-in': 'popIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) both',
+        'fade-in-up': 'fadeInUp 0.24s cubic-bezier(0.16, 1, 0.3, 1) backwards',
+        'pop-in': 'popIn 0.20s cubic-bezier(0.16, 1, 0.3, 1) backwards',
       },
     },
   },

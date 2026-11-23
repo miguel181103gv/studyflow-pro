@@ -553,7 +553,7 @@ export function AppShell({
 
         <main
           key={pathname}
-          className="flex-1 p-5 sm:p-8 pb-24 lg:pb-8 max-w-7xl w-full mx-auto animate-fade-in-up"
+          className="flex-1 p-5 sm:p-8 pb-24 lg:pb-8 max-w-7xl w-full mx-auto"
         >
           {children}
         </main>
