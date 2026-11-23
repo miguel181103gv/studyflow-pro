@@ -71,7 +71,7 @@ interface ProfileContextValue {
   toggleTopicStudied: (topic: Topic) => Promise<void>;
   toggleSubjectStudied: (subjectId: string, markAll: boolean) => Promise<void>;
   toggleTopicPriority: (topic: Topic) => Promise<void>;
-  updateTopicPdf: (topicId: string, pdfPath: string, pdfName: string) => Promise<void>;
+  updateTopicPdf: (topicId: string, pdfPath: string | null, pdfName: string | null) => Promise<void>;
   updateTopicVideo: (topicId: string, videoUrl: string | null) => Promise<void>;
   addHighlight: (payload: Omit<TopicHighlight, 'id' | 'user_id' | 'profile_id' | 'created_at'>) => Promise<void>;
   deleteHighlight: (id: string) => Promise<void>;
@@ -758,7 +758,7 @@ export function ProfileProvider({
     });
   };
 
-  const updateTopicPdf = async (topicId: string, pdfPath: string, pdfName: string) => {
+  const updateTopicPdf = async (topicId: string, pdfPath: string | null, pdfName: string | null) => {
     setTopics((prev) =>
       prev.map((t) => (t.id === topicId ? { ...t, pdf_path: pdfPath, pdf_name: pdfName } : t))
     );

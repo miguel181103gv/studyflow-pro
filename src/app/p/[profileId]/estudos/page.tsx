@@ -104,6 +104,44 @@ function cleanSubtopicDisplay(title: string): string {
   return title.trim().replace(/^↳\s*/, '');
 }
 
+interface TopicPdfItem {
+  path: string;
+  name: string;
+}
+
+function parseTopicPdfs(
+  pdfPath: string | null | undefined,
+  pdfName: string | null | undefined
+): TopicPdfItem[] {
+  if (!pdfPath) return [];
+  const trimmed = pdfPath.trim();
+  if (trimmed.startsWith('[')) {
+    try {
+      const arr = JSON.parse(trimmed);
+      if (Array.isArray(arr)) {
+        return arr
+          .filter((x) => x && typeof x.path === 'string' && x.path.trim())
+          .map((x) => ({ path: String(x.path), name: String(x.name || 'PDF') }));
+      }
+    } catch {
+      // fallback para caminho único legado
+    }
+  }
+  return [{ path: trimmed, name: pdfName || 'Material.pdf' }];
+}
+
+function serializeTopicPdfs(pdfs: TopicPdfItem[]): {
+  pdfPath: string | null;
+  pdfName: string | null;
+} {
+  if (pdfs.length === 0) return { pdfPath: null, pdfName: null };
+  if (pdfs.length === 1) return { pdfPath: pdfs[0].path, pdfName: pdfs[0].name };
+  return {
+    pdfPath: JSON.stringify(pdfs),
+    pdfName: `${pdfs[0].name} (+${pdfs.length - 1})`,
+  };
+}
+
 const PDF_JUNK_PATTERNS = [
   /^p[áa]gina\s+\d+\s+de\s+\d+$/i,
   /^conte[úu]do\s*quest[õo]es$/i,
@@ -211,6 +249,9 @@ export default function ProgressoEditalPage() {
   const [editingNoteMode, setEditingNoteMode] = useState(false);
   const [formattingNote, setFormattingNote] = useState(false);
   const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
+  const [activePdfIdx, setActivePdfIdx] = useState(0);
+  const [loadingPdfUrl, setLoadingPdfUrl] = useState(false);
+  const [collapsedParents, setCollapsedParents] = useState<Record<string, boolean>>({});
   const [videoInput, setVideoInput] = useState('');
   const [autoSearchingVideo, setAutoSearchingVideo] = useState(false);
   const [foundVideos, setFoundVideos] = useState<FoundVideo[]>([]);
@@ -493,7 +534,24 @@ export default function ProgressoEditalPage() {
     };
   }
 
-  // PDF & YouTube handlers (trazidos da antiga aba Matérias & Vídeos)
+  async function loadSignedPdfUrl(path: string | null) {
+    if (!path) {
+      setSignedPdfUrl(null);
+      return;
+    }
+    setLoadingPdfUrl(true);
+    try {
+      const supabase = createClient();
+      const { data } = await supabase.storage.from('study-assets').createSignedUrl(path, 3600);
+      setSignedPdfUrl(data?.signedUrl || null);
+    } catch {
+      setSignedPdfUrl(null);
+    } finally {
+      setLoadingPdfUrl(false);
+    }
+  }
+
+  // PDF & YouTube handlers (suporte a múltiplos PDFs por tópico)
   async function handlePdfUpload(topicId: string, file: File) {
     if (!userId || !profile) return;
     setUploadingTopicId(topicId);
@@ -505,14 +563,48 @@ export default function ProgressoEditalPage() {
         upsert: true,
       });
       if (error) throw error;
-      await updateTopicPdf(topicId, path, file.name);
-      notify('PDF anexado com sucesso!', 'success');
-      await openTopicViewer(topicId, path, 'pdf');
+      const existingTopic = topics.find((t) => t.id === topicId);
+      const currentPdfs = parseTopicPdfs(existingTopic?.pdf_path, existingTopic?.pdf_name);
+      const nextPdfs = [...currentPdfs, { path, name: file.name }];
+      const { pdfPath, pdfName } = serializeTopicPdfs(nextPdfs);
+      await updateTopicPdf(topicId, pdfPath, pdfName);
+      notify(
+        nextPdfs.length > 1
+          ? `PDF adicionado (${nextPdfs.length} PDFs neste tópico)!`
+          : 'PDF anexado com sucesso!',
+        'success'
+      );
+      await openTopicViewer(topicId, pdfPath, 'pdf', nextPdfs.length - 1);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Erro ao enviar PDF.');
     } finally {
       setUploadingTopicId(null);
     }
+  }
+
+  async function handleRemovePdf(topicId: string, removeIdx: number) {
+    const existingTopic = topics.find((t) => t.id === topicId);
+    const currentPdfs = parseTopicPdfs(existingTopic?.pdf_path, existingTopic?.pdf_name);
+    const target = currentPdfs[removeIdx];
+    if (!target) return;
+    if (!window.confirm(`Remover o PDF "${target.name}" deste tópico?`)) return;
+    const nextPdfs = currentPdfs.filter((_, idx) => idx !== removeIdx);
+    const { pdfPath, pdfName } = serializeTopicPdfs(nextPdfs);
+    await updateTopicPdf(topicId, pdfPath, pdfName);
+    if (nextPdfs.length === 0) {
+      setActivePdfIdx(0);
+      setSignedPdfUrl(null);
+    } else {
+      const nextIdx = Math.min(removeIdx, nextPdfs.length - 1);
+      setActivePdfIdx(nextIdx);
+      await loadSignedPdfUrl(nextPdfs[nextIdx].path);
+    }
+    notify('PDF removido do tópico.', 'info');
+  }
+
+  async function handleSwitchPdf(idx: number, path: string) {
+    setActivePdfIdx(idx);
+    await loadSignedPdfUrl(path);
   }
 
   async function autoFetchVideoForTopic(
@@ -547,7 +639,8 @@ export default function ProgressoEditalPage() {
   async function openTopicViewer(
     topicId: string,
     pdfPath: string | null,
-    initialTab: 'pdf' | 'video' | 'texto' = 'video'
+    initialTab: 'pdf' | 'video' | 'texto' = 'video',
+    targetPdfIdx = 0
   ) {
     setActiveTopicId(topicId);
     setViewerTab(initialTab);
@@ -559,10 +652,11 @@ export default function ProgressoEditalPage() {
     const sub = subjects.find((s) => s.id === t?.subject_id);
     setVideoInput(t?.video_url || '');
 
-    if (pdfPath) {
-      const supabase = createClient();
-      const { data } = await supabase.storage.from('study-assets').createSignedUrl(pdfPath, 3600);
-      if (data?.signedUrl) setSignedPdfUrl(data.signedUrl);
+    const pdfList = parseTopicPdfs(pdfPath, t?.pdf_name);
+    const safeIdx = Math.min(targetPdfIdx, Math.max(0, pdfList.length - 1));
+    setActivePdfIdx(safeIdx);
+    if (pdfList[safeIdx]?.path) {
+      await loadSignedPdfUrl(pdfList[safeIdx].path);
     }
 
     if (initialTab === 'video' && !t?.video_url && t && sub) {
@@ -1192,15 +1286,37 @@ export default function ProgressoEditalPage() {
                     </form>
                   )}
 
-                  {/* Lista de Tópicos */}
-                  {subTopics.map((topic) => {
-                    const stage = getTopicStage(topic.id, topic.studied);
-                    const sc = getStageColors(stage.level);
-                    const diff = difficultyMap[topic.id];
-                    const hlCount = highlights.filter((h) => h.topic_id === topic.id).length;
-                    const isSub = isSubtopicTitle(topic.title);
+                  {/* Lista de Tópicos (com recolhimento de subtópicos) */}
+                  {(() => {
+                    const subCounts: Record<string, number> = {};
+                    const parentOf: Record<string, string> = {};
+                    let currentParentId: string | null = null;
+                    for (const item of subTopics) {
+                      if (isSubtopicTitle(item.title)) {
+                        if (currentParentId) {
+                          parentOf[item.id] = currentParentId;
+                          subCounts[currentParentId] = (subCounts[currentParentId] || 0) + 1;
+                        }
+                      } else {
+                        currentParentId = item.id;
+                      }
+                    }
 
-                    return (
+                    return subTopics.map((topic) => {
+                      const isSub = isSubtopicTitle(topic.title);
+                      const parentId = parentOf[topic.id];
+                      if (isSub && parentId && collapsedParents[parentId]) {
+                        return null;
+                      }
+                      const mySubCount = !isSub ? subCounts[topic.id] || 0 : 0;
+                      const mySubsCollapsed = Boolean(collapsedParents[topic.id]);
+                      const stage = getTopicStage(topic.id, topic.studied);
+                      const sc = getStageColors(stage.level);
+                      const diff = difficultyMap[topic.id];
+                      const hlCount = highlights.filter((h) => h.topic_id === topic.id).length;
+                      const topicPdfs = parseTopicPdfs(topic.pdf_path, topic.pdf_name);
+
+                      return (
                       <div key={topic.id} className={isSub ? 'ml-5 sm:ml-9 relative' : ''}>
                         {isSub && (
                           <span className="absolute -left-3.5 top-5 w-2.5 h-2.5 border-l-2 border-b-2 border-teal-500/50 rounded-bl-sm" />
@@ -1280,14 +1396,37 @@ export default function ProgressoEditalPage() {
                                 </button>
                               </form>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleTopicCheck(topic)}
-                                className="text-left text-sm font-semibold leading-snug block"
-                                style={{ color: sc.titleColor }}
-                              >
-                                {isSub ? cleanSubtopicDisplay(topic.title) : topic.title}
-                              </button>
+                              <div className="flex items-start gap-2 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() => handleTopicCheck(topic)}
+                                  className="text-left text-sm font-semibold leading-snug"
+                                  style={{ color: sc.titleColor }}
+                                >
+                                  {isSub ? cleanSubtopicDisplay(topic.title) : topic.title}
+                                </button>
+                                {mySubCount > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setCollapsedParents((prev) => ({
+                                        ...prev,
+                                        [topic.id]: !prev[topic.id],
+                                      }));
+                                    }}
+                                    title={mySubsCollapsed ? 'Mostrar subtópicos' : 'Recolher subtópicos'}
+                                    className="px-2 py-0.5 rounded-lg subtle-surface border border-theme text-[10px] font-bold text-teal-700 dark:text-teal-300 inline-flex items-center gap-1 hover:opacity-85 shrink-0"
+                                  >
+                                    {mySubsCollapsed ? (
+                                      <ChevronRight className="w-3 h-3" />
+                                    ) : (
+                                      <ChevronDown className="w-3 h-3" />
+                                    )}
+                                    {mySubCount} {mySubCount === 1 ? 'subtópico' : 'subtópicos'}
+                                  </button>
+                                )}
+                              </div>
                             )}
 
                             <div className="flex flex-wrap items-center gap-1.5">
@@ -1414,18 +1553,31 @@ export default function ProgressoEditalPage() {
                           <button
                             type="button"
                             onClick={() => openTopicViewer(topic.id, topic.pdf_path, 'pdf')}
-                            title="Abrir PDF e Grifos do tópico"
-                            className={`p-2 rounded-xl transition ${
-                              topic.pdf_name || hlCount > 0
+                            title={
+                              topicPdfs.length > 1
+                                ? `Abrir ${topicPdfs.length} PDFs e Grifos do tópico`
+                                : 'Abrir PDF e Grifos do tópico'
+                            }
+                            className={`relative p-2 rounded-xl transition ${
+                              topicPdfs.length > 0 || hlCount > 0
                                 ? 'bg-teal-600 text-white hover:bg-teal-500'
                                 : 'card-surface text-muted-theme hover:text-teal-600'
                             }`}
                           >
                             <Highlighter className="w-4 h-4" />
+                            {topicPdfs.length > 1 && (
+                              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-amber-400 text-slate-900 text-[9px] font-extrabold flex items-center justify-center shadow">
+                                {topicPdfs.length}
+                              </span>
+                            )}
                           </button>
 
                           <label
-                            title={topic.pdf_name ? 'Trocar PDF anexado' : 'Anexar PDF neste tópico'}
+                            title={
+                              topicPdfs.length > 0
+                                ? 'Adicionar mais um PDF neste tópico'
+                                : 'Anexar PDF neste tópico'
+                            }
                             className="cursor-pointer p-2 rounded-xl card-surface text-muted-theme hover:text-teal-600 transition"
                           >
                             {uploadingTopicId === topic.id ? (
@@ -1545,8 +1697,9 @@ export default function ProgressoEditalPage() {
                         </form>
                       )}
                       </div>
-                    );
-                  })}
+                      );
+                    });
+                  })()}
                 </div>
               )}
             </div>
@@ -1828,34 +1981,102 @@ export default function ProgressoEditalPage() {
                     })()}
                   </div>
                 ) : (
-                  <div className="flex-1 flex flex-col">
-                    {signedPdfUrl ? (
-                      <iframe
-                        src={signedPdfUrl}
-                        title={activeTopic.pdf_name || 'PDF'}
-                        className="w-full h-full"
-                      />
-                    ) : (
-                      <div className="flex-1 flex flex-col items-center justify-center text-slate-300 text-xs gap-3 p-6 text-center">
-                        <FileText className="w-9 h-9 text-teal-400 opacity-80" />
-                        <p>Nenhum PDF anexado neste tópico ainda.</p>
-                        <label className="cursor-pointer px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold inline-flex items-center gap-1.5">
-                          <Upload className="w-4 h-4" />
-                          Anexar PDF agora
-                          <input
-                            type="file"
-                            accept="application/pdf"
-                            className="hidden"
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) handlePdfUpload(activeTopic.id, f);
-                              e.target.value = '';
-                            }}
+                  (() => {
+                    const activePdfs = parseTopicPdfs(activeTopic.pdf_path, activeTopic.pdf_name);
+                    const safePdfIdx = Math.min(activePdfIdx, Math.max(0, activePdfs.length - 1));
+                    const currentPdf = activePdfs[safePdfIdx];
+
+                    return (
+                      <div className="flex-1 flex flex-col min-h-0">
+                        {activePdfs.length > 0 && (
+                          <div className="px-3 py-2 bg-slate-900/90 border-b border-slate-700/70 flex items-center gap-1.5 overflow-x-auto shrink-0">
+                            {activePdfs.map((pdf, idx) => {
+                              const isCurrent = idx === safePdfIdx;
+                              return (
+                                <div
+                                  key={`${pdf.path}_${idx}`}
+                                  className={`inline-flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold shrink-0 transition ${
+                                    isCurrent
+                                      ? 'bg-teal-600 text-white shadow-sm'
+                                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleSwitchPdf(idx, pdf.path)}
+                                    className="inline-flex items-center gap-1.5 max-w-[180px]"
+                                    title={pdf.name}
+                                  >
+                                    <FileText className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="truncate">{pdf.name}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleRemovePdf(activeTopic.id, idx)}
+                                    title="Remover este PDF"
+                                    className="ml-0.5 p-0.5 rounded hover:bg-black/25 opacity-75 hover:opacity-100"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+
+                            <label className="cursor-pointer ml-auto px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-teal-600 text-slate-200 hover:text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0 transition">
+                              {uploadingTopicId === activeTopic.id ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Plus className="w-3.5 h-3.5" />
+                              )}
+                              Adicionar PDF
+                              <input
+                                type="file"
+                                accept="application/pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0];
+                                  if (f) handlePdfUpload(activeTopic.id, f);
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+                          </div>
+                        )}
+
+                        {loadingPdfUrl ? (
+                          <div className="flex-1 flex flex-col items-center justify-center text-slate-300 text-xs gap-2 p-6">
+                            <Loader2 className="w-6 h-6 animate-spin text-teal-400" />
+                            <p>Carregando PDF...</p>
+                          </div>
+                        ) : signedPdfUrl ? (
+                          <iframe
+                            src={signedPdfUrl}
+                            title={currentPdf?.name || activeTopic.pdf_name || 'PDF'}
+                            className="w-full h-full flex-1"
                           />
-                        </label>
+                        ) : (
+                          <div className="flex-1 flex flex-col items-center justify-center text-slate-300 text-xs gap-3 p-6 text-center">
+                            <FileText className="w-9 h-9 text-teal-400 opacity-80" />
+                            <p>Nenhum PDF anexado neste tópico ainda.</p>
+                            <label className="cursor-pointer px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold inline-flex items-center gap-1.5">
+                              <Upload className="w-4 h-4" />
+                              Anexar PDF agora
+                              <input
+                                type="file"
+                                accept="application/pdf"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const f = e.target.files?.[0];
+                                  if (f) handlePdfUpload(activeTopic.id, f);
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
+                    );
+                  })()
                 )}
               </div>
 
