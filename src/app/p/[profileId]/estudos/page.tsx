@@ -28,9 +28,23 @@ import {
   Save,
   RefreshCw,
   FileText,
+  AlignLeft,
+  PanelRightClose,
+  PanelRightOpen,
 } from 'lucide-react';
 
 type Difficulty = 'facil' | 'medio' | 'dificil';
+
+interface FormattedNote {
+  title: string;
+  summary?: string;
+  sections: { heading: string; points: string[]; callout?: string }[];
+}
+
+interface TopicNoteRecord {
+  rawText: string;
+  formatted?: FormattedNote | null;
+}
 
 interface FoundVideo {
   videoId: string;
@@ -143,13 +157,18 @@ export default function ProgressoEditalPage() {
 
   const [addingTopicForSub, setAddingTopicForSub] = useState<string | null>(null);
   const [newTopicText, setNewTopicText] = useState('');
+  const [cleaningTopicsAi, setCleaningTopicsAi] = useState(false);
   const [editingTopicId, setEditingTopicId] = useState<string | null>(null);
   const [editTopicTitle, setEditTopicTitle] = useState('');
 
   // Upload PDF + Modal de Vídeo / PDF / Grifos
   const [uploadingTopicId, setUploadingTopicId] = useState<string | null>(null);
   const [activeTopicId, setActiveTopicId] = useState<string | null>(null);
-  const [viewerTab, setViewerTab] = useState<'pdf' | 'video'>('video');
+  const [viewerTab, setViewerTab] = useState<'pdf' | 'video' | 'texto'>('video');
+  const [showHighlightsPane, setShowHighlightsPane] = useState(true);
+  const [topicNotesMap, setTopicNotesMap] = useState<Record<string, TopicNoteRecord>>({});
+  const [editingNoteMode, setEditingNoteMode] = useState(false);
+  const [formattingNote, setFormattingNote] = useState(false);
   const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
   const [videoInput, setVideoInput] = useState('');
   const [autoSearchingVideo, setAutoSearchingVideo] = useState(false);
@@ -159,6 +178,60 @@ export default function ProgressoEditalPage() {
   const [hlNote, setHlNote] = useState('');
   const [hlPage, setHlPage] = useState('1');
   const [hlColor, setHlColor] = useState('#fef3c7');
+
+  const notesStorageKey = `sf_topic_notes_${profile?.id || 'default'}`;
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(notesStorageKey);
+      if (raw) setTopicNotesMap(JSON.parse(raw));
+    } catch {
+      // ignore
+    }
+  }, [notesStorageKey]);
+
+  function saveTopicNote(topicId: string, record: TopicNoteRecord) {
+    const next = { ...topicNotesMap, [topicId]: record };
+    setTopicNotesMap(next);
+    try {
+      localStorage.setItem(notesStorageKey, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleFormatNoteWithGemini() {
+    if (!activeTopicId) return;
+    const current = topicNotesMap[activeTopicId];
+    if (!current?.rawText?.trim()) return;
+    setFormattingNote(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'format_study_notes',
+          rawText: current.rawText,
+          subjectName: activeTopicSub?.name || '',
+          topicTitle: activeTopic?.title || '',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !json.data?.sections) {
+        throw new Error(json.error || 'Não foi possível formatar o texto.');
+      }
+      saveTopicNote(activeTopicId, {
+        rawText: current.rawText,
+        formatted: json.data as FormattedNote,
+      });
+      setEditingNoteMode(false);
+      notify('Texto formatado e organizado pelo Gemini!', 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao formatar texto.', 'error');
+    } finally {
+      setFormattingNote(false);
+    }
+  }
 
   const diffStorageKey = `sf_topic_difficulty_${profile?.id || 'default'}`;
 
@@ -334,7 +407,7 @@ export default function ProgressoEditalPage() {
   async function openTopicViewer(
     topicId: string,
     pdfPath: string | null,
-    initialTab: 'pdf' | 'video' = 'video'
+    initialTab: 'pdf' | 'video' | 'texto' = 'video'
   ) {
     setActiveTopicId(topicId);
     setViewerTab(initialTab);
@@ -412,6 +485,35 @@ export default function ProgressoEditalPage() {
   const activeTopicSub = subjects.find((s) => s.id === activeTopic?.subject_id);
   const activeHighlights = highlights.filter((h) => h.topic_id === activeTopicId);
   const embedUrl = getYouTubeEmbedUrl(activeTopic?.video_url || videoInput);
+
+  async function handleCleanTopicsWithGemini(subjectName: string) {
+    if (!newTopicText.trim()) return;
+    setCleaningTopicsAi(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'clean_topic_list',
+          rawText: newTopicText,
+          subjectName,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !Array.isArray(json.data?.topics)) {
+        throw new Error(json.error || 'Não foi possível organizar a lista.');
+      }
+      const cleanedList = (json.data.topics as string[]).map((t) => String(t).trim()).filter(Boolean);
+      if (cleanedList.length > 0) {
+        setNewTopicText(cleanedList.join('\n'));
+        notify(`Gemini limpou e organizou ${cleanedList.length} tópicos! Confira e clique em Criar.`, 'success');
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao organizar lista com Gemini.', 'error');
+    } finally {
+      setCleaningTopicsAi(false);
+    }
+  }
 
   const parsedNewTopics = parseTopicList(newTopicText);
 
@@ -814,15 +916,33 @@ export default function ProgressoEditalPage() {
                           placeholder="Digite um tópico ou cole uma lista (um por linha ou separado por ;)..."
                           className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2 text-xs resize-y"
                         />
-                        <button
-                          type="submit"
-                          disabled={parsedNewTopics.length === 0}
-                          className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50 shrink-0"
-                        >
-                          {parsedNewTopics.length > 1
-                            ? `Criar ${parsedNewTopics.length} checklists`
-                            : 'Salvar tópico'}
-                        </button>
+                        <div className="flex flex-row sm:flex-col gap-1.5 shrink-0">
+                          {parsedNewTopics.length > 1 && (
+                            <button
+                              type="button"
+                              disabled={cleaningTopicsAi}
+                              onClick={() => handleCleanTopicsWithGemini(sub.name)}
+                              title="Remove lixo de PDF (números de página, cabeçalhos) e agrupa linhas quebradas com Gemini"
+                              className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50"
+                            >
+                              {cleaningTopicsAi ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Sparkles className="w-3.5 h-3.5" />
+                              )}
+                              {cleaningTopicsAi ? 'Limpando...' : 'Limpar com Gemini'}
+                            </button>
+                          )}
+                          <button
+                            type="submit"
+                            disabled={parsedNewTopics.length === 0 || cleaningTopicsAi}
+                            className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
+                          >
+                            {parsedNewTopics.length > 1
+                              ? `Criar ${parsedNewTopics.length} checklists`
+                              : 'Salvar tópico'}
+                          </button>
+                        </div>
                       </div>
 
                       {parsedNewTopics.length > 1 && (
@@ -960,6 +1080,12 @@ export default function ProgressoEditalPage() {
                                 </span>
                               )}
 
+                              {topicNotesMap[topic.id]?.rawText?.trim() && (
+                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-teal-500/15 text-teal-800 dark:text-teal-300 inline-flex items-center gap-1">
+                                  <AlignLeft className="w-3 h-3" />
+                                  Texto
+                                </span>
+                              )}
                               {hlCount > 0 && (
                                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-800 dark:text-amber-300">
                                   {hlCount} {hlCount === 1 ? 'grifo' : 'grifos'}
@@ -1014,6 +1140,22 @@ export default function ProgressoEditalPage() {
                             }`}
                           >
                             <Youtube className="w-4 h-4" />
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingNoteMode(!topicNotesMap[topic.id]?.formatted);
+                              openTopicViewer(topic.id, topic.pdf_path, 'texto');
+                            }}
+                            title="Texto / Resumo formatado com Gemini"
+                            className={`p-2 rounded-xl transition ${
+                              topicNotesMap[topic.id]?.rawText?.trim()
+                                ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+                                : 'card-surface text-muted-theme hover:text-indigo-600'
+                            }`}
+                          >
+                            <AlignLeft className="w-4 h-4" />
                           </button>
 
                           <button
@@ -1163,7 +1305,7 @@ export default function ProgressoEditalPage() {
       {/* Modal Integrado: Videoaula YouTube + Leitor PDF + Grifos por Prioridade */}
       {activeTopic && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
-          <div className="card-surface w-full max-w-6xl h-[92vh] rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-pop-in">
+          <div className="card-surface w-full max-w-[96vw] h-[94vh] rounded-3xl overflow-hidden flex flex-col shadow-2xl animate-pop-in">
             <div className="px-5 py-3.5 border-b border-theme flex items-center justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <p className="text-[11px] font-bold text-teal-600">{activeTopicSub?.name}</p>
@@ -1192,6 +1334,34 @@ export default function ProgressoEditalPage() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setViewerTab('texto')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 ${
+                    viewerTab === 'texto' ? 'bg-indigo-600 text-white' : 'subtle-surface'
+                  }`}
+                >
+                  <AlignLeft className="w-3.5 h-3.5" />
+                  Texto / Resumo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowHighlightsPane((v) => !v)}
+                  title={showHighlightsPane ? 'Ocultar barra de grifos para ampliar leitura' : 'Mostrar barra de grifos'}
+                  className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold text-muted-theme hover:text-[var(--text-main)]"
+                >
+                  {showHighlightsPane ? (
+                    <>
+                      <PanelRightClose className="w-3.5 h-3.5" />
+                      Ampliar tela
+                    </>
+                  ) : (
+                    <>
+                      <PanelRightOpen className="w-3.5 h-3.5" />
+                      Grifos ({activeHighlights.length})
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
                   onClick={() => setActiveTopicId(null)}
                   className="p-2 rounded-xl subtle-surface"
                 >
@@ -1200,9 +1370,9 @@ export default function ProgressoEditalPage() {
               </div>
             </div>
 
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-3 overflow-hidden">
+            <div className={`flex-1 grid grid-cols-1 overflow-hidden ${showHighlightsPane ? 'lg:grid-cols-4' : 'lg:grid-cols-1'}`}>
               {/* Esquerda: Player YouTube OU Visualizador PDF */}
-              <div className="lg:col-span-2 bg-slate-950/90 flex flex-col overflow-hidden">
+              <div className={`${showHighlightsPane ? 'lg:col-span-3' : 'lg:col-span-1'} ${viewerTab === 'texto' ? 'bg-[var(--bg-page)]' : 'bg-slate-950/90'} flex flex-col overflow-hidden`}>
                 {viewerTab === 'video' ? (
                   <div className="flex-1 flex flex-col p-4 gap-3 overflow-y-auto">
                     <form onSubmit={handleSaveVideo} className="flex flex-wrap gap-2">
@@ -1263,6 +1433,101 @@ export default function ProgressoEditalPage() {
                       </div>
                     )}
                   </div>
+                ) : viewerTab === 'texto' ? (
+                  <div className="flex-1 overflow-y-auto p-5 sm:p-8 space-y-5">
+                    {(() => {
+                      const rec = topicNotesMap[activeTopic.id] || { rawText: '', formatted: null };
+                      const showFormatted = Boolean(rec.formatted) && !editingNoteMode;
+                      return (
+                        <div className="max-w-3xl mx-auto space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-xs font-bold uppercase tracking-wider text-muted-theme">
+                              Material em Texto do Tópico
+                            </p>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {rec.formatted && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingNoteMode((v) => !v)}
+                                  className="px-3 py-1.5 rounded-xl card-surface border border-theme text-xs font-semibold"
+                                >
+                                  {editingNoteMode ? 'Ver formatado' : 'Editar texto'}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                disabled={formattingNote || !rec.rawText.trim()}
+                                onClick={handleFormatNoteWithGemini}
+                                className="px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                              >
+                                {formattingNote ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                )}
+                                {formattingNote ? 'Formatando...' : 'Formatar com Gemini'}
+                              </button>
+                            </div>
+                          </div>
+
+                          {showFormatted && rec.formatted ? (
+                            <div className="space-y-4 animate-fade-in-up">
+                              <div className="card-surface rounded-2xl p-6 space-y-2 border-l-4 border-l-teal-600">
+                                <h3 className="text-lg font-extrabold">{rec.formatted.title}</h3>
+                                {rec.formatted.summary && (
+                                  <p className="text-sm text-muted-theme leading-relaxed">
+                                    {rec.formatted.summary}
+                                  </p>
+                                )}
+                              </div>
+
+                              {rec.formatted.sections.map((sec, idx) => (
+                                <div key={idx} className="card-surface rounded-2xl p-5 space-y-3">
+                                  <h4 className="font-bold text-base flex items-center gap-2">
+                                    <span className="w-6 h-6 rounded-lg bg-teal-600/15 text-teal-700 dark:text-teal-300 text-xs font-extrabold flex items-center justify-center shrink-0">
+                                      {idx + 1}
+                                    </span>
+                                    {sec.heading}
+                                  </h4>
+                                  <ul className="space-y-1.5 pl-1">
+                                    {sec.points.map((pt, pIdx) => (
+                                      <li key={pIdx} className="text-sm leading-relaxed flex items-start gap-2">
+                                        <span className="w-1.5 h-1.5 rounded-full bg-teal-600 mt-2 shrink-0" />
+                                        <span>{pt}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {sec.callout && (
+                                    <div className="rounded-xl bg-amber-500/12 border border-amber-500/30 px-3.5 py-2.5 text-xs text-amber-900 dark:text-amber-200 font-medium">
+                                      <strong>Atenção:</strong> {sec.callout}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="space-y-2.5">
+                              <textarea
+                                rows={14}
+                                value={rec.rawText}
+                                onChange={(e) =>
+                                  saveTopicNote(activeTopic.id, {
+                                    ...rec,
+                                    rawText: e.target.value,
+                                  })
+                                }
+                                placeholder="Cole aqui suas anotações, resumo, letra de lei ou texto da aula — depois clique em 'Formatar com Gemini' para deixar tudo organizado e separadinho por tópicos!"
+                                className="w-full rounded-2xl card-surface border border-slate-300 dark:border-slate-600 p-4 text-sm leading-relaxed"
+                              />
+                              <p className="text-[11px] text-muted-theme">
+                                Salvo automaticamente conforme você digita. Clique em <strong>Formatar com Gemini</strong> para transformar em um resumo estruturado.
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
                 ) : (
                   <div className="flex-1 flex flex-col">
                     {signedPdfUrl ? (
@@ -1295,7 +1560,8 @@ export default function ProgressoEditalPage() {
                 )}
               </div>
 
-              {/* Direita: Grifos por Hierarquia de Prioridade (Verde / Amarelo / Vermelho) */}
+              {/* Direita: Grifos por Hierarquia de Prioridade (recolhível para ampliar leitura do PDF) */}
+              {showHighlightsPane && (
               <div className="border-t lg:border-t-0 lg:border-l border-theme p-4 flex flex-col gap-3 overflow-y-auto">
                 <h3 className="font-bold text-sm flex items-center gap-1.5">
                   <Highlighter className="w-4 h-4 text-amber-500" />
@@ -1402,6 +1668,7 @@ export default function ProgressoEditalPage() {
                   })}
                 </div>
               </div>
+              )}
             </div>
           </div>
         </div>

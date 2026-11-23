@@ -3,7 +3,16 @@ import { NextResponse } from 'next/server';
 export async function POST(request: Request) {
   try {
     const { subjectName = '', topicTitle = '' } = await request.json();
-    const query = `${subjectName} ${topicTitle} concurso aula`.trim();
+    const cleanSub = String(subjectName || '')
+      .replace(/^no[çc][õo]es\s+de\s+/i, '')
+      .replace(/\s*\([^)]*\)/g, '')
+      .trim();
+    const cleanTop = String(topicTitle || '')
+      .replace(/^(da|do|das|dos|de)\s+/i, '')
+      .replace(/[.;:]+$/g, '')
+      .trim()
+      .slice(0, 95);
+    const query = `aula ${cleanSub} ${cleanTop}`.replace(/\s+/g, ' ').trim();
     if (!query) {
       return NextResponse.json({ ok: false, error: 'Tópico vazio.' }, { status: 400 });
     }

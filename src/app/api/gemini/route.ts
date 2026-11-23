@@ -359,6 +359,75 @@ Retorne SOMENTE um JSON válido neste formato exato:
       return NextResponse.json({ ok: true, data: parsed });
     }
 
+    if (action === 'format_study_notes') {
+      const { rawText, subjectName = '', topicTitle = '' } = body;
+      if (!rawText || !String(rawText).trim()) {
+        return NextResponse.json({ error: 'Cole ou digite um texto para formatar.' }, { status: 400 });
+      }
+      const raw = await callGemini(
+        [
+          {
+            text: `Você é um designer educacional e professor especialista (${subjectName} — ${topicTitle}).
+Pegue o texto bruto do estudante abaixo e ORGANIZE-O em um material de estudo limpo, bonito, bem separado e fácil de revisar, sem perder nenhum conteúdo importante.
+
+TEXTO ORIGINAL:
+${String(rawText).slice(0, 18000)}
+
+Retorne SOMENTE um JSON válido neste formato exato:
+{
+  "title": "Título limpo do resumo",
+  "summary": "Síntese de 1 a 2 frases do assunto principal",
+  "sections": [
+    {
+      "heading": "Nome claro da seção",
+      "points": ["Ponto objetivo e bem escrito 1", "Ponto objetivo 2"],
+      "callout": "Dica importante, exceção ou pegadinha desta seção (ou vazio)"
+    }
+  ]
+}`,
+          },
+        ],
+        true
+      );
+      const parsed = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data: parsed });
+    }
+
+    if (action === 'clean_topic_list') {
+      const { rawText, subjectName = '' } = body;
+      if (!rawText || !String(rawText).trim()) {
+        return NextResponse.json({ error: 'Cole o texto com os tópicos.' }, { status: 400 });
+      }
+      const raw = await callGemini(
+        [
+          {
+            text: `Você é um organizador especialista em editais e planos de estudo para a matéria "${subjectName}".
+O estudante colou um texto bruto (muitas vezes copiado de um PDF de edital verticalizado, com cabeçalhos, números de página, colunas de tabela e linhas quebradas).
+
+REGRAS OBRIGATÓRIAS:
+1. REMOVA todo lixo de PDF/tabela: "Página X de Y", "Conteúdo", "Questões", "PDFs", "Lei Seca", "Videoaulas", "Revisão", "24 h 7 dias 30 dias 90 dias", "CLIQUE AQUI", "PROVA DISCURSIVA (MATERIAL...)", cabeçalhos repetidos, etc.
+2. JUNTE linhas que foram quebradas no meio de uma frase.
+3. AGRUPE subtópicos soltos com o tema pai quando fizer sentido (por exemplo, "Da rescisão do contrato de trabalho: justas causas, despedida indireta, dispensa arbitrária, culpa recíproca e indenização"), OU deixe cada tópico claro e autossuficiente (sem depender de ler a linha anterior).
+4. Mantenha 100% do conteúdo programático real — não invente nem apague assuntos reais do texto.
+
+TEXTO COLADO:
+${String(rawText).slice(0, 18000)}
+
+Retorne SOMENTE um JSON válido neste formato exato:
+{
+  "topics": [
+    "Princípios e fontes do Direito do Trabalho",
+    "Direitos constitucionais dos trabalhadores (art. 7º da CF/88)"
+  ]
+}`,
+          },
+        ],
+        true
+      );
+      const parsed = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data: parsed });
+    }
+
     if (action === 'explain_error') {
       const {
         subjectName,
