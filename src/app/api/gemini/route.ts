@@ -3,7 +3,8 @@ import { NextResponse } from 'next/server';
 export const maxDuration = 60;
 
 // Prioriza modelos mais recentes (Gemini 3.8 Flash) + descoberta automática de modelos ativos na chave
-const PREFERRED_MODELS = ['gemini-3.8-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash-lite', 'gemini-3.0-flash'];
+// Prioriza SEMPRE Flash Lite (500 req/dia e 15 req/min no plano gratuito!) antes dos Flash normais (20 req/dia)
+const PREFERRED_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'];
 
 let cachedDiscoveredModels: { models: string[]; fetchedAt: number } | null = null;
 
@@ -35,7 +36,12 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
           m.supportedGenerationMethods.includes('generateContent')
       )
       .map((m) => String(m.name).replace(/^models\//, ''))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      .sort((a, b) => {
+        const aLite = a.includes('lite') ? 1 : 0;
+        const bLite = b.includes('lite') ? 1 : 0;
+        if (aLite !== bLite) return bLite - aLite;
+        return b.localeCompare(a, undefined, { numeric: true });
+      });
 
     cachedDiscoveredModels = { models: candidates, fetchedAt: Date.now() };
     return candidates;

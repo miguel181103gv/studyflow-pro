@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
+import { todayISO } from '@/lib/utils';
 import {
   ListChecks,
   Plus,
@@ -360,7 +361,20 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
           ];
 
     const rawAns =
-      q.correct_answer ?? q.gabarito ?? q.resposta ?? q.answer ?? q.correta ?? q.correct ?? '';
+      q.correct_answer ??
+      q.gabarito ??
+      q.gabarito_correto ??
+      q.gabarito_oficial ??
+      q.resposta_correta ??
+      q.alternativa_correta ??
+      q.correctAnswer ??
+      q.correctOption ??
+      q.right_answer ??
+      q.resposta ??
+      q.answer ??
+      q.correta ??
+      q.correct ??
+      '';
     let correctAnswer = '';
     if (typeof rawAns === 'number' && finalOptions[rawAns]) {
       correctAnswer = finalOptions[rawAns].letter;
@@ -369,7 +383,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
       if (s === 'CERTO' || s === 'TRUE' || s === 'VERDADEIRO') correctAnswer = 'C';
       else if (s === 'ERRADO' || s === 'FALSE' || s === 'FALSO') correctAnswer = 'E';
       else {
-        const m = s.match(/^\(?([A-F])\)?/);
+        const m = s.match(/(?:ALTERNATIVA|LETRA|OP[ÇC][ÃA]O|GABARITO|RESPOSTA)?\s*[:\-]?\s*\(?([A-F])\)?(?:\b|[).:\-])/);
         correctAnswer = m ? m[1] : s;
       }
     }
@@ -387,7 +401,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 }
 
 export default function QuestoesPage() {
-  const { profile, subjects, topics, errors } = useProfile();
+  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry } = useProfile();
   const { notify } = useGlobal();
 
   const storageKey = `sf_question_bank_${profile?.id || 'default'}`;
@@ -697,6 +711,90 @@ export default function QuestoesPage() {
 
   const currentQ = quizQueue[quizIdx];
   const currentQSub = currentQ ? subjects.find((s) => s.id === currentQ.subject_id) : undefined;
+  const currentQTopic = currentQ?.topic_id ? topics.find((t) => t.id === currentQ.topic_id) : undefined;
+  const currentQCorrect = (currentQ?.correct_answer || '').trim().toUpperCase();
+
+  async function handleSendQuizMissToErrors(q: BankQuestion, pickedLetter: string, correctLetter: string) {
+    try {
+      if (q.id.startsWith('err-')) {
+        const realErrId = q.id.replace(/^err-/, '');
+        const existing = errors.find((e) => e.id === realErrId);
+        if (existing) {
+          await updateErrorEntry(existing.id, {
+            user_answer: pickedLetter,
+            review_count: (existing.review_count || 0) + 1,
+            last_reviewed_at: new Date().toISOString(),
+          });
+        }
+        return;
+      }
+
+      // Evita duplicar se já existir no Caderno de Erros com o mesmo enunciado
+      const normStmt = q.statement.trim().slice(0, 80).toLowerCase();
+      const dup = errors.find((e) => (e.question_text || '').toLowerCase().includes(normStmt));
+      if (dup) {
+        await updateErrorEntry(dup.id, {
+          user_answer: pickedLetter,
+          correct_answer: correctLetter || dup.correct_answer,
+          topic_id: q.topic_id || dup.topic_id,
+          review_count: (dup.review_count || 0) + 1,
+          last_reviewed_at: new Date().toISOString(),
+        });
+        notify('Erro atualizado no Caderno de Erros com sua nova marcação!', 'info');
+        return;
+      }
+
+      const payloadJson = JSON.stringify({
+        header: q.header || '',
+        statement: q.statement,
+        options: q.options,
+      });
+      const encodedQuestion = `${Q_MARKER}${payloadJson}-->
+${q.statement}`;
+
+      await addErrorEntry({
+        subject_id: q.subject_id,
+        topic_id: q.topic_id || null,
+        question_text: encodedQuestion,
+        image_path: null,
+        user_answer: pickedLetter,
+        correct_answer: correctLetter,
+        error_cause: 'Erro no Quiz',
+        explanation: q.explanation || '',
+        golden_rule: '',
+        review_count: 0,
+        last_reviewed_at: null,
+        next_review_date: todayISO(),
+      });
+      notify(`Questão enviada para o Caderno de Erros (você marcou ${pickedLetter})!`, 'info');
+    } catch {
+      // silencioso
+    }
+  }
+
+  function handleSetMissingAnswerInQuiz(letter: string) {
+    if (!currentQ) return;
+    const clean = letter.trim().toUpperCase();
+    setQuizQueue((prev) =>
+      prev.map((item) => (item.id === currentQ.id ? { ...item, correct_answer: clean } : item))
+    );
+    if (!currentQ.id.startsWith('err-')) {
+      saveBank(
+        questions.map((item) =>
+          item.id === currentQ.id ? { ...item, correct_answer: clean } : item
+        )
+      );
+    }
+    if (quizPicked) {
+      if (quizPicked === clean) {
+        setQuizHits((h) => h + 1);
+      } else {
+        setQuizMisses((m) => m + 1);
+        void handleSendQuizMissToErrors({ ...currentQ, correct_answer: clean }, quizPicked, clean);
+      }
+    }
+    notify(`Gabarito "${clean}" salvo nesta questão!`, 'success');
+  }
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
@@ -1300,12 +1398,25 @@ export default function QuestoesPage() {
               </div>
               {scopeQuestions.map((q, i) => {
                 const isCol = !!collapsedQ[q.id];
+                const qSub = subjects.find((s) => s.id === q.subject_id);
+                const qTopic = q.topic_id ? topics.find((t) => t.id === q.topic_id) : undefined;
                 return (
                   <div key={q.id} className="card-surface rounded-2xl p-4 space-y-2">
                     <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap min-w-0">
                         <span className="text-[11px] font-bold px-2 py-0.5 rounded-full subtle-surface">
                           #{i + 1}
+                        </span>
+                        {qSub && (
+                          <span
+                            className="text-[10px] font-bold px-2.5 py-0.5 rounded-full text-white shrink-0"
+                            style={{ backgroundColor: qSub.color || '#0d9488' }}
+                          >
+                            {qSub.name}
+                          </span>
+                        )}
+                        <span className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-teal-500/12 border border-teal-500/25 text-teal-700 dark:text-teal-300 truncate max-w-[260px]">
+                          {qTopic ? qTopic.title : 'Geral da matéria'}
                         </span>
                         {q.id.startsWith('err-') && (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
@@ -1431,6 +1542,9 @@ export default function QuestoesPage() {
                       {currentQSub.name}
                     </span>
                   )}
+                  <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-teal-500/12 border border-teal-500/25 text-teal-700 dark:text-teal-300">
+                    {currentQTopic ? currentQTopic.title : 'Geral da matéria'}
+                  </span>
                   {currentQ.header && (
                     <span className="text-xs text-muted-theme font-semibold">
                       {currentQ.header}
@@ -1447,23 +1561,23 @@ export default function QuestoesPage() {
                     const letter = opt.letter.trim().toUpperCase();
                     const isSelected = quizPicked === letter;
                     const isRight =
-                      quizAnswered && currentQ.correct_answer && letter === currentQ.correct_answer;
+                      quizAnswered && Boolean(currentQCorrect) && letter === currentQCorrect;
                     const isWrong =
                       quizAnswered &&
                       isSelected &&
-                      currentQ.correct_answer &&
-                      letter !== currentQ.correct_answer;
+                      Boolean(currentQCorrect) &&
+                      letter !== currentQCorrect;
 
                     let cls = 'border-theme bg-[var(--bg-card)] hover:border-teal-500/60';
                     let bdg = 'subtle-surface border border-theme';
                     if (isRight) {
-                      cls = 'border-emerald-500 bg-emerald-500/10';
+                      cls = 'border-2 border-emerald-500 bg-emerald-500/15 shadow-xs';
                       bdg = 'bg-emerald-600 text-white border-emerald-600';
                     } else if (isWrong) {
-                      cls = 'border-rose-500 bg-rose-500/10';
+                      cls = 'border-2 border-rose-500 bg-rose-500/15 shadow-xs';
                       bdg = 'bg-rose-600 text-white border-rose-600';
                     } else if (isSelected) {
-                      cls = 'border-teal-600 bg-teal-600/8';
+                      cls = 'border-2 border-teal-600 bg-teal-600/10';
                       bdg = 'bg-teal-600 text-white border-teal-600';
                     }
 
@@ -1499,6 +1613,50 @@ export default function QuestoesPage() {
                   })}
                 </div>
 
+                {quizAnswered && (
+                  currentQCorrect ? (
+                    quizPicked === currentQCorrect ? (
+                      <div className="rounded-2xl border-2 border-emerald-500 bg-emerald-500/15 px-4 py-3 flex items-center gap-2.5 text-emerald-800 dark:text-emerald-200 animate-fade-in-up">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <div className="text-xs">
+                          <p className="font-extrabold text-sm">Você acertou!</p>
+                          <p>Gabarito confirmado: alternativa <strong>{currentQCorrect}</strong>.</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-2xl border-2 border-rose-500 bg-rose-500/15 px-4 py-3 flex items-center gap-2.5 text-rose-800 dark:text-rose-200 animate-fade-in-up">
+                        <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />
+                        <div className="text-xs">
+                          <p className="font-extrabold text-sm">Você errou esta questão</p>
+                          <p>
+                            Você marcou <strong>{quizPicked}</strong> · Gabarito correto:{' '}
+                            <strong>{currentQCorrect}</strong>. Enviada automaticamente para o{' '}
+                            <strong>Caderno de Erros</strong>!
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  ) : (
+                    <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 space-y-2 text-xs text-amber-900 dark:text-amber-200 animate-fade-in-up">
+                      <p className="font-bold">
+                        Esta questão estava sem gabarito cadastrado — clique na alternativa correta para salvar e corrigir agora:
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {currentQ.options.map((opt) => (
+                          <button
+                            key={opt.letter}
+                            type="button"
+                            onClick={() => handleSetMissingAnswerInQuiz(opt.letter)}
+                            className="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-emerald-600 hover:text-white font-bold transition"
+                          >
+                            Gabarito {opt.letter}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                )}
+
                 {quizAnswered && currentQ.explanation && (
                   <div className="rounded-2xl subtle-surface p-4 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap animate-fade-in-up">
                     {currentQ.explanation}
@@ -1530,10 +1688,15 @@ export default function QuestoesPage() {
                       type="button"
                       disabled={!quizPicked}
                       onClick={() => {
-                        const hit = quizPicked === currentQ.correct_answer;
-                        if (hit) setQuizHits((h) => h + 1);
-                        else setQuizMisses((m) => m + 1);
                         setQuizAnswered(true);
+                        if (!currentQCorrect) return;
+                        const hit = quizPicked === currentQCorrect;
+                        if (hit) {
+                          setQuizHits((h) => h + 1);
+                        } else {
+                          setQuizMisses((m) => m + 1);
+                          void handleSendQuizMissToErrors(currentQ, quizPicked, currentQCorrect);
+                        }
                       }}
                       className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-40"
                     >

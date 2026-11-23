@@ -875,7 +875,7 @@ export default function CicloPage() {
                           onChange={(e) => setMarkTopicsDone(e.target.checked)}
                           className="rounded accent-teal-600"
                         />
-                        Marcar como estudados e abater automaticamente da Agenda (atualiza os próximos tópicos)
+                        Marcar como vistos no Edital Verticalizado e abater automaticamente da Agenda (atualiza os próximos tópicos)
                       </label>
                     )}
                   </div>

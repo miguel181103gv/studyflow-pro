@@ -90,6 +90,7 @@ interface StudyPlan {
   blockMinutes: number;
   dailyReviewMinutes?: number;
   subjectsPerDay?: number;
+  accountForStudied?: boolean;
   followCycle?: boolean;
   startDate: string;
   estimatedEndDate: string;
@@ -203,6 +204,7 @@ export default function AgendaPage() {
   const [cursorDate, setCursorDate] = useState(today);
   const [moveTargetBlock, setMoveTargetBlock] = useState<ScheduledBlock | null>(null);
   const [moveToDate, setMoveToDate] = useState(today);
+  const [inspectDayIso, setInspectDayIso] = useState<string | null>(null);
 
   // Store completo (começa VAZIO até o usuário montar cronograma / cadastrar aulas / provas)
   const [store, setStore] = useState<AgendaStore>({
@@ -252,6 +254,7 @@ export default function AgendaPage() {
   const [wizBlockMin, setWizBlockMin] = useState(90);
   const [wizReviewMin, setWizReviewMin] = useState(30);
   const [wizSubjectsPerDay, setWizSubjectsPerDay] = useState(0); // 0 = automático
+  const [wizAccountForStudied, setWizAccountForStudied] = useState(true);
   const [wizFollowCycle, setWizFollowCycle] = useState(false);
   const [openReviewDays, setOpenReviewDays] = useState<Record<string, boolean>>({});
   const [wizName, setWizName] = useState('');
@@ -330,6 +333,7 @@ export default function AgendaPage() {
     setWizBlockMin(90);
     setWizReviewMin(30);
     setWizSubjectsPerDay(0);
+    setWizAccountForStudied(true);
     setWizName(
       followCyclePreset
         ? 'Agenda do Ciclo de Estudos'
@@ -352,6 +356,7 @@ export default function AgendaPage() {
     setWizBlockMin(plan.blockMinutes || 90);
     setWizReviewMin(plan.dailyReviewMinutes ?? 30);
     setWizSubjectsPerDay(plan.subjectsPerDay || 0);
+    setWizAccountForStudied(plan.accountForStudied !== false);
     setWizName(plan.name);
     setWizStartDate(plan.startDate || today);
     setShowWizard(true);
@@ -362,7 +367,7 @@ export default function AgendaPage() {
     const remainingMainTopics = topics.filter(
       (t) =>
         wizSubjectIds.includes(t.subject_id) &&
-        !t.studied &&
+        (wizAccountForStudied ? !t.studied : true) &&
         isMainTopicTitle(t.title)
     ).length;
     const estEnd = estimateFinishDate(
@@ -385,6 +390,7 @@ export default function AgendaPage() {
               blockMinutes: wizBlockMin,
               dailyReviewMinutes: wizReviewMin,
               subjectsPerDay: wizSubjectsPerDay,
+              accountForStudied: wizAccountForStudied,
               followCycle: wizFollowCycle,
               startDate: wizStartDate,
               estimatedEndDate: estEnd,
@@ -415,6 +421,7 @@ export default function AgendaPage() {
       blockMinutes: wizBlockMin,
       dailyReviewMinutes: wizReviewMin,
       subjectsPerDay: wizSubjectsPerDay,
+      accountForStudied: wizAccountForStudied,
       followCycle: wizFollowCycle,
       startDate: wizStartDate,
       estimatedEndDate: estEnd,
@@ -449,11 +456,20 @@ export default function AgendaPage() {
   // Sincroniza automaticamente com o Ciclo de Estudos (quem estudou no Ciclo já aparece como concluído na Agenda!)
   const rawScheduledBlocks: ScheduledBlock[] = useMemo(() => {
     if (!activePlan) return [];
-    const orderedSubjects = activePlan.followCycle
+    const baseOrdered = activePlan.followCycle
       ? subjects
       : (activePlan.subjectIds
           .map((id) => subjects.find((s) => s.id === id))
           .filter(Boolean) as typeof subjects);
+    const shouldSkipStudied = activePlan.accountForStudied !== false;
+    const filteredOrdered = shouldSkipStudied
+      ? baseOrdered.filter((sub) => {
+          const mainT = topics.filter((t) => t.subject_id === sub.id && isMainTopicTitle(t.title));
+          // Se a matéria tem tópicos principais e TODOS já foram estudados, pula ela no cronograma!
+          return mainT.length === 0 || mainT.some((t) => !t.studied);
+        })
+      : baseOrdered;
+    const orderedSubjects = filteredOrdered.length > 0 ? filteredOrdered : baseOrdered;
     if (orderedSubjects.length === 0) return [];
 
     const out: ScheduledBlock[] = [];
@@ -596,7 +612,7 @@ export default function AgendaPage() {
       }
     }
     return out;
-  }, [activePlan, subjects, today, loggedByDateSubject]);
+  }, [activePlan, subjects, topics, today, loggedByDateSubject]);
 
   // Atribui ao vivo os próximos 2 tópicos principais não estudados para cada sessão pendente da Agenda
   const scheduledBlocks: ScheduledBlock[] = useMemo(() => {
@@ -633,8 +649,12 @@ export default function AgendaPage() {
     const targetSubIds = activePlan.followCycle
       ? subjects.map((s) => s.id)
       : activePlan.subjectIds;
+    const countOnlyUnstudied = activePlan.accountForStudied !== false;
     const remainingMain = topics.filter(
-      (t) => targetSubIds.includes(t.subject_id) && !t.studied && isMainTopicTitle(t.title)
+      (t) =>
+        targetSubIds.includes(t.subject_id) &&
+        (countOnlyUnstudied ? !t.studied : true) &&
+        isMainTopicTitle(t.title)
     ).length;
     const sessionsNeeded = Math.ceil(remainingMain / 2);
     const estDate = estimateFinishDate(
@@ -759,12 +779,79 @@ export default function AgendaPage() {
   }
 
   function confirmMoveBlock() {
-    if (!moveTargetBlock || !activePlan) return;
-    updateActivePlan((p) => ({
-      ...p,
-      movedOverrides: { ...(p.movedOverrides || {}), [moveTargetBlock.id]: moveToDate },
-    }));
+    if (!moveTargetBlock || !activePlan || !moveToDate) return;
+    const fixedPerDay = Number(activePlan.subjectsPerDay || 0);
+    const getDayCapacity = (iso: string) => {
+      const dow = parseISO(iso).getDay();
+      const hours = Number(activePlan.dailyHoursByDow[dow] || 0);
+      if (hours <= 0) return fixedPerDay > 0 ? fixedPerDay : 2;
+      if (fixedPerDay > 0) return fixedPerDay;
+      const netMin = Math.max(30, hours * 60 - (activePlan.dailyReviewMinutes || 0));
+      return Math.max(1, Math.round(netMin / (activePlan.blockMinutes || 90)));
+    };
+    const nextStudyDay = (fromIso: string) => {
+      let d = fromIso;
+      for (let i = 0; i < 14; i++) {
+        const dow = parseISO(d).getDay();
+        if (Number(activePlan.dailyHoursByDow[dow] || 0) > 0) return d;
+        d = addDaysISO(d, 1);
+      }
+      return fromIso;
+    };
+
+    const nextOverrides: Record<string, string> = {
+      ...(activePlan.movedOverrides || {}),
+      [moveTargetBlock.id]: moveToDate,
+    };
+
+    // Constrói mapa de blocos pendentes por data a partir de moveToDate e empurra excedentes em cascata!
+    const pendingFromTarget = scheduledBlocks
+      .filter((b) => !b.done)
+      .map((b) => ({
+        id: b.id,
+        date: b.id === moveTargetBlock.id ? moveToDate : b.date,
+        isMoved: b.id === moveTargetBlock.id,
+      }))
+      .filter((b) => b.date >= moveToDate);
+
+    const byDate = new Map<string, { id: string; isMoved: boolean }[]>();
+    for (const item of pendingFromTarget) {
+      if (!byDate.has(item.date)) byDate.set(item.date, []);
+      byDate.get(item.date)!.push({ id: item.id, isMoved: item.isMoved });
+    }
+
+    // Garante que o bloco movido fique com prioridade no dia escolhido e empurra os excedentes para frente
+    let cursor = moveToDate;
+    let overflowCount = 0;
+    for (let guard = 0; guard < 90; guard++) {
+      const list = byDate.get(cursor);
+      if (list && list.length > 0) {
+        // Mantém o bloco movido primeiro no dia destino
+        list.sort((a, b) => (a.isMoved === b.isMoved ? 0 : a.isMoved ? -1 : 1));
+        const cap = getDayCapacity(cursor);
+        if (list.length > cap) {
+          const excess = list.splice(cap);
+          const nextIso = nextStudyDay(addDaysISO(cursor, 1));
+          if (!byDate.has(nextIso)) byDate.set(nextIso, []);
+          // Excedentes entram no início do próximo dia de estudo para manter a ordem
+          byDate.set(nextIso, [...excess.map((x) => ({ ...x, isMoved: false })), ...byDate.get(nextIso)!]);
+          overflowCount += excess.length;
+        }
+        for (const kept of list) {
+          nextOverrides[kept.id] = cursor;
+        }
+      }
+      cursor = addDaysISO(cursor, 1);
+    }
+
+    updateActivePlan((p) => ({ ...p, movedOverrides: nextOverrides }));
     setMoveTargetBlock(null);
+    notify(
+      overflowCount > 0
+        ? `Matéria movida para ${formatDateBR(moveToDate)} e os dias seguintes foram reorganizados para respeitar o limite diário!`
+        : `Matéria movida para ${formatDateBR(moveToDate)}!`,
+      'success'
+    );
   }
 
   // Grade de Aulas handlers
@@ -1615,7 +1702,7 @@ export default function AgendaPage() {
 
               {/* Visão Semanal */}
               {viewMode === 'week' ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-4">
                   {weekDays.map((iso) => {
                     const dayBlocks = scheduledBlocks.filter((b) => b.date === iso);
                     const dow = parseISO(iso).getDay();
@@ -1623,7 +1710,7 @@ export default function AgendaPage() {
                     return (
                       <div
                         key={iso}
-                        className={`card-surface rounded-2xl p-3 space-y-2.5 min-h-[160px] ${
+                        className={`card-surface rounded-2xl p-4 space-y-3 min-h-[210px] ${
                           isToday ? 'ring-2 ring-teal-500/50' : ''
                         }`}
                       >
@@ -1649,9 +1736,16 @@ export default function AgendaPage() {
                                 }`}
                                 style={{ borderLeftColor: b.color }}
                               >
-                                <p className={`font-bold leading-snug ${b.done ? 'line-through' : ''}`}>
+                                <button
+                                  type="button"
+                                  onClick={() => setInspectDayIso(iso)}
+                                  title="Clique para ampliar este dia e ver todas as matérias e tópicos"
+                                  className={`text-left w-full font-bold leading-snug hover:text-teal-600 transition ${
+                                    b.done ? 'line-through' : ''
+                                  }`}
+                                >
                                   {b.name}
-                                </p>
+                                </button>
                                 <p className="text-[10px] text-muted-theme">
                                   {b.minutes >= 60
                                     ? `${Math.floor(b.minutes / 60)}h${b.minutes % 60 > 0 ? ` ${b.minutes % 60}m` : ''}`
@@ -1777,30 +1871,37 @@ export default function AgendaPage() {
                       return (
                         <div
                           key={iso}
-                          className={`rounded-xl p-2 min-h-[78px] subtle-surface border ${
-                            isToday ? 'border-teal-600' : 'border-transparent'
-                          }`}
+                          onClick={() => dayBlocks.length > 0 && setInspectDayIso(iso)}
+                          className={`rounded-xl p-2.5 min-h-[112px] subtle-surface border transition ${
+                            isToday ? 'border-teal-600 ring-1 ring-teal-500/30' : 'border-theme/50'
+                          } ${dayBlocks.length > 0 ? 'cursor-pointer hover:border-teal-500/60' : ''}`}
                         >
                           <p
-                            className={`text-[11px] font-bold mb-1 ${
+                            className={`text-xs font-bold mb-1.5 ${
                               isToday ? 'text-teal-600' : 'text-muted-theme'
                             }`}
                           >
                             {Number(iso.slice(8, 10))}
                           </p>
                           <div className="space-y-1">
-                            {dayBlocks.slice(0, 3).map((b) => (
-                              <div
+                            {dayBlocks.slice(0, 4).map((b) => (
+                              <button
                                 key={b.id}
-                                className="text-[10px] font-semibold truncate px-1.5 py-0.5 rounded-md text-white"
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setInspectDayIso(iso);
+                                }}
+                                title={`${b.name} — clique para ver tópicos e detalhes`}
+                                className="w-full text-left text-[11px] font-semibold truncate px-2 py-1 rounded-lg text-white hover:opacity-90 transition block"
                                 style={{ backgroundColor: b.color, opacity: b.done ? 0.5 : 1 }}
                               >
-                                {b.name}
-                              </div>
+                                {b.done ? '✓ ' : ''}{b.name}
+                              </button>
                             ))}
-                            {dayBlocks.length > 3 && (
-                              <p className="text-[10px] text-muted-theme">
-                                +{dayBlocks.length - 3}
+                            {dayBlocks.length > 4 && (
+                              <p className="text-[10px] font-bold text-teal-600">
+                                +{dayBlocks.length - 4} mais (clique)
                               </p>
                             )}
                           </div>
@@ -2102,6 +2203,163 @@ export default function AgendaPage() {
         </div>
       )}
 
+      {/* Modal Ampliado: Detalhes das Matérias e Tópicos do Dia */}
+      {inspectDayIso && activePlan && (() => {
+        const blocksForDay = scheduledBlocks.filter((b) => b.date === inspectDayIso);
+        const dow = parseISO(inspectDayIso).getDay();
+        const dayRevs = reviews.filter((r) => !r.completed && r.due_date === inspectDayIso);
+
+        return (
+          <div
+            onClick={() => setInspectDayIso(null)}
+            className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="card-surface w-full max-w-2xl rounded-3xl p-6 space-y-5 shadow-2xl border border-theme max-h-[88vh] overflow-y-auto animate-pop-in"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-theme pb-3">
+                <div>
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-teal-600">
+                    {DAY_FULL[dow]}
+                  </span>
+                  <h2 className="text-xl font-extrabold">
+                    Agenda de {formatDateBR(inspectDayIso)}
+                  </h2>
+                  <p className="text-xs text-muted-theme mt-0.5">
+                    {blocksForDay.length}{' '}
+                    {blocksForDay.length === 1 ? 'matéria prevista' : 'matérias previstas'} para este dia
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInspectDayIso(null)}
+                  className="p-2 rounded-xl subtle-surface"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {blocksForDay.length === 0 ? (
+                <p className="text-sm text-muted-theme text-center py-6">
+                  Nenhuma matéria agendada para este dia.
+                </p>
+              ) : (
+                <div className="space-y-3.5">
+                  {blocksForDay.map((b) => (
+                    <div
+                      key={b.id}
+                      className="rounded-2xl p-4 subtle-surface border-l-4 space-y-3"
+                      style={{ borderLeftColor: b.color }}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: b.color }}
+                          />
+                          <h3 className={`font-extrabold text-base ${b.done ? 'line-through opacity-60' : ''}`}>
+                            {b.name}
+                          </h3>
+                          <span className="text-xs font-bold px-2.5 py-0.5 rounded-full card-surface text-muted-theme">
+                            {b.minutes >= 60
+                              ? `${Math.floor(b.minutes / 60)}h${b.minutes % 60 > 0 ? ` ${b.minutes % 60}m` : ''}`
+                              : `${b.minutes} min`}
+                          </span>
+                          {b.done && (
+                            <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-600 text-white">
+                              Estudado
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {b.plannedTopics && b.plannedTopics.length > 0 ? (
+                        <div className="rounded-xl card-surface border border-theme p-3 space-y-1.5">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-teal-600 dark:text-teal-400">
+                            Tópicos previstos para esta sessão
+                          </p>
+                          {b.plannedTopics.map((tp, idx) => (
+                            <p key={idx} className="text-sm leading-snug font-medium">
+                              {idx + 1}. {tp}
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-theme">
+                          {b.done
+                            ? 'Sessão já concluída!'
+                            : 'Todos os tópicos principais desta matéria já foram concluídos ou não há tópicos cadastrados.'}
+                        </p>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => toggleBlockDone(b.id)}
+                          className={`px-3.5 py-2 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition ${
+                            b.done
+                              ? 'bg-emerald-600 text-white'
+                              : 'card-surface border border-theme hover:bg-emerald-600 hover:text-white'
+                          }`}
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          {b.done ? 'Concluído (desmarcar)' : 'Marcar como estudado'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            startStopwatch(b.subjectId);
+                            setInspectDayIso(null);
+                          }}
+                          className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          Iniciar cronômetro
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setInspectDayIso(null);
+                            setMoveTargetBlock(b);
+                            setMoveToDate(b.date);
+                          }}
+                          className="px-3.5 py-2 rounded-xl card-surface border border-theme hover:border-teal-500 text-xs font-bold"
+                        >
+                          Mover dia
+                        </button>
+                        <Link
+                          href={`/p/${profile?.id}/estudos`}
+                          className="px-3 py-2 rounded-xl text-xs font-bold text-teal-700 dark:text-teal-300 hover:underline ml-auto"
+                        >
+                          Ver no Edital →
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {dayRevs.length > 0 && (
+                <div className="rounded-2xl bg-amber-500/10 border border-amber-500/25 p-4 space-y-1.5">
+                  <p className="text-xs font-extrabold text-amber-800 dark:text-amber-300">
+                    Revisões programadas para este dia ({dayRevs.length})
+                  </p>
+                  {dayRevs.map((r) => {
+                    const tp = topics.find((t) => t.id === r.topic_id);
+                    return (
+                      <p key={r.id} className="text-xs text-muted-theme">
+                        • {tp?.title || 'Tópico'} ({r.interval_days}d)
+                      </p>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ============================================================
           WIZARD 4 ETAPAS: MONTAR NOVO CRONOGRAMA
           ============================================================ */}
@@ -2130,7 +2388,24 @@ export default function AgendaPage() {
             </div>
 
             {wizStep === 1 && (
-              <div className="space-y-2 max-h-72 overflow-y-auto">
+              <div className="space-y-3">
+                <label className="flex items-start gap-2.5 rounded-2xl bg-teal-600/10 border border-teal-500/30 p-3.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={wizAccountForStudied}
+                    onChange={(e) => setWizAccountForStudied(e.target.checked)}
+                    className="mt-0.5 rounded accent-teal-600"
+                  />
+                  <div className="text-xs space-y-0.5">
+                    <p className="font-bold text-teal-800 dark:text-teal-200">
+                      Levar em conta matérias e tópicos já estudados
+                    </p>
+                    <p className="text-[11px] text-muted-theme">
+                      Matérias 100% concluídas no Edital Verticalizado ficam de fora do cronograma e a previsão conta apenas o que falta estudar. Desmarque se quiser montar um ciclo de revisão geral do zero.
+                    </p>
+                  </div>
+                </label>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
                 {subjects.map((s) => {
                   const checked = wizSubjectIds.includes(s.id);
                   return (
@@ -2159,6 +2434,7 @@ export default function AgendaPage() {
                     </button>
                   );
                 })}
+                </div>
               </div>
             )}
 
@@ -2355,7 +2631,7 @@ export default function AgendaPage() {
                   const mainPending = topics.filter(
                     (t) =>
                       wizSubjectIds.includes(t.subject_id) &&
-                      !t.studied &&
+                      (wizAccountForStudied ? !t.studied : true) &&
                       isMainTopicTitle(t.title)
                   ).length;
                   const sessionsEst = Math.ceil(mainPending / 2);
