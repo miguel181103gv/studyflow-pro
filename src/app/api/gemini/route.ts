@@ -27,7 +27,7 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
         (m) =>
           typeof m.name === 'string' &&
           m.name.includes('gemini-') &&
-          (m.name.includes('flash') || m.name.includes('hydrogen')) &&
+          m.name.includes('flash') &&
           !m.name.includes('image') &&
           !m.name.includes('tts') &&
           !m.name.includes('audio') &&
@@ -66,23 +66,23 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
   );
   const timeoutMs = hasBinary ? 45000 : 25000;
 
-  // Usa SOMENTE modelos confirmados como ativos na conta (evita 404 NotFound!)
+  // Usa SOMENTE modelos Flash confirmados como ativos na conta (evita 404 NotFound!)
   const discovered = await discoverActiveFlashModels(apiKey);
-  const baseList = discovered.length > 0 ? discovered : PREFERRED_MODELS;
+  const baseList = (discovered.length > 0 ? discovered : PREFERRED_MODELS).slice(0, 4);
   const firstLite = baseList.find((m) => m.includes('lite')) || baseList[0];
-  // Permite tentar o primeiro Lite 2 vezes (com pausa) caso dê 503 momentâneo
-  const modelsQueue = [firstLite, ...baseList.filter((m) => m !== firstLite), firstLite].slice(0, 6);
+  // Tenta o primeiro Flash Lite até 2x em caso de 503, depois os demais Flash ativos
+  const modelsQueue = [firstLite, firstLite, ...baseList.filter((m) => m !== firstLite)];
 
   let lastError = 'Os servidores do Gemini estão temporariamente ocupados. Tente novamente em alguns segundos.';
-  const triedOnce = new Set<string>();
+  const triedSummary: string[] = [];
+  const skippedModels = new Set<string>();
 
   for (const model of modelsQueue) {
-    // Só repete o mesmo modelo se ele já deu 503 antes (não repete se deu 404 ou 429)
-    const isRetry = triedOnce.has(model);
-    if (isRetry) {
-      await new Promise((r) => setTimeout(r, 2200));
+    if (skippedModels.has(model)) continue;
+    const alreadyTried = triedSummary.some((s) => s.startsWith(`${model} (`));
+    if (alreadyTried) {
+      await new Promise((r) => setTimeout(r, 2000));
     }
-    triedOnce.add(model);
 
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const genConfig: Record<string, unknown> =
@@ -131,19 +131,22 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
         rawMsg.toLowerCase().includes('not found');
 
       if (isModelUnavailable) {
+        skippedModels.add(model);
+        triedSummary.push(`${model} (indisponível)`);
         lastError = `${model}: ${rawMsg}`;
         continue;
       }
 
       if (res.status === 503 || res.status === 429) {
         const isZeroLimit = rawMsg.includes('limit: 0');
-        if (!isZeroLimit) {
-          lastError =
-            res.status === 429
-              ? `Cota diária/por minuto atingida em ${model} (429). Aguarde um pouco e tente novamente.`
-              : `Servidor do Google ocupado em ${model} (503). Aguarde alguns segundos e tente novamente.`;
+        if (isZeroLimit || res.status === 429) {
+          skippedModels.add(model); // Não repete modelo sem cota ou com 429
         }
-        await new Promise((r) => setTimeout(r, 1000));
+        triedSummary.push(`${model} (${res.status})`);
+        if (!isZeroLimit) {
+          lastError = `Servidores gratuitos do Google ocupados agora (${triedSummary.join(', ')}). Aguarde alguns segundos e tente novamente.`;
+        }
+        await new Promise((r) => setTimeout(r, 900));
         continue;
       }
 
