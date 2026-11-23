@@ -27,11 +27,13 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
         (m) =>
           typeof m.name === 'string' &&
           m.name.includes('gemini-') &&
-          m.name.includes('flash') &&
+          (m.name.includes('flash') || m.name.includes('hydrogen')) &&
           !m.name.includes('image') &&
           !m.name.includes('tts') &&
           !m.name.includes('audio') &&
+          !m.name.includes('live') &&
           !m.name.includes('2.0') &&
+          !m.name.includes('2.5') &&
           Array.isArray(m.supportedGenerationMethods) &&
           m.supportedGenerationMethods.includes('generateContent')
       )
@@ -63,14 +65,24 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
   );
   const timeoutMs = hasBinary ? 45000 : 25000;
 
-  // Monta fila de modelos ativos (usa preferidos primeiro e completa com modelos descobertos na chave)
+  // Usa SOMENTE modelos confirmados como ativos na conta (evita 404 NotFound!)
   const discovered = await discoverActiveFlashModels(apiKey);
-  const modelsQueue = Array.from(new Set([...PREFERRED_MODELS, ...discovered])).slice(0, 6);
+  const baseList = discovered.length > 0 ? discovered : PREFERRED_MODELS;
+  const firstLite = baseList.find((m) => m.includes('lite')) || baseList[0];
+  // Permite tentar o primeiro Lite 2 vezes (com pausa) caso dê 503 momentâneo
+  const modelsQueue = [firstLite, ...baseList.filter((m) => m !== firstLite), firstLite].slice(0, 6);
 
   let lastError = 'Os servidores do Gemini estão temporariamente ocupados. Tente novamente em alguns segundos.';
-  let rateLimitedCount = 0;
+  const triedOnce = new Set<string>();
 
   for (const model of modelsQueue) {
+    // Só repete o mesmo modelo se ele já deu 503 antes (não repete se deu 404 ou 429)
+    const isRetry = triedOnce.has(model);
+    if (isRetry) {
+      await new Promise((r) => setTimeout(r, 2200));
+    }
+    triedOnce.add(model);
+
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const genConfig: Record<string, unknown> =
       jsonMode && !useSearch
@@ -99,7 +111,7 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
-      lastError = 'O Gemini demorou mais que o esperado para responder. Tente novamente (se for um PDF muito grande, tente enviar só as páginas do conteúdo programático).';
+      lastError = `O Gemini (${model}) demorou mais que o esperado. Tente novamente.`;
       continue;
     }
 
@@ -108,32 +120,30 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
       const candidateParts = data?.candidates?.[0]?.content?.parts || [];
       const text = candidateParts.map((p: { text?: string }) => p.text || '').join('\n').trim();
       if (text) return text;
-      lastError = 'Resposta vazia do modelo Gemini. Tente novamente.';
+      lastError = `Resposta vazia do modelo ${model}. Tente novamente.`;
     } else {
       const errData = await res.json().catch(() => ({}));
-      const rawMsg = String(errData?.error?.message || `HTTP ${res.status} (${model})`);
+      const rawMsg = String(errData?.error?.message || `HTTP ${res.status}`);
       const isModelUnavailable =
         res.status === 404 ||
         rawMsg.toLowerCase().includes('no longer available') ||
         rawMsg.toLowerCase().includes('not found');
 
       if (isModelUnavailable) {
-        lastError = rawMsg;
+        lastError = `${model}: ${rawMsg}`;
         continue;
       }
 
       if (res.status === 503 || res.status === 429) {
-        rateLimitedCount++;
         lastError =
-          'O Gemini gratuito está com pico de uso agora (503/429). Aguarde alguns segundos e tente novamente.';
-        // Pequena pausa antes de tentar o próximo modelo para escapar de picos momentâneos
-        if (rateLimitedCount <= 2) {
-          await new Promise((r) => setTimeout(r, 1200));
-        }
+          res.status === 429
+            ? `Cota diária/por minuto atingida em ${model} (429). Detalhe: ${rawMsg}`
+            : `Servidor do Google ocupado em ${model} (503). Aguarde alguns segundos e tente novamente.`;
+        await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
-      lastError = rawMsg;
 
+      lastError = `${model} (${res.status}): ${rawMsg}`;
       if ((res.status === 400 || res.status === 403) && !rawMsg.toLowerCase().includes('model')) {
         throw new Error(lastError);
       }

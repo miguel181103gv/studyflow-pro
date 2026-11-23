@@ -65,6 +65,24 @@ export default function DashboardPage() {
   const [agendaItems, setAgendaItems] = useState<
     { id: string; date: string; text: string; done: boolean; kind?: string }[]
   >([]);
+  const [agendaStoreRaw, setAgendaStoreRaw] = useState<{
+    activePlanId?: string | null;
+    plans?: {
+      id: string;
+      name: string;
+      subjectIds: string[];
+      dailyHoursByDow: Record<number, number>;
+      blockMinutes: number;
+      dailyReviewMinutes?: number;
+      subjectsPerDay?: number;
+      accountForStudied?: boolean;
+      followCycle?: boolean;
+      startDate: string;
+      completedBlockIds?: string[];
+      movedOverrides?: Record<string, string>;
+    }[];
+  } | null>(null);
+  const [cycleResetAt, setCycleResetAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!profile?.id) return;
@@ -96,6 +114,16 @@ export default function DashboardPage() {
           });
         }
         setAgendaItems(list);
+        setAgendaStoreRaw(parsed);
+      } else {
+        setAgendaStoreRaw(null);
+      }
+      const rawCycle = localStorage.getItem(`sf_cycle_reset_${profile.id}`);
+      if (rawCycle) {
+        const parsedCycle = JSON.parse(rawCycle);
+        setCycleResetAt(parsedCycle?.resetAt || null);
+      } else {
+        setCycleResetAt(null);
       }
     } catch {
       // ignore
@@ -133,11 +161,186 @@ export default function DashboardPage() {
   const daysToExam = profile?.exam_date ? daysBetween(today, profile.exam_date) : null;
   const isNewUser = studyLogs.length === 0 && studiedTopicsCount === 0;
 
-  // Próximo estudo + último ponto de parada
+  // Próximo estudo recomendado (1º Agenda de hoje/próximo dia -> 2º Progresso atual do Ciclo)
   const activeStudySubject = stopwatch.subjectId
     ? subjects.find((s) => s.id === stopwatch.subjectId)
     : null;
-  const nextStudySubject = subjects[0];
+
+  const recommendedStudy = (() => {
+    if (subjects.length === 0) return null;
+    const isMain = (title: string) => !title.trim().startsWith('↳');
+
+    // Mapa de sessões já registradas por (data + matéria)
+    const loggedByDateSub: Record<string, number> = {};
+    for (const l of studyLogs) {
+      if (!l.subject_id || !l.study_date) continue;
+      const k = `${l.study_date}__${l.subject_id}`;
+      loggedByDateSub[k] = (loggedByDateSub[k] || 0) + 1;
+    }
+
+    // 1. Tenta pegar o próximo bloco pendente da Agenda ativa
+    const plans = agendaStoreRaw?.plans || [];
+    const activePlan =
+      plans.find((p) => p.id === agendaStoreRaw?.activePlanId) || plans[0] || null;
+
+    if (activePlan) {
+      const baseOrd = activePlan.followCycle
+        ? subjects
+        : (activePlan.subjectIds
+            .map((id) => subjects.find((s) => s.id === id))
+            .filter(Boolean) as typeof subjects);
+      const skipStudied = activePlan.accountForStudied !== false;
+      const filteredOrd = skipStudied
+        ? baseOrd.filter((sub) => {
+            const mt = topics.filter((t) => t.subject_id === sub.id && isMain(t.title));
+            return mt.length === 0 || mt.some((t) => !t.studied);
+          })
+        : baseOrd;
+      const ordSubs = filteredOrd.length > 0 ? filteredOrd : baseOrd;
+
+      if (ordSubs.length > 0) {
+        const completedSet = new Set(activePlan.completedBlockIds || []);
+        const overrides = activePlan.movedOverrides || {};
+        const genStart = activePlan.startDate || today;
+        const usedLogs: Record<string, number> = {};
+        const fixedPerDay = Number(activePlan.subjectsPerDay || 0);
+        const blocks: { id: string; date: string; subjectId: string; minutes: number; done: boolean }[] = [];
+
+        const isDone = (id: string, finalDate: string, subjectId: string) => {
+          if (completedSet.has(id)) return true;
+          const k = `${finalDate}__${subjectId}`;
+          const avail = loggedByDateSub[k] || 0;
+          const used = usedLogs[k] || 0;
+          if (used < avail) {
+            usedLogs[k] = used + 1;
+            return true;
+          }
+          return false;
+        };
+
+        const parseD = (iso: string) => {
+          const [y, m, d] = iso.split('-').map(Number);
+          return new Date(y, (m || 1) - 1, d || 1);
+        };
+
+        if (activePlan.followCycle) {
+          const resetPool = () => ordSubs.map((s) => Math.max(30, s.cycle_hours * 60 + s.cycle_minutes));
+          let pool = resetPool();
+          let cursorIdx = 0;
+          for (let dayOffset = 0; dayOffset < 21; dayOffset++) {
+            const iso = addDaysISO(genStart, dayOffset);
+            const dow = parseD(iso).getDay();
+            const hours = Number(activePlan.dailyHoursByDow?.[dow] || 0);
+            if (hours <= 0) continue;
+            let availMin = Math.max(30, Math.round(hours * 60 - (activePlan.dailyReviewMinutes || 0)));
+            const slots = fixedPerDay > 0 ? fixedPerDay : Math.max(1, Math.round(availMin / (activePlan.blockMinutes || 90)));
+            const cap = Math.max(30, Math.round(availMin / slots));
+            const usedToday = new Set<number>();
+            for (let b = 0; b < slots && availMin >= 20; b++) {
+              if (pool.every((m) => m <= 0)) pool = resetPool();
+              let chosen = -1;
+              for (let st = 0; st < ordSubs.length; st++) {
+                const idx = (cursorIdx + st) % ordSubs.length;
+                if (pool[idx] > 0 && !usedToday.has(idx)) {
+                  chosen = idx;
+                  break;
+                }
+              }
+              if (chosen === -1) {
+                for (let st = 0; st < ordSubs.length; st++) {
+                  const idx = (cursorIdx + st) % ordSubs.length;
+                  if (pool[idx] > 0) {
+                    chosen = idx;
+                    break;
+                  }
+                }
+              }
+              if (chosen === -1) break;
+              const sub = ordSubs[chosen];
+              const remSlots = slots - b;
+              const ideal = Math.max(25, Math.round(availMin / remSlots));
+              let slice = Math.min(Math.min(availMin, Math.max(cap, ideal)), pool[chosen]);
+              if (slice < 25 && availMin >= 30) slice = Math.min(availMin, 30);
+              const id = `${activePlan.id}-${iso}-${b}`;
+              const finalDate = overrides[id] || iso;
+              blocks.push({ id, date: finalDate, subjectId: sub.id, minutes: slice, done: isDone(id, finalDate, sub.id) });
+              availMin -= slice;
+              pool[chosen] = Math.max(0, pool[chosen] - slice);
+              usedToday.add(chosen);
+              cursorIdx = (chosen + 1) % ordSubs.length;
+            }
+          }
+        } else {
+          let sIdx = 0;
+          for (let dayOffset = 0; dayOffset < 21; dayOffset++) {
+            const iso = addDaysISO(genStart, dayOffset);
+            const dow = parseD(iso).getDay();
+            const hours = Number(activePlan.dailyHoursByDow?.[dow] || 0);
+            if (hours <= 0) continue;
+            const netMin = Math.max(30, hours * 60 - (activePlan.dailyReviewMinutes || 0));
+            const count = fixedPerDay > 0 ? fixedPerDay : Math.max(1, Math.round(netMin / (activePlan.blockMinutes || 90)));
+            const perMin = fixedPerDay > 0 ? Math.max(20, Math.round(netMin / count)) : activePlan.blockMinutes || 90;
+            for (let b = 0; b < count; b++) {
+              const sub = ordSubs[sIdx % ordSubs.length];
+              sIdx++;
+              const id = `${activePlan.id}-${iso}-${b}`;
+              const finalDate = overrides[id] || iso;
+              blocks.push({ id, date: finalDate, subjectId: sub.id, minutes: perMin, done: isDone(id, finalDate, sub.id) });
+            }
+          }
+        }
+
+        const nextBlk =
+          blocks.find((b) => !b.done && b.date === today) ||
+          blocks.filter((b) => !b.done && b.date > today).sort((a, b) => a.date.localeCompare(b.date))[0];
+        if (nextBlk) {
+          const subObj = subjects.find((s) => s.id === nextBlk.subjectId);
+          if (subObj) {
+            const nextTopics = topics
+              .filter((t) => t.subject_id === subObj.id && !t.studied && isMain(t.title))
+              .slice(0, 2)
+              .map((t) => t.title);
+            return {
+              subject: subObj,
+              badge:
+                nextBlk.date === today
+                  ? 'Próximo da Agenda de hoje'
+                  : `Próximo da Agenda (${formatDateBR(nextBlk.date).slice(0, 5)})`,
+              minutes: nextBlk.minutes,
+              plannedTopics: nextTopics,
+            };
+          }
+        }
+      }
+    }
+
+    // 2. Fallback: próxima matéria pendente no Ciclo de Estudos atual
+    const cycleLogs = cycleResetAt
+      ? studyLogs.filter((l) => l.created_at >= cycleResetAt)
+      : studyLogs;
+    const nextInCycle =
+      subjects.find((s) => {
+        const studiedSecs = cycleLogs
+          .filter((l) => l.subject_id === s.id)
+          .reduce((acc, l) => acc + l.duration_seconds, 0);
+        const targetSecs = (s.cycle_hours * 60 + s.cycle_minutes) * 60;
+        return studiedSecs < targetSecs;
+      }) || subjects[0];
+
+    const nextTopics = topics
+      .filter((t) => t.subject_id === nextInCycle.id && !t.studied && isMain(t.title))
+      .slice(0, 2)
+      .map((t) => t.title);
+
+    return {
+      subject: nextInCycle,
+      badge: 'Próximo estudo do ciclo',
+      minutes: nextInCycle.cycle_hours * 60 + nextInCycle.cycle_minutes,
+      plannedTopics: nextTopics,
+    };
+  })();
+
+  const nextStudySubject = recommendedStudy?.subject;
   const lastLogForNext = nextStudySubject
     ? studyLogs.find((l) => l.subject_id === nextStudySubject.id)
     : undefined;
@@ -379,16 +582,21 @@ export default function DashboardPage() {
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
               <div className="space-y-1.5">
                 <span className="inline-block text-xs font-bold px-3 py-1 rounded-full bg-white/20">
-                  Próximo estudo do ciclo
+                  {recommendedStudy?.badge || 'Próximo estudo do ciclo'}
                 </span>
                 <h2 className="text-2xl font-extrabold">{nextStudySubject.name}</h2>
                 <p className="text-sm text-emerald-100">
-                  Meta: {nextStudySubject.cycle_hours}h
-                  {String(nextStudySubject.cycle_minutes).padStart(2, '0')}m no ciclo
+                  Sessão: {Math.floor((recommendedStudy?.minutes || 90) / 60)}h
+                  {String((recommendedStudy?.minutes || 90) % 60).padStart(2, '0')}m
                   {lastLogForNext?.stop_point
                     ? ` · Último ponto: ${lastLogForNext.stop_point}`
                     : ''}
                 </p>
+                {recommendedStudy?.plannedTopics && recommendedStudy.plannedTopics.length > 0 && (
+                  <p className="text-xs text-emerald-50/90 line-clamp-1">
+                    Tópicos previstos: {recommendedStudy.plannedTopics.join(' · ')}
+                  </p>
+                )}
               </div>
               <button
                 onClick={() => startStopwatch(nextStudySubject.id)}
