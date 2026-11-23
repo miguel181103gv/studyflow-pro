@@ -37,6 +37,7 @@ import {
   Highlighter,
   ChevronDown,
   ChevronRight,
+  ListChecks,
 } from 'lucide-react';
 
 interface NavItem {
@@ -54,7 +55,6 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
       { href: '/ciclo', label: 'Ciclo de Estudos', icon: RefreshCw },
       { href: '/agenda', label: 'Agenda & Notas', icon: CalendarDays },
       { href: '/estudos', label: 'Edital Verticalizado', icon: CheckSquare },
-      { href: '/materias', label: 'Matérias & Vídeos', icon: BookOpen },
     ],
   },
   {
@@ -62,6 +62,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
     items: [
       { href: '/revisoes', label: 'Revisões (1/7/30d)', icon: Clock, badgeKey: 'reviews' },
       { href: '/flashcards', label: 'Flashcards', icon: Layers, badgeKey: 'flashcards' },
+      { href: '/questoes', label: 'Questões (Quiz)', icon: ListChecks },
       { href: '/erros', label: 'Caderno de Erros', icon: AlertTriangle },
     ],
   },
@@ -202,7 +203,7 @@ export function AppShell({
           type: 'PDF',
           title: t.pdf_name,
           subtitle: `${sub?.name || ''} · ${t.title}`,
-          href: `${basePath}/materias`,
+          href: `${basePath}/estudos`,
         });
       }
     });
@@ -215,7 +216,7 @@ export function AppShell({
           type: 'Grifo',
           title: h.text.slice(0, 90),
           subtitle: t?.title || 'Grifo salvo',
-          href: `${basePath}/materias`,
+          href: `${basePath}/estudos`,
         });
       }
     });

@@ -309,7 +309,7 @@ export default function DashboardPage() {
           </div>
           <div className="flex flex-wrap gap-2.5">
             <Link
-              href={`/p/${profile?.id}/materias`}
+              href={`/p/${profile?.id}/estudos`}
               className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
             >
               Adicionar matéria

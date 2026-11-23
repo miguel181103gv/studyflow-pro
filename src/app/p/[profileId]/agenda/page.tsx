@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { getStudyMode } from '@/lib/studyModes';
@@ -29,6 +30,7 @@ import {
   ExternalLink,
   UserCheck,
   MapPin,
+  RefreshCw,
 } from 'lucide-react';
 
 interface ScheduledBlock {
@@ -83,6 +85,8 @@ interface StudyPlan {
   subjectIds: string[];
   dailyHoursByDow: Record<number, number>;
   blockMinutes: number;
+  dailyReviewMinutes?: number;
+  followCycle?: boolean;
   startDate: string;
   estimatedEndDate: string;
   completedBlockIds: string[];
@@ -145,16 +149,21 @@ function startOfWeekMonday(iso: string) {
 function estimateFinishDate(
   startDate: string,
   remainingTopics: number,
-  dailyHoursByDow: Record<number, number>
+  dailyHoursByDow: Record<number, number>,
+  dailyReviewMinutes = 0
 ): string {
-  const weeklyHours = Object.values(dailyHoursByDow).reduce((a, b) => a + (Number(b) || 0), 0);
-  if (weeklyHours <= 0) return addDaysISO(startDate, 90);
-  let neededHours = Math.max(remainingTopics * 1.5, weeklyHours);
+  const reviewHours = (Number(dailyReviewMinutes) || 0) / 60;
+  const weeklyNetHours = Object.values(dailyHoursByDow).reduce((a, b) => {
+    const h = Number(b) || 0;
+    return a + (h > 0 ? Math.max(0.5, h - reviewHours) : 0);
+  }, 0);
+  if (weeklyNetHours <= 0) return addDaysISO(startDate, 90);
+  let neededHours = Math.max(remainingTopics * 1.5, weeklyNetHours);
   let d = startDate;
   for (let i = 0; i < 730 && neededHours > 0; i++) {
     const dow = parseISO(d).getDay();
     const h = Number(dailyHoursByDow[dow] || 0);
-    if (h > 0) neededHours -= h;
+    if (h > 0) neededHours -= Math.max(0.5, h - reviewHours);
     if (neededHours > 0) d = addDaysISO(d, 1);
   }
   return d;
@@ -163,7 +172,7 @@ function estimateFinishDate(
 type AgendaTab = 'aulas' | 'avaliacoes' | 'cronograma';
 
 export default function AgendaPage() {
-  const { profile, subjects, topics, startStopwatch, setSubjectOrder } = useProfile();
+  const { profile, subjects, topics, reviews, startStopwatch, setSubjectOrder } = useProfile();
   const { notify } = useGlobal();
 
   const studyMode = getStudyMode(profile);
@@ -225,6 +234,9 @@ export default function AgendaPage() {
     6: 0,
   });
   const [wizBlockMin, setWizBlockMin] = useState(90);
+  const [wizReviewMin, setWizReviewMin] = useState(30);
+  const [wizFollowCycle, setWizFollowCycle] = useState(false);
+  const [openReviewDays, setOpenReviewDays] = useState<Record<string, boolean>>({});
   const [wizName, setWizName] = useState('');
   const [wizStartDate, setWizStartDate] = useState(today);
   const [wizDragId, setWizDragId] = useState<string | null>(null);
@@ -291,13 +303,21 @@ export default function AgendaPage() {
     });
   }
 
-  function openNewPlanWizard() {
-    setWizStep(1);
+  function openNewPlanWizard(followCyclePreset = false) {
+    setWizFollowCycle(followCyclePreset);
+    setWizStep(followCyclePreset ? 3 : 1);
     setWizSubjectIds(subjects.map((s) => s.id));
     const goal = profile?.daily_hours_goal || 3;
     setWizDailyHours({ 0: 0, 1: goal, 2: goal, 3: goal, 4: goal, 5: goal, 6: 0 });
     setWizBlockMin(90);
-    setWizName(store.plans.length === 0 ? 'Meu Cronograma Principal' : `Cronograma ${store.plans.length + 1}`);
+    setWizReviewMin(30);
+    setWizName(
+      followCyclePreset
+        ? 'Agenda do Ciclo de Estudos'
+        : store.plans.length === 0
+        ? 'Meu Cronograma Principal'
+        : `Cronograma ${store.plans.length + 1}`
+    );
     setWizStartDate(today);
     setShowWizard(true);
   }
@@ -307,13 +327,15 @@ export default function AgendaPage() {
     const remainingTopics = topics.filter(
       (t) => wizSubjectIds.includes(t.subject_id) && !t.studied
     ).length;
-    const estEnd = estimateFinishDate(wizStartDate, remainingTopics, wizDailyHours);
+    const estEnd = estimateFinishDate(wizStartDate, remainingTopics, wizDailyHours, wizReviewMin);
     const newPlan: StudyPlan = {
       id: `plan-${Date.now()}`,
       name: wizName.trim() || 'Cronograma de Estudos',
       subjectIds: wizSubjectIds,
       dailyHoursByDow: wizDailyHours,
       blockMinutes: wizBlockMin,
+      dailyReviewMinutes: wizReviewMin,
+      followCycle: wizFollowCycle,
       startDate: wizStartDate,
       estimatedEndDate: estEnd,
       completedBlockIds: [],
@@ -324,34 +346,87 @@ export default function AgendaPage() {
       activePlanId: newPlan.id,
       plans: [...store.plans, newPlan],
     });
-    await setSubjectOrder(wizSubjectIds);
+    if (!wizFollowCycle) {
+      await setSubjectOrder(wizSubjectIds);
+    }
     setShowWizard(false);
     setActiveTab('cronograma');
     notify(`Cronograma "${newPlan.name}" criado e ordem sincronizada com o Ciclo!`, 'success');
   }
 
   // Gera blocos SOMENTE se existir um cronograma ativo!
+  // Se followCycle === true, segue AO VIVO a ordem e as horas/minutos exatos de cada matéria no Ciclo de Estudos!
   const scheduledBlocks: ScheduledBlock[] = useMemo(() => {
-    if (!activePlan || activePlan.subjectIds.length === 0) return [];
-    const orderedSubjects = activePlan.subjectIds
-      .map((id) => subjects.find((s) => s.id === id))
-      .filter(Boolean) as typeof subjects;
+    if (!activePlan) return [];
+    const orderedSubjects = activePlan.followCycle
+      ? subjects
+      : (activePlan.subjectIds
+          .map((id) => subjects.find((s) => s.id === id))
+          .filter(Boolean) as typeof subjects);
     if (orderedSubjects.length === 0) return [];
 
     const out: ScheduledBlock[] = [];
     const completedSet = new Set(activePlan.completedBlockIds || []);
     const overrides = activePlan.movedOverrides || {};
-    let subjectIdx = 0;
-
-    // Gera 42 dias a partir da data de início do cronograma (ou segunda-feira da semana atual)
     const genStart = activePlan.startDate || startOfWeekMonday(today);
+
+    if (activePlan.followCycle) {
+      let subjectIdx = 0;
+      let remainingSubMin = Math.max(
+        15,
+        orderedSubjects[0].cycle_hours * 60 + orderedSubjects[0].cycle_minutes
+      );
+
+      for (let dayOffset = 0; dayOffset < 42; dayOffset++) {
+        const iso = addDaysISO(genStart, dayOffset);
+        const dow = parseISO(iso).getDay();
+        const hours = Number(activePlan.dailyHoursByDow[dow] || 0);
+        if (hours <= 0) continue;
+
+        let availableDayMin = Math.max(30, Math.round(hours * 60 - (activePlan.dailyReviewMinutes || 0)));
+        let blockIdx = 0;
+
+        while (availableDayMin >= 15 && blockIdx < 8) {
+          const sub = orderedSubjects[subjectIdx % orderedSubjects.length];
+          const sliceMin = Math.min(availableDayMin, remainingSubMin);
+          const id = `${activePlan.id}-${iso}-${blockIdx}`;
+          const finalDate = overrides[id] || iso;
+          const done = completedSet.has(id);
+
+          out.push({
+            id,
+            date: finalDate,
+            subjectId: sub.id,
+            name: sub.name,
+            color: sub.color,
+            minutes: sliceMin,
+            done,
+            overdue: !done && finalDate < today,
+          });
+
+          availableDayMin -= sliceMin;
+          remainingSubMin -= sliceMin;
+          blockIdx++;
+
+          if (remainingSubMin <= 0) {
+            subjectIdx++;
+            const nextSub = orderedSubjects[subjectIdx % orderedSubjects.length];
+            remainingSubMin = Math.max(15, nextSub.cycle_hours * 60 + nextSub.cycle_minutes);
+          }
+        }
+      }
+      return out;
+    }
+
+    let subjectIdx = 0;
     for (let dayOffset = 0; dayOffset < 42; dayOffset++) {
       const iso = addDaysISO(genStart, dayOffset);
       const dow = parseISO(iso).getDay();
       const hours = Number(activePlan.dailyHoursByDow[dow] || 0);
       if (hours <= 0) continue;
 
-      const blocksToday = Math.max(1, Math.round((hours * 60) / (activePlan.blockMinutes || 90)));
+      const netStudyMinutes = Math.max(30, hours * 60 - (activePlan.dailyReviewMinutes || 0));
+      const blocksToday = Math.max(1, Math.round(netStudyMinutes / (activePlan.blockMinutes || 90)));
       for (let b = 0; b < blocksToday; b++) {
         const sub = orderedSubjects[subjectIdx % orderedSubjects.length];
         subjectIdx++;
@@ -1007,14 +1082,24 @@ export default function AgendaPage() {
                   Monte um cronograma escolhendo as matérias, a ordem desejada e sua carga horária por dia. Você pode criar vários cronogramas com nomes diferentes e alternar entre eles.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={openNewPlanWizard}
-                className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-2 shadow-sm"
-              >
-                <Sparkles className="w-4 h-4" />
-                Montar Cronograma
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => openNewPlanWizard(true)}
+                  className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-2 shadow-sm"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  Seguir meu Ciclo de Estudos
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openNewPlanWizard(false)}
+                  className="px-5 py-2.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-bold inline-flex items-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4 text-teal-600" />
+                  Montar Cronograma Personalizado
+                </button>
+              </div>
             </div>
           ) : (
             <>
@@ -1049,7 +1134,7 @@ export default function AgendaPage() {
                   })}
                   <button
                     type="button"
-                    onClick={openNewPlanWizard}
+                    onClick={() => openNewPlanWizard(false)}
                     className="px-3.5 py-2 rounded-xl border border-dashed border-teal-500/50 text-teal-700 dark:text-teal-300 text-xs font-bold inline-flex items-center gap-1 hover:bg-teal-500/10"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -1058,9 +1143,30 @@ export default function AgendaPage() {
                 </div>
 
                 <div className="text-xs text-muted-theme flex items-center gap-3 flex-wrap">
-                  <span>
-                    Início: <strong>{formatDateBR(activePlan.startDate)}</strong>
-                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextFollow = !activePlan.followCycle;
+                      updateActivePlan((p) => ({ ...p, followCycle: nextFollow }));
+                      notify(
+                        nextFollow
+                          ? 'Agenda sincronizada ao vivo com a ordem e as horas do seu Ciclo de Estudos!'
+                          : 'Modo personalizado ativado para este cronograma.',
+                        'success'
+                      );
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-[11px] font-bold inline-flex items-center gap-1.5 border transition ${
+                      activePlan.followCycle
+                        ? 'bg-teal-600/12 border-teal-500/40 text-teal-700 dark:text-teal-300'
+                        : 'subtle-surface border-theme text-muted-theme hover:text-[var(--text-main)]'
+                    }`}
+                    title="Usa automaticamente a ordem e a quantidade de horas definidas no seu Ciclo de Estudos"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    {activePlan.followCycle
+                      ? 'Seguindo Ciclo de Estudos'
+                      : 'Seguir Ciclo de Estudos'}
+                  </button>
                   <span>
                     Término estimado:{' '}
                     <strong className="text-teal-700 dark:text-teal-300">
@@ -1069,6 +1175,43 @@ export default function AgendaPage() {
                   </span>
                 </div>
               </div>
+
+              {/* Sugestão inteligente de hoje (sem obrigar) */}
+              {(() => {
+                const nextTodayBlock = scheduledBlocks.find((b) => b.date === today && !b.done);
+                if (!nextTodayBlock) return null;
+                const h = Math.floor(nextTodayBlock.minutes / 60);
+                const m = nextTodayBlock.minutes % 60;
+                return (
+                  <div className="card-surface rounded-2xl p-4 border-l-4 border-l-teal-600 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
+                        {activePlan.followCycle
+                          ? 'Sugestão de hoje pelo seu Ciclo de Estudos'
+                          : 'Próxima matéria sugerida para hoje'}
+                      </p>
+                      <p className="text-sm font-extrabold mt-0.5 truncate">
+                        {nextTodayBlock.name}{' '}
+                        <span className="font-semibold text-muted-theme">
+                          ({h > 0 ? `${h}h` : ''}
+                          {m > 0 ? ` ${m}min` : ''})
+                        </span>
+                      </p>
+                      <p className="text-[11px] text-muted-theme">
+                        Apenas uma sugestão na ordem — você pode iniciar agora ou escolher outra matéria se preferir.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => startStopwatch(nextTodayBlock.subjectId)}
+                      className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0 self-start sm:self-auto"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      Iniciar sugestão
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* Aviso de blocos atrasados (puxar sem pular matéria) */}
               {overdueBlocks.length > 0 && (
@@ -1219,6 +1362,56 @@ export default function AgendaPage() {
                             ))}
                           </div>
                         )}
+
+                        {/* Lembrete discreto e recolhível de Revisões do dia */}
+                        {(() => {
+                          const dayRevs = reviews.filter((r) => !r.completed && r.due_date === iso);
+                          const revMin = activePlan.dailyReviewMinutes || 0;
+                          const hasStudyDay = Number(activePlan.dailyHoursByDow[dow] || 0) > 0;
+                          if (dayRevs.length === 0 && !(hasStudyDay && revMin > 0)) return null;
+                          const isRevOpen = !!openReviewDays[iso];
+                          return (
+                            <div className="pt-1.5 border-t border-theme/70">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setOpenReviewDays((prev) => ({ ...prev, [iso]: !isRevOpen }))
+                                }
+                                className="w-full text-left px-2 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/15 text-[10px] font-bold text-amber-800 dark:text-amber-300 flex items-center justify-between gap-1"
+                              >
+                                <span className="truncate">
+                                  Revisões{revMin > 0 ? ` (${revMin}m)` : ''}
+                                  {dayRevs.length > 0 ? ` · ${dayRevs.length}` : ''}
+                                </span>
+                                <span>{isRevOpen ? '▲' : '▼'}</span>
+                              </button>
+                              {isRevOpen && (
+                                <div className="mt-1.5 space-y-1 text-[10px] px-1">
+                                  {dayRevs.length > 0 ? (
+                                    dayRevs.slice(0, 4).map((r) => {
+                                      const tp = topics.find((t) => t.id === r.topic_id);
+                                      return (
+                                        <p key={r.id} className="text-muted-theme truncate">
+                                          • {tp?.title || 'Tópico'} ({r.interval_days}d)
+                                        </p>
+                                      );
+                                    })
+                                  ) : (
+                                    <p className="text-muted-theme">
+                                      Reserva diária de {revMin} min para revisões/flashcards.
+                                    </p>
+                                  )}
+                                  <Link
+                                    href={`/p/${profile?.id}/revisoes`}
+                                    className="inline-block font-bold text-teal-700 dark:text-teal-300 hover:underline pt-0.5"
+                                  >
+                                    Abrir Revisões →
+                                  </Link>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     );
                   })}
@@ -1721,19 +1914,45 @@ export default function AgendaPage() {
                     </div>
                   ))}
                 </div>
-                <div className="flex items-center gap-3 pt-1">
-                  <label className="text-xs font-semibold">Duração de cada bloco:</label>
-                  <select
-                    value={wizBlockMin}
-                    onChange={(e) => setWizBlockMin(Number(e.target.value))}
-                    className="rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-1.5 text-xs font-semibold"
-                  >
-                    <option value={45}>45 min</option>
-                    <option value={60}>1 hora</option>
-                    <option value={90}>1h 30m</option>
-                    <option value={120}>2 horas</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  {wizFollowCycle ? (
+                    <div className="flex items-center gap-2 rounded-xl bg-teal-600/10 border border-teal-500/30 px-3 py-2 text-xs text-teal-800 dark:text-teal-200 font-semibold">
+                      <RefreshCw className="w-4 h-4 shrink-0" />
+                      Usando a ordem e as horas exatas do seu Ciclo
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-2 subtle-surface rounded-xl px-3 py-2">
+                      <label className="text-xs font-semibold">Duração do bloco:</label>
+                      <select
+                        value={wizBlockMin}
+                        onChange={(e) => setWizBlockMin(Number(e.target.value))}
+                        className="rounded-lg bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-2.5 py-1 text-xs font-semibold"
+                      >
+                        <option value={45}>45 min</option>
+                        <option value={60}>1 hora</option>
+                        <option value={90}>1h 30m</option>
+                        <option value={120}>2 horas</option>
+                      </select>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-2 subtle-surface rounded-xl px-3 py-2">
+                    <label className="text-xs font-semibold">Tempo de revisão/dia:</label>
+                    <select
+                      value={wizReviewMin}
+                      onChange={(e) => setWizReviewMin(Number(e.target.value))}
+                      className="rounded-lg bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-2.5 py-1 text-xs font-semibold"
+                    >
+                      <option value={0}>Sem reserva (0 min)</option>
+                      <option value={15}>15 min</option>
+                      <option value={30}>30 min</option>
+                      <option value={45}>45 min</option>
+                      <option value={60}>1 hora</option>
+                    </select>
+                  </div>
                 </div>
+                <p className="text-[11px] text-muted-theme">
+                  O tempo de revisão diário já é descontado automaticamente da sua carga horária ao calcular os blocos de matéria nova e a data prevista de término.
+                </p>
               </div>
             )}
 
@@ -1766,7 +1985,8 @@ export default function AgendaPage() {
                         topics.filter(
                           (t) => wizSubjectIds.includes(t.subject_id) && !t.studied
                         ).length,
-                        wizDailyHours
+                        wizDailyHours,
+                        wizReviewMin
                       )
                     )}
                   </p>
@@ -1781,7 +2001,7 @@ export default function AgendaPage() {
               <button
                 type="button"
                 onClick={() =>
-                  wizStep === 1
+                  wizStep === 1 || (wizFollowCycle && wizStep === 3)
                     ? setShowWizard(false)
                     : setWizStep((wizStep - 1) as 1 | 2 | 3 | 4)
                 }

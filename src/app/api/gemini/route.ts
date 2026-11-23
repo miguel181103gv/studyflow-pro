@@ -242,6 +242,93 @@ Retorne exatamente um JSON neste formato:
       return NextResponse.json({ ok: true, data: parsed });
     }
 
+    if (action === 'digitize_error_question') {
+      const { imageBase64, mimeType = 'image/png', subjectName = '' } = body;
+      if (!imageBase64) {
+        return NextResponse.json({ error: 'Envie uma imagem para digitalizar.' }, { status: 400 });
+      }
+      const raw = await callGemini(
+        [
+          {
+            inline_data: {
+              mime_type: mimeType,
+              data: imageBase64,
+            },
+          },
+          {
+            text: `Você é um transcritor especialista em questões de concursos e vestibulares (${subjectName}).
+Analise cuidadosamente esta imagem (print ou foto de uma questão) e DIGITALIZE-A completamente em texto estruturado.
+
+Regras:
+1. Extraia o cabeçalho se visível (ex: "FGV · 2026 · TRF 2"), ou "" se não houver.
+2. Transcreva o enunciado completo de forma limpa e fiel.
+3. Extraia TODAS as alternativas (A, B, C, D, E ou C/E para Certo/Errado) sem marcas de certo/errado no texto da opção.
+4. Identifique se na imagem aparece qual alternativa o estudante marcou ERRADO (ex: marcada com X vermelho) -> coloque apenas a letra em "user_wrong_answer" (ou "" se não visível).
+5. Identifique o GABARITO CORRETO se visível na imagem (ex: marcada em verde / "Opção correta") ou resolva com precisão -> coloque apenas a letra em "correct_answer".
+6. Gere uma "golden_rule" (Regra de Ouro em 1 frase curta) e uma "explanation" (explicação didática do gabarito).
+
+Retorne SOMENTE um JSON válido neste formato exato:
+{
+  "header": "Banca · Ano · Órgão (ou vazio)",
+  "statement": "Enunciado completo da questão",
+  "options": [
+    { "letter": "A", "text": "Texto limpo da alternativa A" },
+    { "letter": "B", "text": "Texto limpo da alternativa B" }
+  ],
+  "user_wrong_answer": "C",
+  "correct_answer": "E",
+  "golden_rule": "Frase curta para nunca mais errar",
+  "explanation": "Explicação objetiva do gabarito e da pegadinha"
+}`,
+          },
+        ],
+        true
+      );
+      const parsed = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data: parsed });
+    }
+
+    if (action === 'digitize_text_questions') {
+      const { rawText, subjectName = '', topicTitle = '' } = body;
+      if (!rawText || !String(rawText).trim()) {
+        return NextResponse.json({ error: 'Cole o texto com uma ou mais questões.' }, { status: 400 });
+      }
+      const raw = await callGemini(
+        [
+          {
+            text: `Você é um professor especialista em concursos e provas (${subjectName} — ${topicTitle}).
+Transforme o texto abaixo em um quiz estruturado, extraindo TODAS as questões encontradas (pode ser 1 ou várias).
+Para cada questão:
+- Limpe o enunciado e separe todas as alternativas (A, B, C, D, E ou Certo/Errado com letras C e E).
+- Se o gabarito estiver no texto, use-o; se não estiver, resolva com precisão e indique a letra correta em "correct_answer".
+- Escreva uma explicação objetiva em "explanation".
+
+TEXTO ENVIADO:
+${String(rawText).slice(0, 15000)}
+
+Retorne SOMENTE um JSON válido neste formato exato:
+{
+  "questions": [
+    {
+      "header": "Banca · Ano (ou vazio)",
+      "statement": "Enunciado limpo da questão",
+      "options": [
+        { "letter": "A", "text": "Texto da alternativa A" },
+        { "letter": "B", "text": "Texto da alternativa B" }
+      ],
+      "correct_answer": "A",
+      "explanation": "Comentário objetivo explicando o gabarito."
+    }
+  ]
+}`,
+          },
+        ],
+        true
+      );
+      const parsed = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data: parsed });
+    }
+
     if (action === 'explain_error') {
       const {
         subjectName,

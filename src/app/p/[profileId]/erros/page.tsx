@@ -16,6 +16,14 @@ import {
   X,
   RotateCw,
   ZoomIn,
+  CheckCircle2,
+  XCircle,
+  Eye,
+  EyeOff,
+  ScanText,
+  BookOpen,
+  Globe2,
+  ArrowRight,
 } from 'lucide-react';
 
 const ERROR_CAUSES = [
@@ -25,6 +33,49 @@ const ERROR_CAUSES = [
   'Esquecimento / falta de revisão',
   'Erro de cálculo',
 ];
+
+interface DigitizedOption {
+  letter: string;
+  text: string;
+}
+
+interface DigitizedQuestion {
+  header?: string;
+  statement: string;
+  options: DigitizedOption[];
+}
+
+const Q_MARKER = '<!--SF_Q_JSON:';
+
+function encodeDigitizedQuestion(q: DigitizedQuestion): string {
+  return `${Q_MARKER}${JSON.stringify(q)}-->`;
+}
+
+function parseDigitizedQuestion(raw: string | null | undefined): DigitizedQuestion | null {
+  if (!raw) return null;
+  const idx = raw.indexOf(Q_MARKER);
+  if (idx === -1) return null;
+  const start = idx + Q_MARKER.length;
+  const end = raw.indexOf('-->', start);
+  if (end === -1) return null;
+  try {
+    const parsed = JSON.parse(raw.slice(start, end)) as DigitizedQuestion;
+    if (parsed && parsed.statement && Array.isArray(parsed.options) && parsed.options.length > 0) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
 
 export default function CadernoErrosPage() {
   const {
@@ -38,15 +89,23 @@ export default function CadernoErrosPage() {
     deleteErrorEntry,
   } = useProfile();
 
+  const { aiJobs, runAiJob, notify } = useGlobal();
+
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [filterSubject, setFilterSubject] = useState('');
   const [zoomUrl, setZoomUrl] = useState<string | null>(null);
 
-  // Add error form
+  const [selectedByCard, setSelectedByCard] = useState<Record<string, string>>({});
+  const [submittedByCard, setSubmittedByCard] = useState<Record<string, boolean>>({});
+  const [showPrevWrongByCard, setShowPrevWrongByCard] = useState<Record<string, boolean>>({});
+  const [showOriginalImgByCard, setShowOriginalImgByCard] = useState<Record<string, boolean>>({});
+
   const [showAdd, setShowAdd] = useState(false);
   const [subjectId, setSubjectId] = useState('');
   const [topicId, setTopicId] = useState('');
   const [questionText, setQuestionText] = useState('');
+  const [digitizedDraft, setDigitizedDraft] = useState<DigitizedQuestion | null>(null);
+  const [digitizingUpload, setDigitizingUpload] = useState(false);
   const [userAnswer, setUserAnswer] = useState('');
   const [correctAnswer, setCorrectAnswer] = useState('');
   const [errorCause, setErrorCause] = useState(ERROR_CAUSES[0]);
@@ -55,12 +114,17 @@ export default function CadernoErrosPage() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const { aiJobs, runAiJob } = useGlobal();
 
-  // Flashcard Active Review Mode
-  const [flashcardMode, setFlashcardMode] = useState(false);
-  const [fcIndex, setFcIndex] = useState(0);
-  const [fcRevealed, setFcRevealed] = useState(false);
+  const [drillOpen, setDrillOpen] = useState(false);
+  const [drillTitle, setDrillTitle] = useState('');
+  const [drillQueue, setDrillQueue] = useState<ErrorEntry[]>([]);
+  const [drillIdx, setDrillIdx] = useState(0);
+  const [drillPicked, setDrillPicked] = useState<string>('');
+  const [drillAnswered, setDrillAnswered] = useState(false);
+  const [drillShowPrevWrong, setDrillShowPrevWrong] = useState(false);
+  const [drillHits, setDrillHits] = useState(0);
+  const [drillMisses, setDrillMisses] = useState(0);
+  const [drillFinished, setDrillFinished] = useState(false);
 
   useEffect(() => {
     async function loadImages() {
@@ -82,16 +146,59 @@ export default function CadernoErrosPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [errors]);
 
+  async function autoDigitizeFile(file: File) {
+    setImageFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+    setDigitizingUpload(true);
+    try {
+      const base64 = await fileToBase64(file);
+      const sub = subjects.find((s) => s.id === (subjectId || subjects[0]?.id));
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'digitize_error_question',
+          imageBase64: base64,
+          mimeType: file.type || 'image/png',
+          subjectName: sub?.name || '',
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json.ok && json.data?.statement) {
+        const dq: DigitizedQuestion = {
+          header: json.data.header || '',
+          statement: json.data.statement,
+          options: Array.isArray(json.data.options) ? json.data.options : [],
+        };
+        if (dq.options.length > 0) {
+          setDigitizedDraft(dq);
+        } else {
+          setQuestionText(dq.statement);
+        }
+        if (json.data.user_wrong_answer) {
+          setUserAnswer(String(json.data.user_wrong_answer).trim().toUpperCase());
+        }
+        if (json.data.correct_answer) {
+          setCorrectAnswer(String(json.data.correct_answer).trim().toUpperCase());
+        }
+        if (json.data.golden_rule) setGoldenRule(json.data.golden_rule);
+        if (json.data.explanation) setExplanation(json.data.explanation);
+        notify('Questão digitalizada automaticamente a partir da foto!', 'success');
+      }
+    } catch {
+      // mantém imagem para salvar manualmente
+    } finally {
+      setDigitizingUpload(false);
+    }
+  }
+
   function handlePaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
     if (!items) return;
     for (let i = 0; i < items.length; i++) {
       if (items[i].type.startsWith('image/')) {
         const file = items[i].getAsFile();
-        if (file) {
-          setImageFile(file);
-          setPreviewUrl(URL.createObjectURL(file));
-        }
+        if (file) autoDigitizeFile(file);
       }
     }
   }
@@ -113,13 +220,17 @@ export default function CadernoErrosPage() {
         if (error) throw error;
       }
 
+      const finalQuestionText = digitizedDraft
+        ? encodeDigitizedQuestion(digitizedDraft)
+        : questionText;
+
       await addErrorEntry({
         subject_id: sId,
         topic_id: topicId || null,
-        question_text: questionText,
+        question_text: finalQuestionText,
         image_path: imagePath,
-        user_answer: userAnswer,
-        correct_answer: correctAnswer,
+        user_answer: userAnswer.trim().toUpperCase(),
+        correct_answer: correctAnswer.trim().toUpperCase(),
         error_cause: errorCause,
         explanation,
         golden_rule: goldenRule,
@@ -130,6 +241,7 @@ export default function CadernoErrosPage() {
 
       setShowAdd(false);
       setQuestionText('');
+      setDigitizedDraft(null);
       setUserAnswer('');
       setCorrectAnswer('');
       setExplanation('');
@@ -143,10 +255,69 @@ export default function CadernoErrosPage() {
     }
   }
 
+  function digitizeExistingEntry(entry: ErrorEntry) {
+    const sub = subjects.find((s) => s.id === entry.subject_id);
+    const signedImg = entry.image_path ? signedUrls[entry.image_path] : undefined;
+    if (!signedImg) return;
+
+    runAiJob({
+      id: `digitize_error:${entry.id}`,
+      kind: 'explain_error',
+      label: `Digitalizando questão de ${sub?.name || 'Matéria'}`,
+      route: profile ? `/p/${profile.id}/erros` : undefined,
+      successMsg: `Questão de ${sub?.name || 'Matéria'} digitalizada com alternativas!`,
+      task: async () => {
+        const imgRes = await fetch(signedImg);
+        const buf = await imgRes.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let bin = '';
+        for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+        const imageBase64 = btoa(bin);
+
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'digitize_error_question',
+            imageBase64,
+            subjectName: sub?.name || '',
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao digitalizar foto.');
+        return json.data;
+      },
+      onDone: async (data) => {
+        const dq: DigitizedQuestion = {
+          header: data.header || '',
+          statement: data.statement || entry.question_text || '',
+          options: Array.isArray(data.options) ? data.options : [],
+        };
+        const patch: Partial<ErrorEntry> = {
+          question_text: dq.options.length > 0 ? encodeDigitizedQuestion(dq) : dq.statement,
+          user_answer: data.user_wrong_answer
+            ? String(data.user_wrong_answer).trim().toUpperCase()
+            : entry.user_answer,
+          correct_answer: data.correct_answer
+            ? String(data.correct_answer).trim().toUpperCase()
+            : entry.correct_answer,
+          golden_rule: data.golden_rule || entry.golden_rule,
+          explanation: data.explanation || entry.explanation,
+        };
+        const supabase = createClient();
+        await supabase.from('error_entries').update(patch).eq('id', entry.id);
+      },
+    });
+  }
+
   function explainWithGemini(entry: ErrorEntry) {
     const sub = subjects.find((s) => s.id === entry.subject_id);
     const top = topics.find((t) => t.id === entry.topic_id);
     const signedImg = entry.image_path ? signedUrls[entry.image_path] : undefined;
+    const dq = parseDigitizedQuestion(entry.question_text);
+    const plainQ = dq
+      ? `${dq.statement}\n${dq.options.map((o) => `${o.letter}) ${o.text}`).join('\n')}`
+      : entry.question_text;
 
     runAiJob({
       id: `explain_error:${entry.id}`,
@@ -172,7 +343,7 @@ export default function CadernoErrosPage() {
             action: 'explain_error',
             subjectName: sub?.name || 'Matéria',
             topicTitle: top?.title || '',
-            questionText: entry.question_text,
+            questionText: plainQ,
             userAnswer: entry.user_answer,
             correctAnswer: entry.correct_answer,
             imageBase64,
@@ -198,36 +369,71 @@ export default function CadernoErrosPage() {
     });
   }
 
+  function startDrill(pool: ErrorEntry[], title: string) {
+    if (pool.length === 0) return;
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
+    setDrillTitle(title);
+    setDrillQueue(shuffled);
+    setDrillIdx(0);
+    setDrillPicked('');
+    setDrillAnswered(false);
+    setDrillShowPrevWrong(false);
+    setDrillHits(0);
+    setDrillMisses(0);
+    setDrillFinished(false);
+    setDrillOpen(true);
+  }
+
   const visibleErrors = filterSubject
     ? errors.filter((e) => e.subject_id === filterSubject)
     : errors;
+  const activeFilterSubjectObj = subjects.find((s) => s.id === filterSubject);
+
+  const currentDrillItem = drillQueue[drillIdx];
+  const currentDrillDQ = currentDrillItem
+    ? parseDigitizedQuestion(currentDrillItem.question_text)
+    : null;
+  const currentDrillSub = currentDrillItem
+    ? subjects.find((s) => s.id === currentDrillItem.subject_id)
+    : undefined;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Caderno de Erros Inteligente</h1>
           <p className="text-sm text-muted-theme">
-            Cole prints (Ctrl+V), peça explicação ao Gemini AI e revise em modo Flashcards.
+            Envie prints (Ctrl+V) para digitalizar automaticamente em questões interativas e refaça sem spoiler.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {visibleErrors.length > 0 && (
+
+        <div className="flex items-center gap-2 flex-wrap">
+          {filterSubject && visibleErrors.length > 0 && (
             <button
-              onClick={() => {
-                setFcIndex(0);
-                setFcRevealed(false);
-                setFlashcardMode(true);
-              }}
+              type="button"
+              onClick={() =>
+                startDrill(visibleErrors, `Bateria: ${activeFilterSubjectObj?.name || 'Matéria'}`)
+              }
               className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5"
             >
-              <Zap className="w-4 h-4" />
-              Revisão Ativa ({visibleErrors.length})
+              <BookOpen className="w-4 h-4" />
+              Resolver Matéria ({visibleErrors.length})
+            </button>
+          )}
+          {errors.length > 0 && (
+            <button
+              type="button"
+              onClick={() => startDrill(errors, 'Bateria Geral — Todas as Matérias')}
+              className="px-4 py-2.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-bold inline-flex items-center gap-1.5"
+            >
+              <Globe2 className="w-4 h-4 text-teal-600" />
+              Resolver Geral ({errors.length})
             </button>
           )}
           <button
+            type="button"
             onClick={() => setShowAdd(true)}
-            className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
+            className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
           >
             <Plus className="w-4 h-4" />
             Novo Erro
@@ -235,12 +441,11 @@ export default function CadernoErrosPage() {
         </div>
       </div>
 
-      {/* Filter */}
       <div className="flex items-center gap-2 flex-wrap">
         <button
           onClick={() => setFilterSubject('')}
-          className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
-            !filterSubject ? 'bg-teal-600 text-white' : 'card-surface'
+          className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold ${
+            !filterSubject ? 'bg-teal-600 text-white shadow-sm' : 'card-surface'
           }`}
         >
           Todas ({errors.length})
@@ -252,8 +457,8 @@ export default function CadernoErrosPage() {
             <button
               key={s.id}
               onClick={() => setFilterSubject(s.id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold ${
-                filterSubject === s.id ? 'bg-teal-600 text-white' : 'card-surface'
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold ${
+                filterSubject === s.id ? 'bg-teal-600 text-white shadow-sm' : 'card-surface'
               }`}
             >
               {s.name} ({cnt})
@@ -263,46 +468,94 @@ export default function CadernoErrosPage() {
       </div>
 
       {visibleErrors.length === 0 ? (
-        <div className="card-surface rounded-2xl p-8 text-center text-sm text-muted-theme">
-          Nenhum erro cadastrado ainda. Clique em &ldquo;Novo Erro&rdquo; e cole o print da questão!
+        <div className="card-surface rounded-2xl p-10 text-center space-y-3">
+          <p className="text-sm text-muted-theme">
+            Nenhum erro cadastrado ainda. Clique em &ldquo;Novo Erro&rdquo; e cole o print da questão para digitalizá-la automaticamente!
+          </p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-4">
           {visibleErrors.map((entry) => {
             const sub = subjects.find((s) => s.id === entry.subject_id);
             const imgUrl = entry.image_path ? signedUrls[entry.image_path] : null;
+            const dq = parseDigitizedQuestion(entry.question_text);
+            const picked = selectedByCard[entry.id] || '';
+            const submitted = !!submittedByCard[entry.id];
+            const showPrevWrong = !!showPrevWrongByCard[entry.id];
+            const showOriginalImg = !!showOriginalImgByCard[entry.id];
+            const isDigitizing = aiJobs[`digitize_error:${entry.id}`]?.status === 'running';
+            const isExplaining = aiJobs[`explain_error:${entry.id}`]?.status === 'running';
+            const correctLetter = (entry.correct_answer || '').trim().toUpperCase();
+            const wrongLetter = (entry.user_answer || '').trim().toUpperCase();
 
             return (
-              <div key={entry.id} className="card-surface rounded-2xl p-5 shadow-sm space-y-3">
-                <div className="flex items-center justify-between gap-2">
+              <div key={entry.id} className="card-surface rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between gap-2 flex-wrap border-b border-theme pb-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span
                       className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
-                      style={{ backgroundColor: sub?.color || '#2563eb' }}
+                      style={{ backgroundColor: sub?.color || '#0d9488' }}
                     >
                       {sub?.name}
                     </span>
-                    <span className="text-[11px] px-2 py-0.5 rounded-full subtle-surface">
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full subtle-surface font-medium">
                       {entry.error_cause}
                     </span>
+                    {dq?.header && (
+                      <span className="text-[11px] font-semibold text-muted-theme">
+                        · {dq.header}
+                      </span>
+                    )}
                   </div>
-                  <button
-                    onClick={() => deleteErrorEntry(entry.id)}
-                    className="p-1.5 rounded-lg hover:bg-red-500/15 text-muted-theme hover:text-red-500"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {imgUrl && !dq && (
+                      <button
+                        type="button"
+                        disabled={isDigitizing}
+                        onClick={() => digitizeExistingEntry(entry)}
+                        className="px-3 py-1.5 rounded-xl bg-teal-600/12 text-teal-700 dark:text-teal-300 hover:bg-teal-600 hover:text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        {isDigitizing ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <ScanText className="w-3.5 h-3.5" />
+                        )}
+                        {isDigitizing ? 'Digitalizando...' : 'Digitalizar Foto'}
+                      </button>
+                    )}
+                    {imgUrl && dq && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setShowOriginalImgByCard((prev) => ({
+                            ...prev,
+                            [entry.id]: !showOriginalImg,
+                          }))
+                        }
+                        className="px-2.5 py-1.5 rounded-xl subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)]"
+                      >
+                        {showOriginalImg ? 'Ocultar foto' : 'Ver foto original'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => deleteErrorEntry(entry.id)}
+                      aria-label="Excluir erro"
+                      className="p-1.5 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
-                {imgUrl && (
+                {imgUrl && (!dq || showOriginalImg) && (
                   <div
                     onClick={() => setZoomUrl(imgUrl)}
-                    className="relative cursor-zoom-in rounded-xl overflow-hidden border border-theme bg-black/5"
+                    className="relative cursor-zoom-in rounded-2xl overflow-hidden border border-theme bg-black/5"
                   >
                     <img
                       src={imgUrl}
                       alt="Print da questão"
-                      className="w-full max-h-52 object-contain"
+                      className="w-full max-h-60 object-contain"
                     />
                     <span className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/60 text-white">
                       <ZoomIn className="w-3.5 h-3.5" />
@@ -310,74 +563,203 @@ export default function CadernoErrosPage() {
                   </div>
                 )}
 
-                {entry.question_text && (
-                  <p className="text-xs leading-relaxed whitespace-pre-wrap">
-                    {entry.question_text}
-                  </p>
-                )}
+                {dq ? (
+                  <div className="space-y-4">
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                      {dq.statement}
+                    </p>
 
-                {(entry.user_answer || entry.correct_answer) && (
-                  <div className="flex gap-3 text-xs">
-                    {entry.user_answer && (
-                      <span className="px-2.5 py-1 rounded-lg bg-red-500/10 text-red-500">
-                        Marquei: <strong>{entry.user_answer}</strong>
-                      </span>
-                    )}
-                    {entry.correct_answer && (
-                      <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-600">
-                        Gabarito: <strong>{entry.correct_answer}</strong>
-                      </span>
-                    )}
-                  </div>
-                )}
+                    <div className="space-y-2">
+                      {dq.options.map((opt) => {
+                        const letter = opt.letter.trim().toUpperCase();
+                        const isSelected = picked === letter;
+                        const isRight = submitted && correctLetter && letter === correctLetter;
+                        const isWrongPick =
+                          submitted && isSelected && correctLetter && letter !== correctLetter;
+                        const isPrevWrongHighlight =
+                          showPrevWrong && wrongLetter && letter === wrongLetter;
 
-                {entry.golden_rule && (
-                  <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3 text-xs">
-                    <strong className="text-amber-600">Regra de Ouro:</strong> {entry.golden_rule}
-                  </div>
-                )}
+                        let rowClass =
+                          'border-theme bg-[var(--bg-card)] hover:border-teal-500/60';
+                        let badgeClass =
+                          'subtle-surface text-[var(--text-main)] border border-theme';
 
-                {entry.explanation && (
-                  <div className="rounded-xl subtle-surface p-3 space-y-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
-                        Explicação / Sugestão IA (confirme com o gabarito oficial)
-                      </p>
+                        if (isRight) {
+                          rowClass = 'border-emerald-500 bg-emerald-500/10';
+                          badgeClass = 'bg-emerald-600 text-white border-emerald-600';
+                        } else if (isWrongPick) {
+                          rowClass = 'border-rose-500 bg-rose-500/10';
+                          badgeClass = 'bg-rose-600 text-white border-rose-600';
+                        } else if (isSelected) {
+                          rowClass = 'border-teal-600 bg-teal-600/8';
+                          badgeClass = 'bg-teal-600 text-white border-teal-600';
+                        }
+
+                        return (
+                          <button
+                            key={letter}
+                            type="button"
+                            disabled={submitted}
+                            onClick={() =>
+                              setSelectedByCard((prev) => ({ ...prev, [entry.id]: letter }))
+                            }
+                            className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${rowClass}`}
+                          >
+                            <span
+                              className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 mt-0.5 ${badgeClass}`}
+                            >
+                              {letter}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm leading-relaxed">{opt.text}</p>
+                              {isPrevWrongHighlight && (
+                                <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
+                                  Você marcou esta errado anteriormente
+                                </span>
+                              )}
+                            </div>
+                            {isRight && (
+                              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                            )}
+                            {isWrongPick && (
+                              <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {!submitted ? (
+                          <button
+                            type="button"
+                            disabled={!picked}
+                            onClick={() =>
+                              setSubmittedByCard((prev) => ({ ...prev, [entry.id]: true }))
+                            }
+                            className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-40"
+                          >
+                            Responder
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSubmittedByCard((prev) => ({ ...prev, [entry.id]: false }));
+                              setSelectedByCard((prev) => ({ ...prev, [entry.id]: '' }));
+                            }}
+                            className="px-4 py-2 rounded-xl subtle-surface text-xs font-bold inline-flex items-center gap-1.5"
+                          >
+                            <RotateCw className="w-3.5 h-3.5" />
+                            Refazer questão
+                          </button>
+                        )}
+
+                        {wrongLetter && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowPrevWrongByCard((prev) => ({
+                                ...prev,
+                                [entry.id]: !showPrevWrong,
+                              }))
+                            }
+                            className="px-3 py-2 rounded-xl subtle-surface text-xs font-semibold text-muted-theme hover:text-[var(--text-main)] inline-flex items-center gap-1.5"
+                          >
+                            {showPrevWrong ? (
+                              <EyeOff className="w-3.5 h-3.5" />
+                            ) : (
+                              <Eye className="w-3.5 h-3.5" />
+                            )}
+                            {showPrevWrong
+                              ? `Ocultar erro anterior (${wrongLetter})`
+                              : 'Mostrar o que errei antes'}
+                          </button>
+                        )}
+                      </div>
+
                       <button
                         type="button"
-                        onClick={() => navigator.clipboard?.writeText(entry.explanation)}
-                        className="text-[10px] font-bold text-teal-600 hover:underline"
+                        onClick={() => explainWithGemini(entry)}
+                        disabled={isExplaining}
+                        className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
                       >
-                        Copiar
+                        {isExplaining ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        {isExplaining ? 'Analisando...' : 'Explicar com Gemini'}
                       </button>
                     </div>
-                    <p className="text-xs text-muted-theme leading-relaxed">{entry.explanation}</p>
                   </div>
+                ) : (
+                  entry.question_text && (
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                      {entry.question_text}
+                    </p>
+                  )
                 )}
 
-                <div className="pt-1 flex justify-end">
-                  <button
-                    onClick={() => explainWithGemini(entry)}
-                    disabled={aiJobs[`explain_error:${entry.id}`]?.status === 'running'}
-                    className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
-                  >
-                    {aiJobs[`explain_error:${entry.id}`]?.status === 'running' ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-3.5 h-3.5" />
+                {(!dq || submitted) && (
+                  <div className="space-y-3 animate-fade-in-up">
+                    {entry.golden_rule && (
+                      <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-3.5 text-xs">
+                        <strong className="text-amber-700 dark:text-amber-300">
+                          Regra de Ouro:
+                        </strong>{' '}
+                        {entry.golden_rule}
+                      </div>
                     )}
-                    {aiJobs[`explain_error:${entry.id}`]?.status === 'running'
-                      ? 'Analisando com Gemini...'
-                      : 'Explicar com Gemini'}
-                  </button>
-                </div>
+
+                    {entry.explanation && (
+                      <div className="rounded-2xl subtle-surface p-4 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
+                            Explicação / Sugestão IA
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard?.writeText(entry.explanation);
+                              notify('Explicação copiada!');
+                            }}
+                            className="text-[10px] font-bold text-teal-600 hover:underline"
+                          >
+                            Copiar
+                          </button>
+                        </div>
+                        <p className="text-xs text-muted-theme leading-relaxed">
+                          {entry.explanation}
+                        </p>
+                      </div>
+                    )}
+
+                    {!dq && (
+                      <div className="flex justify-end">
+                        <button
+                          onClick={() => explainWithGemini(entry)}
+                          disabled={isExplaining}
+                          className="px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+                        >
+                          {isExplaining ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-3.5 h-3.5" />
+                          )}
+                          {isExplaining ? 'Analisando...' : 'Explicar com Gemini'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
-      {/* Zoom Modal */}
       {zoomUrl && (
         <div
           onClick={() => setZoomUrl(null)}
@@ -387,13 +769,12 @@ export default function CadernoErrosPage() {
         </div>
       )}
 
-      {/* Add Error Modal */}
       {showAdd && (
         <div
           onPaste={handlePaste}
           className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4 overflow-y-auto"
         >
-          <div className="card-surface w-full max-w-lg rounded-3xl p-6 my-8 shadow-2xl animate-pop-in">
+          <div className="card-surface w-full max-w-xl rounded-3xl p-6 my-8 shadow-2xl animate-pop-in">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-lg">Adicionar ao Caderno de Erros</h2>
               <button onClick={() => setShowAdd(false)} className="p-2 rounded-xl subtle-surface">
@@ -404,7 +785,9 @@ export default function CadernoErrosPage() {
             <form onSubmit={handleSaveError} className="space-y-3.5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs text-muted-theme mb-1">Matéria</label>
+                  <label className="block text-xs font-semibold text-muted-theme mb-1">
+                    Matéria
+                  </label>
                   <select
                     value={subjectId || subjects[0]?.id || ''}
                     onChange={(e) => {
@@ -421,7 +804,9 @@ export default function CadernoErrosPage() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs text-muted-theme mb-1">Causa do Erro</label>
+                  <label className="block text-xs font-semibold text-muted-theme mb-1">
+                    Causa do Erro
+                  </label>
                   <select
                     value={errorCause}
                     onChange={(e) => setErrorCause(e.target.value)}
@@ -434,63 +819,96 @@ export default function CadernoErrosPage() {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-dashed border-blue-500/40 p-4 text-center">
+              <div className="rounded-2xl border border-dashed border-teal-500/45 p-4 text-center space-y-2">
                 {previewUrl ? (
                   <img
                     src={previewUrl}
                     alt="Preview"
-                    className="max-h-40 mx-auto rounded-xl mb-2"
+                    className="max-h-36 mx-auto rounded-xl"
                   />
                 ) : (
-                  <ImageIcon className="w-7 h-7 mx-auto mb-1 text-blue-500 opacity-70" />
+                  <ImageIcon className="w-7 h-7 mx-auto text-teal-600 opacity-75" />
                 )}
-                <p className="text-xs text-muted-theme mb-2">
-                  Aperte <strong>Ctrl+V</strong> para colar o print ou selecione abaixo:
-                </p>
-                <label className="cursor-pointer inline-block px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold">
-                  Escolher Imagem
+                {digitizingUpload ? (
+                  <p className="text-xs font-bold text-violet-600 inline-flex items-center gap-1.5">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Gemini está digitalizando o enunciado e as alternativas da foto...
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-theme">
+                    Aperte <strong>Ctrl+V</strong> ou envie uma foto — o Gemini digitaliza a questão e as opções automaticamente!
+                  </p>
+                )}
+                <label className="cursor-pointer inline-block px-3.5 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold">
+                  Escolher Foto / Print
                   <input
                     type="file"
                     accept="image/*"
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
-                      if (f) {
-                        setImageFile(f);
-                        setPreviewUrl(URL.createObjectURL(f));
-                      }
+                      if (f) autoDigitizeFile(f);
                     }}
                   />
                 </label>
               </div>
 
-              <textarea
-                rows={3}
-                value={questionText}
-                onChange={(e) => setQuestionText(e.target.value)}
-                placeholder="Texto da questão (opcional se anexou print)..."
-                className="w-full rounded-xl subtle-surface border border-theme p-3 text-xs"
-              />
+              {digitizedDraft ? (
+                <div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/30 p-3.5 space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-emerald-700 dark:text-emerald-300 inline-flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4" />
+                      Questão digitalizada ({digitizedDraft.options.length} alternativas)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setDigitizedDraft(null)}
+                      className="text-muted-theme hover:underline"
+                    >
+                      Editar texto livre
+                    </button>
+                  </div>
+                  <p className="line-clamp-3 font-medium">{digitizedDraft.statement}</p>
+                </div>
+              ) : (
+                <textarea
+                  rows={3}
+                  value={questionText}
+                  onChange={(e) => setQuestionText(e.target.value)}
+                  placeholder="Texto da questão (ou cole uma foto acima para extrair automaticamente)..."
+                  className="w-full rounded-xl subtle-surface border border-theme p-3 text-xs"
+                />
+              )}
 
               <div className="grid grid-cols-2 gap-3">
-                <input
-                  value={userAnswer}
-                  onChange={(e) => setUserAnswer(e.target.value)}
-                  placeholder="O que eu marquei (ex: B)"
-                  className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
-                />
-                <input
-                  value={correctAnswer}
-                  onChange={(e) => setCorrectAnswer(e.target.value)}
-                  placeholder="Gabarito (ex: D)"
-                  className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
-                />
+                <div>
+                  <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                    Alternativa que errei
+                  </label>
+                  <input
+                    value={userAnswer}
+                    onChange={(e) => setUserAnswer(e.target.value)}
+                    placeholder="Ex: C"
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                    Gabarito correto
+                  </label>
+                  <input
+                    value={correctAnswer}
+                    onChange={(e) => setCorrectAnswer(e.target.value)}
+                    placeholder="Ex: E"
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                  />
+                </div>
               </div>
 
               <input
                 value={goldenRule}
                 onChange={(e) => setGoldenRule(e.target.value)}
-                placeholder="Regra de Ouro (pode deixar em branco e pedir ao Gemini depois)"
+                placeholder="Regra de Ouro (preenchida automaticamente ao digitalizar a foto)"
                 className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
               />
 
@@ -498,16 +916,16 @@ export default function CadernoErrosPage() {
                 <button
                   type="button"
                   onClick={() => setShowAdd(false)}
-                  className="px-4 py-2 rounded-xl subtle-surface text-xs"
+                  className="px-4 py-2 rounded-xl subtle-surface text-xs font-semibold"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
-                  className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
+                  disabled={saving || digitizingUpload}
+                  className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
                 >
-                  {saving ? 'Salvando...' : 'Salvar Erro'}
+                  {saving ? 'Salvando...' : 'Salvar Questão'}
                 </button>
               </div>
             </form>
@@ -515,83 +933,211 @@ export default function CadernoErrosPage() {
         </div>
       )}
 
-      {/* Flashcards Modal */}
-      {flashcardMode && visibleErrors[fcIndex] && (
-        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
-          <div className="card-surface w-full max-w-xl rounded-3xl p-6 space-y-4 animate-pop-in">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-amber-500">
-                Flashcard {fcIndex + 1} de {visibleErrors.length}
-              </span>
+      {drillOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="card-surface w-full max-w-2xl rounded-3xl p-6 my-8 space-y-5 shadow-2xl animate-pop-in">
+            <div className="flex items-center justify-between gap-2 border-b border-theme pb-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-teal-600 truncate">{drillTitle}</p>
+                {!drillFinished && currentDrillItem && (
+                  <p className="text-xs text-muted-theme mt-0.5">
+                    Questão {drillIdx + 1} de {drillQueue.length} ·{' '}
+                    <span className="text-emerald-600 font-bold">{drillHits} acerto(s)</span> ·{' '}
+                    <span className="text-rose-600 font-bold">{drillMisses} erro(s)</span>
+                  </p>
+                )}
+              </div>
               <button
-                onClick={() => setFlashcardMode(false)}
-                className="p-2 rounded-xl subtle-surface"
+                onClick={() => setDrillOpen(false)}
+                className="p-2 rounded-xl subtle-surface shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {visibleErrors[fcIndex].image_path &&
-              signedUrls[visibleErrors[fcIndex].image_path!] && (
-                <img
-                  src={signedUrls[visibleErrors[fcIndex].image_path!]}
-                  alt="Questão"
-                  className="w-full max-h-60 object-contain rounded-xl bg-black/10"
-                />
-              )}
-
-            {visibleErrors[fcIndex].question_text && (
-              <p className="text-sm">{visibleErrors[fcIndex].question_text}</p>
-            )}
-
-            {fcRevealed ? (
-              <div className="subtle-surface rounded-2xl p-4 space-y-2 text-xs">
-                <p>
-                  <strong>Gabarito:</strong> {visibleErrors[fcIndex].correct_answer || '—'}
+            {drillFinished || !currentDrillItem ? (
+              <div className="text-center py-8 space-y-4">
+                <Zap className="w-10 h-10 mx-auto text-teal-600" />
+                <h3 className="text-xl font-extrabold">Bateria finalizada!</h3>
+                <p className="text-sm text-muted-theme">
+                  Você acertou <strong className="text-emerald-600">{drillHits}</strong> de{' '}
+                  <strong>{drillQueue.length}</strong> questões nesta rodada.
                 </p>
-                {visibleErrors[fcIndex].golden_rule && (
-                  <p className="text-amber-600 font-semibold">
-                    Regra de Ouro: {visibleErrors[fcIndex].golden_rule}
-                  </p>
-                )}
-                {visibleErrors[fcIndex].explanation && (
-                  <p className="text-muted-theme">{visibleErrors[fcIndex].explanation}</p>
-                )}
+                <button
+                  onClick={() => setDrillOpen(false)}
+                  className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+                >
+                  Voltar ao Caderno de Erros
+                </button>
               </div>
             ) : (
-              <button
-                onClick={() => setFcRevealed(true)}
-                className="w-full py-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-2"
-              >
-                <RotateCw className="w-4 h-4" />
-                Mostrar Resposta e Regra de Ouro
-              </button>
-            )}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {currentDrillSub && (
+                    <span
+                      className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
+                      style={{ backgroundColor: currentDrillSub.color }}
+                    >
+                      {currentDrillSub.name}
+                    </span>
+                  )}
+                  {currentDrillDQ?.header && (
+                    <span className="text-xs text-muted-theme font-semibold">
+                      {currentDrillDQ.header}
+                    </span>
+                  )}
+                </div>
 
-            <div className="flex justify-between pt-2">
-              <button
-                onClick={() => {
-                  setFcRevealed(false);
-                  setFcIndex((prev) => (prev - 1 + visibleErrors.length) % visibleErrors.length);
-                }}
-                className="px-4 py-2 rounded-xl subtle-surface text-xs font-semibold"
-              >
-                Anterior
-              </button>
-              <button
-                onClick={async () => {
-                  await updateErrorEntry(visibleErrors[fcIndex].id, {
-                    review_count: visibleErrors[fcIndex].review_count + 1,
-                    last_reviewed_at: new Date().toISOString(),
-                  });
-                  setFcRevealed(false);
-                  setFcIndex((prev) => (prev + 1) % visibleErrors.length);
-                }}
-                className="px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-semibold"
-              >
-                Dominei · Próxima
-              </button>
-            </div>
+                {currentDrillDQ ? (
+                  <>
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                      {currentDrillDQ.statement}
+                    </p>
+                    <div className="space-y-2">
+                      {currentDrillDQ.options.map((opt) => {
+                        const letter = opt.letter.trim().toUpperCase();
+                        const rightLetter = (currentDrillItem.correct_answer || '')
+                          .trim()
+                          .toUpperCase();
+                        const prevWrong = (currentDrillItem.user_answer || '').trim().toUpperCase();
+                        const isSelected = drillPicked === letter;
+                        const isRight = drillAnswered && rightLetter && letter === rightLetter;
+                        const isWrong =
+                          drillAnswered && isSelected && rightLetter && letter !== rightLetter;
+
+                        let cls = 'border-theme bg-[var(--bg-card)] hover:border-teal-500/60';
+                        let bdg = 'subtle-surface border border-theme';
+                        if (isRight) {
+                          cls = 'border-emerald-500 bg-emerald-500/10';
+                          bdg = 'bg-emerald-600 text-white border-emerald-600';
+                        } else if (isWrong) {
+                          cls = 'border-rose-500 bg-rose-500/10';
+                          bdg = 'bg-rose-600 text-white border-rose-600';
+                        } else if (isSelected) {
+                          cls = 'border-teal-600 bg-teal-600/8';
+                          bdg = 'bg-teal-600 text-white border-teal-600';
+                        }
+
+                        return (
+                          <button
+                            key={letter}
+                            type="button"
+                            disabled={drillAnswered}
+                            onClick={() => setDrillPicked(letter)}
+                            className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${cls}`}
+                          >
+                            <span
+                              className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${bdg}`}
+                            >
+                              {letter}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm leading-relaxed">{opt.text}</p>
+                              {drillShowPrevWrong && prevWrong === letter && (
+                                <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
+                                  Resposta que você marcou errado antes
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {currentDrillItem.image_path && signedUrls[currentDrillItem.image_path] && (
+                      <img
+                        src={signedUrls[currentDrillItem.image_path]}
+                        alt="Questão"
+                        className="w-full max-h-60 object-contain rounded-xl bg-black/5"
+                      />
+                    )}
+                    {currentDrillItem.question_text && (
+                      <p className="text-sm whitespace-pre-wrap">{currentDrillItem.question_text}</p>
+                    )}
+                  </>
+                )}
+
+                {drillAnswered && (
+                  <div className="space-y-2.5 animate-fade-in-up">
+                    {currentDrillItem.golden_rule && (
+                      <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 p-3 text-xs">
+                        <strong className="text-amber-700 dark:text-amber-300">
+                          Regra de Ouro:
+                        </strong>{' '}
+                        {currentDrillItem.golden_rule}
+                      </div>
+                    )}
+                    {currentDrillItem.explanation && (
+                      <div className="rounded-xl subtle-surface p-3.5 text-xs text-muted-theme leading-relaxed">
+                        {currentDrillItem.explanation}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-theme flex-wrap">
+                  {currentDrillItem.user_answer ? (
+                    <button
+                      type="button"
+                      onClick={() => setDrillShowPrevWrong((v) => !v)}
+                      className="px-3 py-2 rounded-xl subtle-surface text-xs font-semibold text-muted-theme inline-flex items-center gap-1.5"
+                    >
+                      {drillShowPrevWrong ? (
+                        <EyeOff className="w-3.5 h-3.5" />
+                      ) : (
+                        <Eye className="w-3.5 h-3.5" />
+                      )}
+                      {drillShowPrevWrong
+                        ? `Erro anterior: ${currentDrillItem.user_answer}`
+                        : 'Mostrar o que errei antes'}
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+
+                  {!drillAnswered ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(currentDrillDQ && !drillPicked)}
+                      onClick={async () => {
+                        const right = (currentDrillItem.correct_answer || '').trim().toUpperCase();
+                        const hit = currentDrillDQ ? drillPicked === right : true;
+                        if (hit) setDrillHits((h) => h + 1);
+                        else setDrillMisses((m) => m + 1);
+                        setDrillAnswered(true);
+                        await updateErrorEntry(currentDrillItem.id, {
+                          review_count: currentDrillItem.review_count + 1,
+                          last_reviewed_at: new Date().toISOString(),
+                        });
+                      }}
+                      className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-40"
+                    >
+                      {currentDrillDQ ? 'Responder' : 'Mostrar Gabarito'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (drillIdx + 1 >= drillQueue.length) {
+                          setDrillFinished(true);
+                        } else {
+                          setDrillIdx((i) => i + 1);
+                          setDrillPicked('');
+                          setDrillAnswered(false);
+                          setDrillShowPrevWrong(false);
+                        }
+                      }}
+                      className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                    >
+                      {drillIdx + 1 >= drillQueue.length ? 'Finalizar Bateria' : 'Próxima Questão'}
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

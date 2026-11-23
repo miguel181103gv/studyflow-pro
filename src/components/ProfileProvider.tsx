@@ -57,11 +57,14 @@ interface ProfileContextValue {
   updateProfile: (patch: Partial<Profile>) => Promise<void>;
   addSubject: (name: string, category?: string) => Promise<Subject | null>;
   updateSubject: (id: string, patch: Partial<Subject>) => Promise<void>;
+  deleteSubject: (id: string) => Promise<void>;
   reorderSubject: (id: string, direction: 'up' | 'down') => Promise<void>;
   moveSubject: (sourceId: string, targetId: string) => Promise<void>;
   setSubjectOrder: (orderedIds: string[]) => Promise<void>;
   addTopic: (subjectId: string, title: string) => Promise<void>;
   addTopicsBatch: (subjectId: string, titles: string[]) => Promise<void>;
+  updateTopicTitle: (topicId: string, title: string) => Promise<void>;
+  deleteTopic: (topicId: string) => Promise<void>;
   toggleTopicStudied: (topic: Topic) => Promise<void>;
   toggleSubjectStudied: (subjectId: string, markAll: boolean) => Promise<void>;
   toggleTopicPriority: (topic: Topic) => Promise<void>;
@@ -641,6 +644,42 @@ export function ProfileProvider({
     });
   };
 
+  const deleteSubject = async (id: string) => {
+    setSubjects((prev) => prev.filter((s) => s.id !== id));
+    setTopics((prev) => prev.filter((t) => t.subject_id !== id));
+    setReviews((prev) => prev.filter((r) => r.subject_id !== id));
+    setFlashcards((prev) => prev.filter((c) => c.subject_id !== id));
+    setErrors((prev) => prev.filter((e) => e.subject_id !== id));
+    setStudyLogs((prev) => prev.filter((l) => l.subject_id !== id));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('subjects').delete().eq('id', id);
+      notify('Matéria removida.', 'info');
+    });
+  };
+
+  const updateTopicTitle = async (topicId: string, title: string) => {
+    const clean = title.trim();
+    if (!clean) return;
+    setTopics((prev) => prev.map((t) => (t.id === topicId ? { ...t, title: clean } : t)));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('topics').update({ title: clean }).eq('id', topicId);
+      notify('Tópico atualizado!', 'success');
+    });
+  };
+
+  const deleteTopic = async (topicId: string) => {
+    setTopics((prev) => prev.filter((t) => t.id !== topicId));
+    setReviews((prev) => prev.filter((r) => r.topic_id !== topicId));
+    setHighlights((prev) => prev.filter((h) => h.topic_id !== topicId));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('topics').delete().eq('id', topicId);
+      notify('Tópico removido.', 'info');
+    });
+  };
+
   const updateTopicPdf = async (topicId: string, pdfPath: string, pdfName: string) => {
     setTopics((prev) =>
       prev.map((t) => (t.id === topicId ? { ...t, pdf_path: pdfPath, pdf_name: pdfName } : t))
@@ -966,11 +1005,14 @@ export function ProfileProvider({
         updateProfile,
         addSubject,
         updateSubject,
+        deleteSubject,
         reorderSubject,
         moveSubject,
         setSubjectOrder,
         addTopic,
         addTopicsBatch,
+        updateTopicTitle,
+        deleteTopic,
         toggleTopicStudied,
         toggleSubjectStudied,
         toggleTopicPriority,
