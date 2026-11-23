@@ -56,7 +56,7 @@ interface ProfileContextValue {
 
   // Actions (all auto-sync to Supabase)
   updateProfile: (patch: Partial<Profile>) => Promise<void>;
-  addSubject: (name: string, category?: string) => Promise<Subject | null>;
+  addSubject: (name: string, category?: string, customColor?: string) => Promise<Subject | null>;
   updateSubject: (id: string, patch: Partial<Subject>) => Promise<void>;
   deleteSubject: (id: string) => Promise<void>;
   reorderSubject: (id: string, direction: 'up' | 'down') => Promise<void>;
@@ -354,8 +354,17 @@ export function ProfileProvider({
     });
   };
 
-  const addSubject = async (name: string, category = 'Personalizada'): Promise<Subject | null> => {
+  const addSubject = async (
+    name: string,
+    category = 'Personalizada',
+    customColor?: string
+  ): Promise<Subject | null> => {
     if (!userId || !name.trim()) return null;
+    const usedColors = new Set(subjects.map((s) => (s.color || '').toLowerCase()));
+    const autoDistinct =
+      SUBJECT_COLORS.find((c) => !usedColors.has(c.toLowerCase())) ||
+      SUBJECT_COLORS[subjects.length % SUBJECT_COLORS.length];
+    const finalColor = customColor && /^#[0-9a-fA-F]{6}$/.test(customColor) ? customColor : autoDistinct;
     return withSync(async () => {
       const supabase = createClient();
       const { data } = await supabase
@@ -365,7 +374,7 @@ export function ProfileProvider({
           profile_id: profileId,
           name: name.trim(),
           category,
-          color: SUBJECT_COLORS[subjects.length % SUBJECT_COLORS.length],
+          color: finalColor,
           cycle_hours: 1,
           cycle_minutes: 30,
           cycle_order: subjects.length,

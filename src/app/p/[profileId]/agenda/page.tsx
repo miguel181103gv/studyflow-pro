@@ -44,6 +44,7 @@ interface ScheduledBlock {
   minutes: number;
   done: boolean;
   overdue: boolean;
+  plannedTopics?: string[];
 }
 
 interface ClassSlot {
@@ -149,25 +150,36 @@ function startOfWeekMonday(iso: string) {
   return toISO(d);
 }
 
+function isMainTopicTitle(title: string): boolean {
+  return !title.trim().startsWith('↳');
+}
+
 function estimateFinishDate(
   startDate: string,
-  remainingTopics: number,
+  remainingMainTopics: number,
   dailyHoursByDow: Record<number, number>,
-  dailyReviewMinutes = 0
+  dailyReviewMinutes = 0,
+  subjectsPerDay = 0,
+  blockMinutes = 90
 ): string {
-  const reviewHours = (Number(dailyReviewMinutes) || 0) / 60;
-  const weeklyNetHours = Object.values(dailyHoursByDow).reduce((a, b) => {
-    const h = Number(b) || 0;
-    return a + (h > 0 ? Math.max(0.5, h - reviewHours) : 0);
-  }, 0);
-  if (weeklyNetHours <= 0) return addDaysISO(startDate, 90);
-  let neededHours = Math.max(remainingTopics * 1.5, weeklyNetHours);
+  // Cada sessão de estudo cobre 2 tópicos principais (sem contar subtópicos)
+  let sessionsNeeded = Math.max(1, Math.ceil(Math.max(0, remainingMainTopics) / 2));
+  const hasAnyStudyDay = Object.values(dailyHoursByDow).some((h) => Number(h) > 0);
+  if (!hasAnyStudyDay) return addDaysISO(startDate, 90);
+
   let d = startDate;
-  for (let i = 0; i < 730 && neededHours > 0; i++) {
+  for (let i = 0; i < 1095 && sessionsNeeded > 0; i++) {
     const dow = parseISO(d).getDay();
     const h = Number(dailyHoursByDow[dow] || 0);
-    if (h > 0) neededHours -= Math.max(0.5, h - reviewHours);
-    if (neededHours > 0) d = addDaysISO(d, 1);
+    if (h > 0) {
+      const netMin = Math.max(30, h * 60 - (Number(dailyReviewMinutes) || 0));
+      const sessionsToday =
+        subjectsPerDay > 0
+          ? subjectsPerDay
+          : Math.max(1, Math.round(netMin / (blockMinutes || 90)));
+      sessionsNeeded -= sessionsToday;
+    }
+    if (sessionsNeeded > 0) d = addDaysISO(d, 1);
   }
   return d;
 }
@@ -347,10 +359,20 @@ export default function AgendaPage() {
 
   async function finishWizard() {
     if (wizSubjectIds.length === 0) return;
-    const remainingTopics = topics.filter(
-      (t) => wizSubjectIds.includes(t.subject_id) && !t.studied
+    const remainingMainTopics = topics.filter(
+      (t) =>
+        wizSubjectIds.includes(t.subject_id) &&
+        !t.studied &&
+        isMainTopicTitle(t.title)
     ).length;
-    const estEnd = estimateFinishDate(wizStartDate, remainingTopics, wizDailyHours, wizReviewMin);
+    const estEnd = estimateFinishDate(
+      wizStartDate,
+      remainingMainTopics,
+      wizDailyHours,
+      wizReviewMin,
+      wizSubjectsPerDay,
+      wizBlockMin
+    );
 
     if (editingPlanId) {
       const nextPlans = store.plans.map((p) =>
@@ -425,7 +447,7 @@ export default function AgendaPage() {
 
   // Gera blocos SOMENTE se existir um cronograma ativo!
   // Sincroniza automaticamente com o Ciclo de Estudos (quem estudou no Ciclo já aparece como concluído na Agenda!)
-  const scheduledBlocks: ScheduledBlock[] = useMemo(() => {
+  const rawScheduledBlocks: ScheduledBlock[] = useMemo(() => {
     if (!activePlan) return [];
     const orderedSubjects = activePlan.followCycle
       ? subjects
@@ -575,6 +597,56 @@ export default function AgendaPage() {
     }
     return out;
   }, [activePlan, subjects, today, loggedByDateSubject]);
+
+  // Atribui ao vivo os próximos 2 tópicos principais não estudados para cada sessão pendente da Agenda
+  const scheduledBlocks: ScheduledBlock[] = useMemo(() => {
+    const unstudiedBySub: Record<string, string[]> = {};
+    for (const t of topics) {
+      if (!t.studied && isMainTopicTitle(t.title)) {
+        if (!unstudiedBySub[t.subject_id]) unstudiedBySub[t.subject_id] = [];
+        unstudiedBySub[t.subject_id].push(t.title);
+      }
+    }
+    const cursorBySub: Record<string, number> = {};
+    const sorted = [...rawScheduledBlocks].sort((a, b) => a.date.localeCompare(b.date));
+    const plannedMap = new Map<string, string[]>();
+
+    for (const blk of sorted) {
+      if (blk.done || blk.date < today) continue;
+      const list = unstudiedBySub[blk.subjectId] || [];
+      const cur = cursorBySub[blk.subjectId] || 0;
+      const slice = list.slice(cur, cur + 2);
+      if (slice.length > 0) {
+        plannedMap.set(blk.id, slice);
+        cursorBySub[blk.subjectId] = cur + slice.length;
+      }
+    }
+
+    return rawScheduledBlocks.map((b) => ({
+      ...b,
+      plannedTopics: plannedMap.get(b.id) || [],
+    }));
+  }, [rawScheduledBlocks, topics, today]);
+
+  const liveEstimatedInfo = useMemo(() => {
+    if (!activePlan) return null;
+    const targetSubIds = activePlan.followCycle
+      ? subjects.map((s) => s.id)
+      : activePlan.subjectIds;
+    const remainingMain = topics.filter(
+      (t) => targetSubIds.includes(t.subject_id) && !t.studied && isMainTopicTitle(t.title)
+    ).length;
+    const sessionsNeeded = Math.ceil(remainingMain / 2);
+    const estDate = estimateFinishDate(
+      today,
+      remainingMain,
+      activePlan.dailyHoursByDow,
+      activePlan.dailyReviewMinutes || 0,
+      activePlan.subjectsPerDay || 0,
+      activePlan.blockMinutes || 90
+    );
+    return { remainingMain, sessionsNeeded, estDate };
+  }, [activePlan, subjects, topics, today]);
 
   const overdueBlocks = scheduledBlocks.filter((b) => b.overdue);
   const todayPendingBlocks = scheduledBlocks.filter((b) => b.date === today && !b.done);
@@ -1399,11 +1471,22 @@ export default function AgendaPage() {
                       Passar {todayPendingBlocks.length} pendente{todayPendingBlocks.length > 1 ? 's' : ''} de hoje p/ amanhã
                     </button>
                   )}
-                  <span>
+                  <span
+                    title={
+                      liveEstimatedInfo
+                        ? `${liveEstimatedInfo.remainingMain} tópicos principais pendentes (sem subtópicos) ≈ ${liveEstimatedInfo.sessionsNeeded} sessões (2 tópicos/sessão)`
+                        : undefined
+                    }
+                  >
                     Término estimado:{' '}
                     <strong className="text-teal-700 dark:text-teal-300">
-                      {formatDateBR(activePlan.estimatedEndDate)}
+                      {formatDateBR(liveEstimatedInfo?.estDate || activePlan.estimatedEndDate)}
                     </strong>
+                    {liveEstimatedInfo && (
+                      <span className="ml-1 text-[11px] opacity-80">
+                        ({liveEstimatedInfo.remainingMain} tópicos · {liveEstimatedInfo.sessionsNeeded} sessões)
+                      </span>
+                    )}
                   </span>
                 </div>
               </div>
@@ -1429,9 +1512,22 @@ export default function AgendaPage() {
                           {m > 0 ? ` ${m}min` : ''})
                         </span>
                       </p>
-                      <p className="text-[11px] text-muted-theme">
-                        Apenas uma sugestão na ordem — você pode iniciar agora ou escolher outra matéria se preferir.
-                      </p>
+                      {nextTodayBlock.plannedTopics && nextTodayBlock.plannedTopics.length > 0 ? (
+                        <div className="mt-1.5 space-y-0.5">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
+                            Tópicos previstos para esta sessão (2 por sessão):
+                          </p>
+                          {nextTodayBlock.plannedTopics.map((tp, idx) => (
+                            <p key={idx} className="text-xs font-medium text-[var(--text-main)] truncate">
+                              • {tp}
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-muted-theme">
+                          Apenas uma sugestão na ordem — você pode iniciar agora ou escolher outra matéria se preferir.
+                        </p>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1561,6 +1657,19 @@ export default function AgendaPage() {
                                     ? `${Math.floor(b.minutes / 60)}h${b.minutes % 60 > 0 ? ` ${b.minutes % 60}m` : ''}`
                                     : `${b.minutes} min`}
                                 </p>
+                                {!b.done && b.plannedTopics && b.plannedTopics.length > 0 && (
+                                  <div className="space-y-0.5 pt-0.5 border-t border-theme/50">
+                                    {b.plannedTopics.map((tp, tIdx) => (
+                                      <p
+                                        key={tIdx}
+                                        title={tp}
+                                        className="text-[10px] leading-tight text-muted-theme line-clamp-1"
+                                      >
+                                        • {tp}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
                                 <div className="flex items-center gap-1 pt-0.5">
                                   <button
                                     type="button"
@@ -2242,24 +2351,34 @@ export default function AgendaPage() {
                     className={inputClass}
                   />
                 </div>
-                <div className="rounded-2xl bg-teal-600/10 border border-teal-500/30 p-4 text-xs space-y-1">
-                  <p className="font-bold text-teal-700 dark:text-teal-300">
-                    Previsão estimada de término:{' '}
-                    {formatDateBR(
-                      estimateFinishDate(
-                        wizStartDate,
-                        topics.filter(
-                          (t) => wizSubjectIds.includes(t.subject_id) && !t.studied
-                        ).length,
-                        wizDailyHours,
-                        wizReviewMin
-                      )
-                    )}
-                  </p>
-                  <p className="text-muted-theme">
-                    Calculado com base nos tópicos pendentes das {wizSubjectIds.length} matérias selecionadas e na sua carga horária semanal.
-                  </p>
-                </div>
+                {(() => {
+                  const mainPending = topics.filter(
+                    (t) =>
+                      wizSubjectIds.includes(t.subject_id) &&
+                      !t.studied &&
+                      isMainTopicTitle(t.title)
+                  ).length;
+                  const sessionsEst = Math.ceil(mainPending / 2);
+                  const dateEst = estimateFinishDate(
+                    wizStartDate,
+                    mainPending,
+                    wizDailyHours,
+                    wizReviewMin,
+                    wizSubjectsPerDay,
+                    wizBlockMin
+                  );
+                  return (
+                    <div className="rounded-2xl bg-teal-600/10 border border-teal-500/30 p-4 text-xs space-y-1">
+                      <p className="font-bold text-teal-700 dark:text-teal-300">
+                        Previsão estimada de término: {formatDateBR(dateEst)}
+                      </p>
+                      <p className="text-muted-theme">
+                        Baseado em <strong>{mainPending} tópicos principais</strong> pendentes (sem contar subtópicos) ≈{' '}
+                        <strong>{sessionsEst} sessões</strong> (2 tópicos por sessão).
+                      </p>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 

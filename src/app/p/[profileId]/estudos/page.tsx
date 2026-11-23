@@ -18,6 +18,7 @@ import {
   X,
   Search,
   SmilePlus,
+  GripVertical,
   Plus,
   Pencil,
   Trash2,
@@ -177,6 +178,33 @@ function parseTopicList(raw: string): string[] {
     .filter((item) => item.length > 0);
 }
 
+const SUBJECT_COLOR_PALETTE = [
+  '#0d9488', // Teal
+  '#2563eb', // Azul
+  '#7c3aed', // Roxo
+  '#db2777', // Rosa
+  '#dc2626', // Vermelho
+  '#ea580c', // Laranja
+  '#d97706', // Âmbar
+  '#16a34a', // Verde
+  '#0284c7', // Azul Celeste
+  '#4f46e5', // Índigo
+  '#9333ea', // Violeta
+  '#e11d48', // Carmim
+  '#059669', // Esmeralda
+  '#ca8a04', // Dourado
+  '#0891b2', // Ciano
+  '#475569', // Ardósia
+];
+
+function pickDistinctSubjectColor(existing: { color?: string | null }[]): string {
+  const used = new Set(existing.map((s) => (s.color || '').toLowerCase()));
+  return (
+    SUBJECT_COLOR_PALETTE.find((c) => !used.has(c.toLowerCase())) ||
+    SUBJECT_COLOR_PALETTE[existing.length % SUBJECT_COLOR_PALETTE.length]
+  );
+}
+
 export default function ProgressoEditalPage() {
   const {
     userId,
@@ -189,6 +217,7 @@ export default function ProgressoEditalPage() {
     theme,
     addSubject,
     updateSubject,
+    moveSubject,
     addTopic,
     addTopicsBatch,
     updateTopicTitle,
@@ -217,7 +246,11 @@ export default function ProgressoEditalPage() {
   // Adicionar / Editar / Remover Matéria e Tópicos
   const [showNewSubject, setShowNewSubject] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
+  const [newSubjectColor, setNewSubjectColor] = useState('#0d9488');
+  const [editSubjectColor, setEditSubjectColor] = useState('#0d9488');
   const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
+  const [draggedSubId, setDraggedSubId] = useState<string | null>(null);
+  const [dragOverSubId, setDragOverSubId] = useState<string | null>(null);
   const [editSubjectName, setEditSubjectName] = useState('');
 
   const [addingTopicForSub, setAddingTopicForSub] = useState<string | null>(null);
@@ -821,7 +854,12 @@ export default function ProgressoEditalPage() {
           </button>
           <button
             type="button"
-            onClick={() => setShowNewSubject((v) => !v)}
+            onClick={() => {
+              if (!showNewSubject) {
+                setNewSubjectColor(pickDistinctSubjectColor(subjects));
+              }
+              setShowNewSubject((v) => !v);
+            }}
             className="px-4 py-2 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
           >
             <Plus className="w-4 h-4" />
@@ -848,37 +886,75 @@ export default function ProgressoEditalPage() {
           onSubmit={async (e) => {
             e.preventDefault();
             if (!newSubjectName.trim()) return;
-            const created = await addSubject(newSubjectName.trim());
+            const created = await addSubject(newSubjectName.trim(), 'Personalizada', newSubjectColor);
             if (created) {
               setOpenSubjects((prev) => ({ ...prev, [created.id]: true }));
             }
             setNewSubjectName('');
             setShowNewSubject(false);
           }}
-          className="card-surface rounded-2xl p-4 flex flex-col sm:flex-row gap-2.5 animate-fade-in-up"
+          className="card-surface rounded-2xl p-4 space-y-3 animate-fade-in-up"
         >
-          <input
-            autoFocus
-            value={newSubjectName}
-            onChange={(e) => setNewSubjectName(e.target.value)}
-            placeholder="Nome da nova matéria ou disciplina..."
-            className="flex-1 rounded-xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-          />
-          <div className="flex gap-2">
-            <button
-              type="submit"
-              className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+          <div className="flex flex-col sm:flex-row gap-2.5">
+            <div className="flex items-center gap-2.5 flex-1">
+              <span
+                className="w-5 h-5 rounded-full shrink-0 border border-black/15 shadow-xs"
+                style={{ backgroundColor: newSubjectColor }}
+              />
+              <input
+                autoFocus
+                value={newSubjectName}
+                onChange={(e) => setNewSubjectName(e.target.value)}
+                placeholder="Nome da nova matéria ou disciplina..."
+                className="flex-1 rounded-xl subtle-surface border border-theme px-4 py-2.5 text-sm"
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+              >
+                <Check className="w-4 h-4" />
+                Salvar matéria
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNewSubject(false)}
+                className="px-3.5 py-2.5 rounded-xl subtle-surface text-xs font-semibold"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            <span className="text-[11px] font-bold text-muted-theme">Cor da matéria:</span>
+            {SUBJECT_COLOR_PALETTE.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setNewSubjectColor(c)}
+                title={c}
+                className={`w-6 h-6 rounded-full transition ${
+                  newSubjectColor.toLowerCase() === c.toLowerCase()
+                    ? 'ring-2 ring-offset-2 ring-teal-500 scale-110'
+                    : 'hover:scale-110 opacity-85 hover:opacity-100'
+                }`}
+                style={{ backgroundColor: c }}
+              />
+            ))}
+            <label
+              title="Escolher outra cor personalizada"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg subtle-surface border border-theme text-[11px] font-semibold cursor-pointer hover:opacity-85"
             >
-              <Check className="w-4 h-4" />
-              Salvar matéria
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowNewSubject(false)}
-              className="px-3.5 py-2.5 rounded-xl subtle-surface text-xs font-semibold"
-            >
-              Cancelar
-            </button>
+              <input
+                type="color"
+                value={newSubjectColor}
+                onChange={(e) => setNewSubjectColor(e.target.value)}
+                className="w-4 h-4 rounded border-0 bg-transparent cursor-pointer p-0"
+              />
+              Personalizada
+            </label>
           </div>
         </form>
       )}
@@ -931,6 +1007,22 @@ export default function ProgressoEditalPage() {
             )
           </p>
           <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                if (selectedTopicIds.length === topics.length && topics.length > 0) {
+                  setSelectedTopicIds([]);
+                } else {
+                  setSelectedTopicIds(topics.map((t) => t.id));
+                }
+              }}
+              className="px-3 py-2 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-700 dark:text-rose-300 text-xs font-bold hover:bg-rose-500/25"
+              title="Marca todos os tópicos de todas as matérias, sem apagar nenhuma matéria"
+            >
+              {selectedTopicIds.length === topics.length && topics.length > 0
+                ? 'Desmarcar tópicos'
+                : `Selecionar todos os tópicos (${topics.length})`}
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -1003,8 +1095,33 @@ export default function ProgressoEditalPage() {
           return (
             <div
               key={sub.id}
+              data-subject-card-id={sub.id}
+              draggable={!editalSearch.trim() && !selectMode}
+              onDragStart={() => setDraggedSubId(sub.id)}
+              onDragOver={(e) => {
+                if (!draggedSubId || draggedSubId === sub.id) return;
+                e.preventDefault();
+                if (dragOverSubId !== sub.id) setDragOverSubId(sub.id);
+              }}
+              onDragLeave={() => {
+                if (dragOverSubId === sub.id) setDragOverSubId(null);
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                if (draggedSubId && draggedSubId !== sub.id) {
+                  await moveSubject(draggedSubId, sub.id);
+                }
+                setDraggedSubId(null);
+                setDragOverSubId(null);
+              }}
+              onDragEnd={() => {
+                setDraggedSubId(null);
+                setDragOverSubId(null);
+              }}
               className={`rounded-3xl overflow-hidden transition-all card-surface ${
                 selectMode && selectedSubjectIds.includes(sub.id) ? 'ring-2 ring-rose-500' : ''
+              } ${draggedSubId === sub.id ? 'opacity-45 scale-[0.99]' : ''} ${
+                dragOverSubId === sub.id && draggedSubId !== sub.id ? 'ring-2 ring-teal-500' : ''
               }`}
               style={
                 isCompletedSubject
@@ -1016,7 +1133,37 @@ export default function ProgressoEditalPage() {
               }
             >
               <div className="px-6 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-3.5 min-w-0 flex-1">
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  {!selectMode && !editalSearch.trim() && (
+                    <span
+                      title="Segure e arraste para mudar a ordem desta matéria"
+                      onTouchStart={(e) => {
+                        e.stopPropagation();
+                        setDraggedSubId(sub.id);
+                      }}
+                      onTouchMove={(e) => {
+                        if (!draggedSubId) return;
+                        const touch = e.touches[0];
+                        if (!touch) return;
+                        const el = document.elementFromPoint(touch.clientX, touch.clientY);
+                        const card = el?.closest('[data-subject-card-id]') as HTMLElement | null;
+                        const targetId = card?.getAttribute('data-subject-card-id');
+                        if (targetId && targetId !== draggedSubId) {
+                          setDragOverSubId(targetId);
+                        }
+                      }}
+                      onTouchEnd={async () => {
+                        if (draggedSubId && dragOverSubId && draggedSubId !== dragOverSubId) {
+                          await moveSubject(draggedSubId, dragOverSubId);
+                        }
+                        setDraggedSubId(null);
+                        setDragOverSubId(null);
+                      }}
+                      className="text-muted-theme/70 hover:text-teal-600 cursor-grab active:cursor-grabbing shrink-0 inline-flex touch-none p-1 -ml-1 rounded-lg hover:bg-teal-500/10"
+                    >
+                      <GripVertical className="w-5 h-5" />
+                    </span>
+                  )}
                   {/* Checkbox para selecionar p/ excluir (no selectMode) OU marcar matéria inteira estudada */}
                   {selectMode ? (
                     <button
@@ -1107,7 +1254,8 @@ export default function ProgressoEditalPage() {
                   </button>
                 </div>
 
-                <div className="flex items-center gap-4 shrink-0">
+                <div className="flex items-center gap-3 shrink-0">
+
                   {subQ > 0 && (
                     <div className="flex items-center gap-2 text-xs">
                       <span className="text-muted-theme font-medium">{subQ} q</span>
@@ -1149,35 +1297,106 @@ export default function ProgressoEditalPage() {
                         onSubmit={async (e) => {
                           e.preventDefault();
                           if (!editSubjectName.trim()) return;
-                          await updateSubject(sub.id, { name: editSubjectName.trim() });
+                          await updateSubject(sub.id, {
+                            name: editSubjectName.trim(),
+                            color: editSubjectColor,
+                          });
                           setEditingSubjectId(null);
+                          notify('Matéria e cor atualizadas!', 'success');
                         }}
-                        className="flex items-center gap-2 flex-1"
+                        className="flex flex-col gap-2.5 flex-1"
                       >
-                        <input
-                          autoFocus
-                          value={editSubjectName}
-                          onChange={(e) => setEditSubjectName(e.target.value)}
-                          className="flex-1 rounded-xl subtle-surface border border-theme px-3 py-1.5 text-xs font-semibold"
-                        />
-                        <button
-                          type="submit"
-                          className="px-3 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-bold inline-flex items-center gap-1"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          Salvar
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setEditingSubjectId(null)}
-                          className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold"
-                        >
-                          Cancelar
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="w-4 h-4 rounded-full shrink-0 border border-black/15"
+                            style={{ backgroundColor: editSubjectColor }}
+                          />
+                          <input
+                            autoFocus
+                            value={editSubjectName}
+                            onChange={(e) => setEditSubjectName(e.target.value)}
+                            className="flex-1 rounded-xl subtle-surface border border-theme px-3 py-1.5 text-xs font-semibold"
+                          />
+                          <button
+                            type="submit"
+                            className="px-3 py-1.5 rounded-xl bg-teal-600 text-white text-xs font-bold inline-flex items-center gap-1"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            Salvar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingSubjectId(null)}
+                            className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-semibold"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-muted-theme">Cor:</span>
+                          {SUBJECT_COLOR_PALETTE.map((c) => (
+                            <button
+                              key={c}
+                              type="button"
+                              onClick={() => setEditSubjectColor(c)}
+                              className={`w-5 h-5 rounded-full transition ${
+                                editSubjectColor.toLowerCase() === c.toLowerCase()
+                                  ? 'ring-2 ring-offset-1 ring-teal-500 scale-110'
+                                  : 'hover:scale-110 opacity-85 hover:opacity-100'
+                              }`}
+                              style={{ backgroundColor: c }}
+                            />
+                          ))}
+                          <label
+                            title="Outra cor personalizada"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg subtle-surface border border-theme text-[10px] font-semibold cursor-pointer"
+                          >
+                            <input
+                              type="color"
+                              value={editSubjectColor}
+                              onChange={(e) => setEditSubjectColor(e.target.value)}
+                              className="w-3.5 h-3.5 rounded border-0 bg-transparent cursor-pointer p-0"
+                            />
+                            Outra
+                          </label>
+                        </div>
                       </form>
                     ) : (
                       <>
                         <div className="flex flex-wrap items-center gap-2">
+                          {selectMode && allSubTopics.length > 0 && (() => {
+                            const subTopicIds = allSubTopics.map((t) => t.id);
+                            const allSelectedHere = subTopicIds.every((id) =>
+                              selectedTopicIds.includes(id)
+                            );
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (allSelectedHere) {
+                                    setSelectedTopicIds((prev) =>
+                                      prev.filter((id) => !subTopicIds.includes(id))
+                                    );
+                                  } else {
+                                    setSelectedTopicIds((prev) =>
+                                      Array.from(new Set([...prev, ...subTopicIds]))
+                                    );
+                                  }
+                                }}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition ${
+                                  allSelectedHere
+                                    ? 'bg-rose-600 border-rose-600 text-white'
+                                    : 'bg-rose-500/15 border-rose-500/40 text-rose-700 dark:text-rose-300 hover:bg-rose-500/25'
+                                }`}
+                                title="Seleciona todos os tópicos e subtópicos desta matéria, mantendo a matéria intacta"
+                              >
+                                <CheckSquare className="w-3.5 h-3.5" />
+                                {allSelectedHere
+                                  ? 'Desmarcar tópicos desta matéria'
+                                  : `Selecionar todos os tópicos (${subTopicIds.length})`}
+                              </button>
+                            );
+                          })()}
                           <button
                             type="button"
                             onClick={() => {
@@ -1216,6 +1435,7 @@ export default function ProgressoEditalPage() {
                             type="button"
                             onClick={() => {
                               setEditSubjectName(sub.name);
+                              setEditSubjectColor(sub.color || '#0d9488');
                               setEditingSubjectId(sub.id);
                             }}
                             className="px-2.5 py-1.5 rounded-xl subtle-surface hover:opacity-85 text-xs font-semibold inline-flex items-center gap-1 text-muted-theme hover:text-[var(--text-main)]"

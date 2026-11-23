@@ -69,11 +69,13 @@ export default function CicloPage() {
     addStudyLog,
     deleteStudyLog,
     deleteSubjectsBatch,
+    toggleTopicStudied,
   } = useProfile();
 
   const [showModal, setShowModal] = useState(false);
   const [modalSubjectId, setModalSubjectId] = useState('');
-  const [modalTopicId, setModalTopicId] = useState('');
+  const [modalSelectedTopicIds, setModalSelectedTopicIds] = useState<string[]>([]);
+  const [markTopicsDone, setMarkTopicsDone] = useState(true);
   const [modalHours, setModalHours] = useState('1');
   const [modalMinutes, setModalMinutes] = useState('0');
   const [modalDate, setModalDate] = useState(todayISO());
@@ -163,7 +165,8 @@ export default function CicloPage() {
   function openRegisterModal(prefillSubjectId?: string, useStopwatch = false) {
     const subId = prefillSubjectId || stopwatch.subjectId || subjects[0]?.id || '';
     setModalSubjectId(subId);
-    setModalTopicId('');
+    setModalSelectedTopicIds([]);
+    setMarkTopicsDone(true);
     if (useStopwatch && stopwatch.elapsedSeconds > 0) {
       const h = Math.floor(stopwatch.elapsedSeconds / 3600);
       const m = Math.max(1, Math.floor((stopwatch.elapsedSeconds % 3600) / 60));
@@ -183,9 +186,17 @@ export default function CicloPage() {
     if (!modalSubjectId) return;
     setSaving(true);
     const secs = (Number(modalHours) || 0) * 3600 + (Number(modalMinutes) || 0) * 60;
+    const selectedTopicObjs = modalSelectedTopicIds
+      .map((id) => topics.find((t) => t.id === id))
+      .filter((t): t is NonNullable<typeof t> => Boolean(t));
+    const notesText =
+      selectedTopicObjs.length > 1
+        ? `Tópicos estudados: ${selectedTopicObjs.map((t) => t.title).join(' | ')}`
+        : '';
+
     await addStudyLog({
       subject_id: modalSubjectId,
-      topic_id: modalTopicId || null,
+      topic_id: modalSelectedTopicIds[0] || null,
       duration_seconds: secs,
       study_date: modalDate,
       period: modalPeriod,
@@ -193,13 +204,32 @@ export default function CicloPage() {
       questions_total: Number(modalTotalQ) || 0,
       questions_correct: Math.min(Number(modalTotalQ) || 0, Number(modalCorrectQ) || 0),
       stop_point: modalStopPoint.slice(0, 500),
-      notes: '',
+      notes: notesText,
     });
+
+    let markedCount = 0;
+    if (markTopicsDone && selectedTopicObjs.length > 0) {
+      for (const tp of selectedTopicObjs) {
+        if (!tp.studied) {
+          await toggleTopicStudied(tp);
+          markedCount++;
+        }
+      }
+    }
+
     if (stopwatch.subjectId === modalSubjectId) {
       resetStopwatch();
     }
     setSaving(false);
     setShowModal(false);
+    if (markedCount > 0) {
+      notify(
+        `Sessão salva! ${markedCount} ${markedCount === 1 ? 'tópico abatido' : 'tópicos abatidos'} da Agenda e próximos atualizados!`,
+        'success'
+      );
+    } else {
+      notify('Sessão salva e sincronizada com a Agenda!', 'success');
+    }
   }
 
   const subjectTopics = topics.filter((t) => t.subject_id === modalSubjectId);
@@ -751,7 +781,7 @@ export default function CicloPage() {
                   value={modalSubjectId}
                   onChange={(e) => {
                     setModalSubjectId(e.target.value);
-                    setModalTopicId('');
+                    setModalSelectedTopicIds([]);
                   }}
                   className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
                 >
@@ -763,23 +793,94 @@ export default function CicloPage() {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-muted-theme mb-1">
-                  Tópico (opcional)
-                </label>
-                <select
-                  value={modalTopicId}
-                  onChange={(e) => setModalTopicId(e.target.value)}
-                  className="w-full rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-sm"
-                >
-                  <option value="">Geral da matéria</option>
-                  {subjectTopics.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {(() => {
+                const mainTopics = subjectTopics.filter((t) => !t.title.trim().startsWith('↳'));
+                const unstudiedMain = mainTopics.filter((t) => !t.studied);
+                const studiedMain = mainTopics.filter((t) => t.studied);
+                const orderedList = [...unstudiedMain, ...studiedMain];
+                const nextTwoIds = unstudiedMain.slice(0, 2).map((t) => t.id);
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <label className="text-xs font-semibold text-muted-theme">
+                        Tópicos estudados nesta sessão ({modalSelectedTopicIds.length} selecionado
+                        {modalSelectedTopicIds.length === 1 ? '' : 's'})
+                      </label>
+                      {nextTwoIds.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setModalSelectedTopicIds(nextTwoIds)}
+                          className="text-[11px] font-bold text-teal-600 dark:text-teal-400 hover:underline"
+                        >
+                          Selecionar os {nextTwoIds.length} previstos da Agenda
+                        </button>
+                      )}
+                    </div>
+
+                    {orderedList.length === 0 ? (
+                      <p className="text-xs text-muted-theme subtle-surface rounded-xl px-3 py-2">
+                        Nenhum tópico cadastrado nesta matéria ainda.
+                      </p>
+                    ) : (
+                      <div className="max-h-40 overflow-y-auto rounded-2xl subtle-surface border border-theme p-2 space-y-1">
+                        {orderedList.map((t) => {
+                          const isChecked = modalSelectedTopicIds.includes(t.id);
+                          const isPlannedToday = nextTwoIds.includes(t.id);
+                          return (
+                            <label
+                              key={t.id}
+                              className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl cursor-pointer text-xs transition ${
+                                isChecked
+                                  ? 'bg-teal-500/15 font-bold'
+                                  : 'hover:bg-black/5 dark:hover:bg-white/5'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() =>
+                                  setModalSelectedTopicIds((prev) =>
+                                    prev.includes(t.id)
+                                      ? prev.filter((id) => id !== t.id)
+                                      : [...prev, t.id]
+                                  )
+                                }
+                                className="rounded accent-teal-600 shrink-0"
+                              />
+                              <span className={`flex-1 truncate ${t.studied ? 'line-through opacity-60' : ''}`}>
+                                {t.title}
+                              </span>
+                              {isPlannedToday && (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-600/15 text-teal-700 dark:text-teal-300 shrink-0">
+                                  Previsto
+                                </span>
+                              )}
+                              {t.studied && (
+                                <span className="text-[10px] font-semibold text-emerald-600 shrink-0">
+                                  Já estudado
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {modalSelectedTopicIds.length > 0 && (
+                      <label className="flex items-center gap-2 text-[11px] font-semibold text-teal-700 dark:text-teal-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={markTopicsDone}
+                          onChange={(e) => setMarkTopicsDone(e.target.checked)}
+                          className="rounded accent-teal-600"
+                        />
+                        Marcar como estudados e abater automaticamente da Agenda (atualiza os próximos tópicos)
+                      </label>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>

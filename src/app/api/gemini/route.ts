@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 
-const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+export const maxDuration = 60;
+
+// Apenas modelos ativos da família Gemini 2.5 (gemini-2.0-flash foi descontinuado pelo Google)
+const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
 async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -10,7 +13,13 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
     );
   }
 
-  let lastError = 'Erro desconhecido ao chamar o Gemini.';
+  // Detecta se há PDF/imagem anexo para dar mais tempo de leitura (até 45s por tentativa)
+  const hasBinary = parts.some(
+    (p) => typeof p === 'object' && p !== null && 'inlineData' in (p as Record<string, unknown>)
+  );
+  const timeoutMs = hasBinary ? 45000 : 25000;
+
+  let lastError = 'Os servidores do Gemini estão temporariamente ocupados. Tente novamente em alguns segundos.';
 
   for (const model of MODELS) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -19,7 +28,7 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
         ? { responseMimeType: 'application/json', temperature: 0.15, maxOutputTokens: 8192 }
         : { temperature: 0.3, maxOutputTokens: 8192 };
 
-    // Desativa thinking tokens no 2.5 para respostas 5x mais rápidas (evita lentidão e timeout)
+    // Desativa thinking tokens no 2.5 para respostas muito mais rápidas
     if (model.startsWith('gemini-2.5')) {
       genConfig.thinkingConfig = { thinkingBudget: 0 };
     }
@@ -39,10 +48,10 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(18000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
-      lastError = `Tempo esgotado (${model})`;
+      lastError = 'O Gemini demorou mais que o esperado para responder. Tente novamente (se for um PDF muito grande, tente enviar só as páginas do conteúdo programático).';
       continue;
     }
 
@@ -51,11 +60,15 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
       const candidateParts = data?.candidates?.[0]?.content?.parts || [];
       const text = candidateParts.map((p: { text?: string }) => p.text || '').join('\n').trim();
       if (text) return text;
-      lastError = 'Resposta vazia do modelo Gemini.';
+      lastError = 'Resposta vazia do modelo Gemini. Tente novamente.';
     } else {
       const errData = await res.json().catch(() => ({}));
-      lastError = errData?.error?.message || `HTTP ${res.status} (${model})`;
-      if ((res.status === 400 || res.status === 403) && !lastError.toLowerCase().includes('model')) {
+      const rawMsg = String(errData?.error?.message || `HTTP ${res.status} (${model})`);
+      lastError =
+        res.status === 503 || res.status === 429
+          ? 'O Gemini gratuito está com pico de uso agora (503/429). Aguarde 10 segundos e tente novamente.'
+          : rawMsg;
+      if ((res.status === 400 || res.status === 403) && !rawMsg.toLowerCase().includes('model')) {
         throw new Error(lastError);
       }
     }
