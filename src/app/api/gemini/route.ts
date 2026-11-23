@@ -32,6 +32,7 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
           !m.name.includes('tts') &&
           !m.name.includes('audio') &&
           !m.name.includes('live') &&
+          !m.name.includes('omni') &&
           !m.name.includes('2.0') &&
           !m.name.includes('2.5') &&
           Array.isArray(m.supportedGenerationMethods) &&
@@ -135,10 +136,13 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
       }
 
       if (res.status === 503 || res.status === 429) {
-        lastError =
-          res.status === 429
-            ? `Cota diária/por minuto atingida em ${model} (429). Detalhe: ${rawMsg}`
-            : `Servidor do Google ocupado em ${model} (503). Aguarde alguns segundos e tente novamente.`;
+        const isZeroLimit = rawMsg.includes('limit: 0');
+        if (!isZeroLimit) {
+          lastError =
+            res.status === 429
+              ? `Cota diária/por minuto atingida em ${model} (429). Aguarde um pouco e tente novamente.`
+              : `Servidor do Google ocupado em ${model} (503). Aguarde alguns segundos e tente novamente.`;
+        }
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }

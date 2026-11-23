@@ -45,6 +45,11 @@ interface ScheduledBlock {
   done: boolean;
   overdue: boolean;
   plannedTopics?: string[];
+  loggedMinutes?: number;
+  loggedTopics?: string[];
+  loggedQuestions?: { total: number; correct: number };
+  loggedStopPoint?: string;
+  loggedMethod?: string;
 }
 
 interface ClassSlot {
@@ -441,13 +446,14 @@ export default function AgendaPage() {
     notify(`Cronograma "${newPlan.name}" criado e ordem sincronizada com o Ciclo!`, 'success');
   }
 
-  // Mapa de sessões registradas no Ciclo de Estudos por (data + matéria)
+  // Mapa completo de sessões registradas no Ciclo de Estudos por (data + matéria)
   const loggedByDateSubject = useMemo(() => {
-    const map: Record<string, number> = {};
+    const map: Record<string, typeof studyLogs> = {};
     for (const log of studyLogs) {
       if (!log.subject_id || !log.study_date) continue;
       const key = `${log.study_date}__${log.subject_id}`;
-      map[key] = (map[key] || 0) + 1;
+      if (!map[key]) map[key] = [];
+      map[key].push(log);
     }
     return map;
   }, [studyLogs]);
@@ -479,16 +485,40 @@ export default function AgendaPage() {
     const usedLogs: Record<string, number> = {};
     const fixedPerDay = Number(activePlan.subjectsPerDay || 0);
 
-    const isDoneWithCycleSync = (id: string, finalDate: string, subjectId: string) => {
-      if (completedSet.has(id)) return true;
+    const resolveCycleSync = (id: string, finalDate: string, subjectId: string) => {
       const key = `${finalDate}__${subjectId}`;
-      const avail = loggedByDateSubject[key] || 0;
+      const list = loggedByDateSubject[key] || [];
       const used = usedLogs[key] || 0;
-      if (used < avail) {
+      const matchedLog = used < list.length ? list[used] : undefined;
+      if (matchedLog) {
         usedLogs[key] = used + 1;
-        return true;
       }
-      return false;
+      const done = completedSet.has(id) || Boolean(matchedLog);
+      if (!matchedLog) return { done };
+
+      const loggedTopics: string[] = [];
+      if (matchedLog.notes && matchedLog.notes.startsWith('Tópicos estudados:')) {
+        const rawList = matchedLog.notes.replace(/^Tópicos estudados:\s*/i, '').split('|');
+        rawList.forEach((t) => {
+          const clean = t.trim();
+          if (clean) loggedTopics.push(clean);
+        });
+      } else if (matchedLog.topic_id) {
+        const tp = topics.find((t) => t.id === matchedLog.topic_id);
+        if (tp) loggedTopics.push(tp.title);
+      }
+
+      return {
+        done,
+        loggedMinutes: Math.max(1, Math.round(matchedLog.duration_seconds / 60)),
+        loggedTopics,
+        loggedQuestions:
+          matchedLog.questions_total > 0
+            ? { total: matchedLog.questions_total, correct: matchedLog.questions_correct }
+            : undefined,
+        loggedStopPoint: matchedLog.stop_point || undefined,
+        loggedMethod: matchedLog.method || undefined,
+      };
     };
 
     if (activePlan.followCycle) {
@@ -554,7 +584,7 @@ export default function AgendaPage() {
 
           const id = `${activePlan.id}-${iso}-${blockIdx}`;
           const finalDate = overrides[id] || iso;
-          const done = isDoneWithCycleSync(id, finalDate, sub.id);
+          const syncInfo = resolveCycleSync(id, finalDate, sub.id);
 
           out.push({
             id,
@@ -562,9 +592,14 @@ export default function AgendaPage() {
             subjectId: sub.id,
             name: sub.name,
             color: sub.color,
-            minutes: sliceMin,
-            done,
-            overdue: !done && finalDate < today,
+            minutes: syncInfo.loggedMinutes ?? sliceMin,
+            done: syncInfo.done,
+            overdue: !syncInfo.done && finalDate < today,
+            loggedMinutes: syncInfo.loggedMinutes,
+            loggedTopics: syncInfo.loggedTopics,
+            loggedQuestions: syncInfo.loggedQuestions,
+            loggedStopPoint: syncInfo.loggedStopPoint,
+            loggedMethod: syncInfo.loggedMethod,
           });
 
           availableDayMin -= sliceMin;
@@ -598,16 +633,21 @@ export default function AgendaPage() {
         subjectIdx++;
         const id = `${activePlan.id}-${iso}-${b}`;
         const finalDate = overrides[id] || iso;
-        const done = isDoneWithCycleSync(id, finalDate, sub.id);
+        const syncInfo = resolveCycleSync(id, finalDate, sub.id);
         out.push({
           id,
           date: finalDate,
           subjectId: sub.id,
           name: sub.name,
           color: sub.color,
-          minutes: perBlockMinutes,
-          done,
-          overdue: !done && finalDate < today,
+          minutes: syncInfo.loggedMinutes ?? perBlockMinutes,
+          done: syncInfo.done,
+          overdue: !syncInfo.done && finalDate < today,
+          loggedMinutes: syncInfo.loggedMinutes,
+          loggedTopics: syncInfo.loggedTopics,
+          loggedQuestions: syncInfo.loggedQuestions,
+          loggedStopPoint: syncInfo.loggedStopPoint,
+          loggedMethod: syncInfo.loggedMethod,
         });
       }
     }
@@ -1746,11 +1786,26 @@ export default function AgendaPage() {
                                 >
                                   {b.name}
                                 </button>
-                                <p className="text-[10px] text-muted-theme">
+                                <p className="text-[10px] text-muted-theme font-semibold">
+                                  {b.loggedMinutes ? 'Estudado: ' : ''}
                                   {b.minutes >= 60
                                     ? `${Math.floor(b.minutes / 60)}h${b.minutes % 60 > 0 ? ` ${b.minutes % 60}m` : ''}`
                                     : `${b.minutes} min`}
+                                  {b.loggedQuestions ? ` · ${b.loggedQuestions.correct}/${b.loggedQuestions.total} q` : ''}
                                 </p>
+                                {b.done && b.loggedTopics && b.loggedTopics.length > 0 && (
+                                  <div className="space-y-0.5 pt-0.5 border-t border-theme/50">
+                                    {b.loggedTopics.map((tp, tIdx) => (
+                                      <p
+                                        key={tIdx}
+                                        title={tp}
+                                        className="text-[10px] leading-tight text-emerald-700 dark:text-emerald-300 line-clamp-1 font-medium"
+                                      >
+                                        ✓ {tp}
+                                      </p>
+                                    ))}
+                                  </div>
+                                )}
                                 {!b.done && b.plannedTopics && b.plannedTopics.length > 0 && (
                                   <div className="space-y-0.5 pt-0.5 border-t border-theme/50">
                                     {b.plannedTopics.map((tp, tIdx) => (
@@ -2274,7 +2329,31 @@ export default function AgendaPage() {
                         </div>
                       </div>
 
-                      {b.plannedTopics && b.plannedTopics.length > 0 ? (
+                      {b.done && (b.loggedTopics?.length || b.loggedQuestions || b.loggedStopPoint || b.loggedMethod) ? (
+                        <div className="rounded-xl bg-emerald-500/10 border border-emerald-500/25 p-3 space-y-1.5 text-xs">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                            Registro do Ciclo de Estudos
+                            {b.loggedMethod ? ` · ${b.loggedMethod}` : ''}
+                            {b.loggedQuestions
+                              ? ` · ${b.loggedQuestions.correct}/${b.loggedQuestions.total} acertos`
+                              : ''}
+                          </p>
+                          {b.loggedTopics && b.loggedTopics.length > 0 && (
+                            <div className="space-y-0.5">
+                              {b.loggedTopics.map((tp, idx) => (
+                                <p key={idx} className="font-medium">
+                                  ✓ {tp}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                          {b.loggedStopPoint && (
+                            <p className="text-muted-theme">
+                              <strong>Ponto de parada:</strong> {b.loggedStopPoint}
+                            </p>
+                          )}
+                        </div>
+                      ) : b.plannedTopics && b.plannedTopics.length > 0 ? (
                         <div className="rounded-xl card-surface border border-theme p-3 space-y-1.5">
                           <p className="text-[11px] font-bold uppercase tracking-wider text-teal-600 dark:text-teal-400">
                             Tópicos previstos para esta sessão
