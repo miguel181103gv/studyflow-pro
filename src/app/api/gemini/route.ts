@@ -2,8 +2,47 @@ import { NextResponse } from 'next/server';
 
 export const maxDuration = 60;
 
-// Apenas modelos ativos da família Gemini 2.5 (gemini-2.0-flash foi descontinuado pelo Google)
-const MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+// Prioriza modelos mais recentes (Gemini 3.8 Flash) + descoberta automática de modelos ativos na chave
+const PREFERRED_MODELS = ['gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-3.0-flash', 'gemini-2.5-flash-lite'];
+
+let cachedDiscoveredModels: { models: string[]; fetchedAt: number } | null = null;
+
+async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
+  if (cachedDiscoveredModels && Date.now() - cachedDiscoveredModels.fetchedAt < 30 * 60 * 1000) {
+    return cachedDiscoveredModels.models;
+  }
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=100`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const list: { name?: string; supportedGenerationMethods?: string[] }[] = Array.isArray(data?.models)
+      ? data.models
+      : [];
+    const candidates = list
+      .filter(
+        (m) =>
+          typeof m.name === 'string' &&
+          m.name.includes('gemini-') &&
+          m.name.includes('flash') &&
+          !m.name.includes('image') &&
+          !m.name.includes('tts') &&
+          !m.name.includes('audio') &&
+          !m.name.includes('2.0') &&
+          Array.isArray(m.supportedGenerationMethods) &&
+          m.supportedGenerationMethods.includes('generateContent')
+      )
+      .map((m) => String(m.name).replace(/^models\//, ''))
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+
+    cachedDiscoveredModels = { models: candidates, fetchedAt: Date.now() };
+    return candidates;
+  } catch {
+    return [];
+  }
+}
 
 async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -13,22 +52,24 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
     );
   }
 
-  // Detecta se há PDF/imagem anexo para dar mais tempo de leitura (até 45s por tentativa)
   const hasBinary = parts.some(
     (p) => typeof p === 'object' && p !== null && 'inlineData' in (p as Record<string, unknown>)
   );
   const timeoutMs = hasBinary ? 45000 : 25000;
 
+  // Monta fila de modelos: preferidos + modelos ativos descobertos na API do usuário (sem duplicar)
+  const discovered = await discoverActiveFlashModels(apiKey);
+  const modelsQueue = Array.from(new Set([...PREFERRED_MODELS, ...discovered])).slice(0, 5);
+
   let lastError = 'Os servidores do Gemini estão temporariamente ocupados. Tente novamente em alguns segundos.';
 
-  for (const model of MODELS) {
+  for (const model of modelsQueue) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     const genConfig: Record<string, unknown> =
       jsonMode && !useSearch
         ? { responseMimeType: 'application/json', temperature: 0.15, maxOutputTokens: 8192 }
         : { temperature: 0.3, maxOutputTokens: 8192 };
 
-    // Desativa thinking tokens no 2.5 para respostas muito mais rápidas
     if (model.startsWith('gemini-2.5')) {
       genConfig.thinkingConfig = { thinkingBudget: 0 };
     }
@@ -64,10 +105,21 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
     } else {
       const errData = await res.json().catch(() => ({}));
       const rawMsg = String(errData?.error?.message || `HTTP ${res.status} (${model})`);
+      const isModelUnavailable =
+        res.status === 404 ||
+        rawMsg.toLowerCase().includes('no longer available') ||
+        rawMsg.toLowerCase().includes('not found');
+
+      if (isModelUnavailable) {
+        lastError = rawMsg;
+        continue;
+      }
+
       lastError =
         res.status === 503 || res.status === 429
           ? 'O Gemini gratuito está com pico de uso agora (503/429). Aguarde 10 segundos e tente novamente.'
           : rawMsg;
+
       if ((res.status === 400 || res.status === 403) && !rawMsg.toLowerCase().includes('model')) {
         throw new Error(lastError);
       }
@@ -519,6 +571,47 @@ Seja objetivo, use números reais dos dados enviados e evite floreios.`,
       );
 
       return NextResponse.json({ ok: true, data: { markdown: text } });
+    }
+
+    if (action === 'generate_topic_questions') {
+      const {
+        subjectName = '',
+        topicTitle = '',
+        count = 5,
+        style = 'Múltipla escolha (A-E)',
+        board = '',
+      } = body;
+      const safeCount = Math.min(10, Math.max(1, Number(count) || 5));
+      const isCE = String(style).toLowerCase().includes('certo');
+      const boardText = board ? ` no estilo da banca ${board}` : ' em estilo de concurso público brasileiro';
+      const topicContext = topicTitle
+        ? `sobre o tópico "${topicTitle}" da matéria "${subjectName}"`
+        : `sobre a matéria "${subjectName}"`;
+
+      const prompt = `Crie exatamente ${safeCount} questões inéditas e fiéis à legislação/doutrina/jurisprudência atual ${topicContext}${boardText}.
+Formato obrigatório: ${isCE ? 'Certo ou Errado (apenas opções C = Certo e E = Errado)' : 'Múltipla escolha com 5 alternativas (A, B, C, D, E)'}.
+Cada questão deve ter um comentário objetivo explicando por que o gabarito está certo.
+
+Retorne SOMENTE um JSON válido neste formato exato:
+{
+  "questions": [
+    {
+      "header": "${board ? board + ' · ' : 'Questão IA · '}${subjectName}",
+      "statement": "Enunciado completo e claro da questão.",
+      "options": ${
+        isCE
+          ? '[{"letter":"C","text":"Certo"},{"letter":"E","text":"Errado"}]'
+          : '[{"letter":"A","text":"..."},{"letter":"B","text":"..."},{"letter":"C","text":"..."},{"letter":"D","text":"..."},{"letter":"E","text":"..."}]'
+      },
+      "correct_answer": "${isCE ? 'C' : 'A'}",
+      "explanation": "Explicação objetiva do gabarito."
+    }
+  ]
+}`;
+
+      const raw = await callGemini([{ text: prompt }], true, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
     }
 
     return NextResponse.json({ ok: false, error: 'Ação inválida.' }, { status: 400 });

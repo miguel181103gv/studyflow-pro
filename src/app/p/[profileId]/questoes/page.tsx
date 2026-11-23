@@ -52,7 +52,7 @@ type SelectedScope =
   | { type: 'subject'; subjectId: string }
   | { type: 'topic'; subjectId: string; topicId: string };
 
-type AddMode = 'text' | 'image';
+type AddMode = 'ai' | 'text' | 'image';
 
 const Q_MARKER = '<!--SF_Q_JSON:';
 
@@ -130,9 +130,12 @@ export default function QuestoesPage() {
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
   const [collapsedQ, setCollapsedQ] = useState<Record<string, boolean>>({});
 
-  // Adicionar questões (Texto ou Imagem -> Quiz)
+  // Adicionar questões (Gerar com IA por Tópico, Texto ou Imagem -> Quiz)
   const [showAddPanel, setShowAddPanel] = useState(false);
-  const [addMode, setAddMode] = useState<AddMode>('text');
+  const [addMode, setAddMode] = useState<AddMode>('ai');
+  const [aiCount, setAiCount] = useState(5);
+  const [aiStyle, setAiStyle] = useState<'Múltipla escolha (A-E)' | 'Certo ou Errado'>('Múltipla escolha (A-E)');
+  const [aiBoard, setAiBoard] = useState('');
   const [rawTextInput, setRawTextInput] = useState('');
   const [converting, setConverting] = useState(false);
   const [targetSubjectId, setTargetSubjectId] = useState('');
@@ -221,7 +224,67 @@ export default function QuestoesPage() {
   const effectiveTopics = topics.filter((t) => t.subject_id === effectiveSubjectId);
   const effectiveTopic = effectiveTopics.find((t) => t.id === targetTopicId);
 
-  async function handleConvertTextToQuiz(e: React.FormEvent) {
+  async function handleGenerateTopicQuestions(e: React.FormEvent) {
+    e.preventDefault();
+    if (!effectiveSubjectId) return;
+    setConverting(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate_topic_questions',
+          subjectName: effectiveSubject?.name || '',
+          topicTitle: effectiveTopic?.title || '',
+          count: aiCount,
+          style: aiStyle,
+          board: aiBoard.trim(),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar questões com IA.');
+      const list = Array.isArray(json.data?.questions) ? json.data.questions : [];
+      if (list.length === 0) throw new Error('Nenhuma questão foi gerada.');
+
+      const created: BankQuestion[] = list.map(
+        (
+          q: {
+            header?: string;
+            statement: string;
+            options?: QuizOption[];
+            correct_answer?: string;
+            explanation?: string;
+          },
+          i: number
+        ) => ({
+          id: `q-ai-${Date.now()}-${i}`,
+          subject_id: effectiveSubjectId,
+          topic_id: targetTopicId || null,
+          header: q.header || `${aiBoard.trim() || 'Questão IA'} · ${effectiveSubject?.name || ''}`,
+          statement: q.statement || '',
+          options: Array.isArray(q.options) ? q.options : [],
+          correct_answer: (q.correct_answer || '').trim().toUpperCase(),
+          explanation: q.explanation || '',
+          created_at: new Date().toISOString(),
+        })
+      );
+
+      saveBank([...created, ...questions]);
+      setShowAddPanel(false);
+      notify(
+        `${plural(created.length, 'questão gerada', 'questões geradas')} para ${
+          effectiveTopic ? effectiveTopic.title : effectiveSubject?.name
+        }!`,
+        'success'
+      );
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao gerar questões.', 'error');
+    } finally {
+      setConverting(false);
+    }
+  }
+
+    async function handleConvertTextToQuiz(e: React.FormEvent) {
     e.preventDefault();
     if (!rawTextInput.trim() || !effectiveSubjectId) return;
     setConverting(true);
@@ -357,14 +420,44 @@ export default function QuestoesPage() {
       {!selectedScope ? (
         /* TELA 1: ESCOLHER ESCOPO (TÓPICO · MATÉRIA · TODAS · CADERNO DE ERROS) */
         <div className="space-y-5 animate-fade-in-up">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-              <ListChecks className="w-6 h-6 text-teal-600" />
-              Banco de Questões (Quiz)
-            </h1>
-            <p className="text-sm text-muted-theme mt-0.5">
-              Adicione questões em texto ou imagem para cada tópico e resolva em modo quiz por tópico, matéria ou caderno de erros.
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+                <ListChecks className="w-6 h-6 text-teal-600" />
+                Banco de Questões (Quiz)
+              </h1>
+              <p className="text-sm text-muted-theme mt-0.5">
+                Crie ou importe questões por tópico e resolva em modo quiz do tópico, da matéria toda ou de tudo junto.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap shrink-0">
+              {allQuestions.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => startQuiz(allQuestions, 'Quiz Geral — Tudo Junto')}
+                  className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+                >
+                  <Zap className="w-4 h-4" />
+                  Resolver Tudo ({allQuestions.length})
+                </button>
+              )}
+              {subjects.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedScope({ type: 'all' });
+                    setTargetSubjectId(subjects[0]?.id || '');
+                    setTargetTopicId('');
+                    setAddMode('ai');
+                    setShowAddPanel(true);
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Criar Questões por Tópico
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -466,13 +559,25 @@ export default function QuestoesPage() {
                           </div>
                         </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedScope({ type: 'subject', subjectId: sub.id })}
-                        className="px-3 py-1.5 rounded-xl subtle-surface hover:bg-teal-600 hover:text-white text-xs font-semibold shrink-0"
-                      >
-                        Abrir
-                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {subQs.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => startQuiz(subQs, `Quiz: ${sub.name} (Matéria Toda)`)}
+                            className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1"
+                          >
+                            <Zap className="w-3.5 h-3.5" />
+                            Resolver ({subQs.length})
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedScope({ type: 'subject', subjectId: sub.id })}
+                          className="px-3 py-1.5 rounded-xl subtle-surface hover:bg-teal-600 hover:text-white text-xs font-semibold"
+                        >
+                          Abrir
+                        </button>
+                      </div>
                     </div>
 
                     {isOpen && (
@@ -480,23 +585,56 @@ export default function QuestoesPage() {
                         {subTopics.map((tp) => {
                           const tpQs = allQuestions.filter((q) => q.topic_id === tp.id);
                           return (
-                            <button
+                            <div
                               key={tp.id}
-                              type="button"
-                              onClick={() =>
-                                setSelectedScope({
-                                  type: 'topic',
-                                  subjectId: sub.id,
-                                  topicId: tp.id,
-                                })
-                              }
-                              className="w-full text-left px-3 py-2 rounded-xl hover:bg-[var(--bg-card)] flex items-center justify-between gap-3"
+                              className="w-full px-3 py-2 rounded-xl hover:bg-[var(--bg-card)] flex items-center justify-between gap-2"
                             >
-                              <span className="text-xs font-medium truncate">{tp.title}</span>
-                              <span className="text-[11px] text-muted-theme shrink-0">
-                                {plural(tpQs.length, 'questão', 'questões')}
-                              </span>
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSelectedScope({
+                                    type: 'topic',
+                                    subjectId: sub.id,
+                                    topicId: tp.id,
+                                  })
+                                }
+                                className="text-left min-w-0 flex-1 flex items-center justify-between gap-2"
+                              >
+                                <span className="text-xs font-medium truncate">{tp.title}</span>
+                                <span className="text-[11px] text-muted-theme shrink-0">
+                                  {plural(tpQs.length, 'questão', 'questões')}
+                                </span>
+                              </button>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {tpQs.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => startQuiz(tpQs, `Quiz: ${tp.title}`)}
+                                    className="px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-[11px] font-bold"
+                                  >
+                                    Resolver
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedScope({
+                                      type: 'topic',
+                                      subjectId: sub.id,
+                                      topicId: tp.id,
+                                    });
+                                    setTargetSubjectId(sub.id);
+                                    setTargetTopicId(tp.id);
+                                    setAddMode('ai');
+                                    setShowAddPanel(true);
+                                  }}
+                                  className="px-2.5 py-1 rounded-lg bg-violet-600/15 hover:bg-violet-600 text-violet-700 dark:text-violet-300 hover:text-white text-[11px] font-bold inline-flex items-center gap-1 transition"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  Criar
+                                </button>
+                              </div>
+                            </div>
                           );
                         })}
                       </div>
@@ -575,9 +713,19 @@ export default function QuestoesPage() {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <h2 className="font-bold text-sm flex items-center gap-1.5">
                   <Sparkles className="w-4 h-4 text-violet-600" />
-                  Transformar Texto ou Imagem em Quiz
+                  Criar ou Importar Questões para o Quiz
                 </h2>
-                <div className="inline-flex p-1 rounded-xl subtle-surface gap-1">
+                <div className="inline-flex p-1 rounded-xl subtle-surface gap-1 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setAddMode('ai')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 ${
+                      addMode === 'ai' ? 'bg-violet-600 text-white' : 'text-muted-theme'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Criar por Tópico (IA)
+                  </button>
                   <button
                     type="button"
                     onClick={() => setAddMode('text')}
@@ -640,7 +788,74 @@ export default function QuestoesPage() {
                 </div>
               </div>
 
-              {addMode === 'text' ? (
+              {addMode === 'ai' ? (
+                <form onSubmit={handleGenerateTopicQuestions} className="space-y-3.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                        Quantidade de questões
+                      </label>
+                      <select
+                        value={aiCount}
+                        onChange={(e) => setAiCount(Number(e.target.value))}
+                        className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+                      >
+                        <option value={3}>3 questões</option>
+                        <option value={5}>5 questões</option>
+                        <option value={8}>8 questões</option>
+                        <option value={10}>10 questões</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                        Estilo
+                      </label>
+                      <select
+                        value={aiStyle}
+                        onChange={(e) =>
+                          setAiStyle(
+                            e.target.value as 'Múltipla escolha (A-E)' | 'Certo ou Errado'
+                          )
+                        }
+                        className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+                      >
+                        <option value="Múltipla escolha (A-E)">Múltipla escolha (A–E)</option>
+                        <option value="Certo ou Errado">Certo ou Errado</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                        Banca (opcional)
+                      </label>
+                      <input
+                        value={aiBoard}
+                        onChange={(e) => setAiBoard(e.target.value)}
+                        placeholder="Ex: FCC, Cebraspe, FGV..."
+                        className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className="text-[11px] text-muted-theme">
+                      As questões geradas ficam salvas no tópico escolhido e entram também nos quizzes da matéria inteira e de tudo junto.
+                    </p>
+                    <button
+                      type="submit"
+                      disabled={converting || !effectiveSubjectId}
+                      className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+                    >
+                      {converting ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-4 h-4" />
+                      )}
+                      {converting
+                        ? `Gerando ${aiCount} questões...`
+                        : `Gerar ${aiCount} Questões com Gemini`}
+                    </button>
+                  </div>
+                </form>
+              ) : addMode === 'text' ? (
                 <form onSubmit={handleConvertTextToQuiz} className="space-y-3">
                   <textarea
                     rows={6}

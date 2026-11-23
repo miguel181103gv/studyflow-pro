@@ -17,6 +17,8 @@ import {
   ArrowLeftRight,
   Sparkles,
   Loader2,
+  CheckSquare,
+  FolderInput,
 } from 'lucide-react';
 
 interface DictEntry {
@@ -89,6 +91,12 @@ export default function DicionarioPage() {
   const [editWord, setEditWord] = useState('');
   const [editMeaning, setEditMeaning] = useState('');
   const [editExample, setEditExample] = useState('');
+  const [editSubjectId, setEditSubjectId] = useState('');
+
+  // Seleção múltipla (excluir ou mover para outra matéria)
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkMoveSubjectId, setBulkMoveSubjectId] = useState('');
 
   // Modo Praticar Flashcard
   const [practicing, setPracticing] = useState(false);
@@ -219,12 +227,54 @@ export default function DicionarioPage() {
               word: editWord.trim(),
               meaning: editMeaning.trim(),
               example: editExample.trim() || undefined,
+              subject_id: editSubjectId || undefined,
             }
           : it
       )
     );
     setEditingId(null);
     notify('Termo atualizado!', 'success');
+  }
+
+  function handleBulkDelete() {
+    if (selectedIds.length === 0) return;
+    if (
+      !window.confirm(
+        `Excluir ${selectedIds.length} ${
+          selectedIds.length === 1 ? 'termo selecionado' : 'termos selecionados'
+        } do Dicionário?`
+      )
+    ) {
+      return;
+    }
+    const idSet = new Set(selectedIds);
+    saveEntries(entries.filter((it) => !idSet.has(it.id)));
+    const count = selectedIds.length;
+    setSelectedIds([]);
+    setSelectMode(false);
+    notify(`${count} ${count === 1 ? 'termo excluído' : 'termos excluídos'}!`, 'info');
+  }
+
+  function handleBulkMoveSubject() {
+    if (selectedIds.length === 0) return;
+    const idSet = new Set(selectedIds);
+    const targetSub = subjects.find((s) => s.id === bulkMoveSubjectId);
+    saveEntries(
+      entries.map((it) =>
+        idSet.has(it.id)
+          ? { ...it, subject_id: bulkMoveSubjectId || undefined }
+          : it
+      )
+    );
+    const count = selectedIds.length;
+    setSelectedIds([]);
+    setSelectMode(false);
+    notify(
+      `${count} ${count === 1 ? 'termo movido' : 'termos movidos'} para ${
+        targetSub ? targetSub.name : 'Geral'
+      }!`,
+      'success'
+    );
   }
 
   function handleDelete(id: string) {
@@ -322,6 +372,24 @@ export default function DicionarioPage() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
+          {entries.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectMode((v) => !v);
+                setSelectedIds([]);
+                setBulkMoveSubjectId(subjects[0]?.id || '');
+              }}
+              className={`px-3.5 py-2.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 border transition ${
+                selectMode
+                  ? 'bg-rose-600 border-rose-600 text-white shadow-sm'
+                  : 'subtle-surface border-theme hover:border-teal-500/50'
+              }`}
+            >
+              <CheckSquare className="w-4 h-4" />
+              {selectMode ? 'Cancelar seleção' : 'Selecionar'}
+            </button>
+          )}
           {filteredEntries.length > 0 && (
             <button
               type="button"
@@ -560,6 +628,68 @@ export default function DicionarioPage() {
         )}
       </div>
 
+      {/* Barra de Seleção Múltipla (Mover para matéria ou Excluir) */}
+      {selectMode && (
+        <div className="sticky top-3 z-20 card-surface rounded-2xl p-4 border-2 border-teal-500/40 bg-[var(--bg-card)]/95 backdrop-blur-md shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-extrabold text-teal-700 dark:text-teal-300">
+              {selectedIds.length} selecionado{selectedIds.length === 1 ? '' : 's'}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const visibleIds = filteredEntries.map((e) => e.id);
+                const allSelected =
+                  visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+                setSelectedIds(allSelected ? [] : visibleIds);
+              }}
+              className="px-3 py-1.5 rounded-xl subtle-surface border border-theme text-xs font-bold hover:opacity-85"
+            >
+              {filteredEntries.length > 0 &&
+              filteredEntries.every((e) => selectedIds.includes(e.id))
+                ? 'Desmarcar todos'
+                : `Selecionar todos (${filteredEntries.length})`}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <select
+                value={bulkMoveSubjectId}
+                onChange={(e) => setBulkMoveSubjectId(e.target.value)}
+                className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+              >
+                <option value="">Geral (sem matéria)</option>
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={selectedIds.length === 0}
+                onClick={handleBulkMoveSubject}
+                className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 disabled:opacity-40 text-white text-xs font-bold inline-flex items-center gap-1.5"
+              >
+                <FolderInput className="w-3.5 h-3.5" />
+                Mover p/ matéria
+              </button>
+            </div>
+
+            <button
+              type="button"
+              disabled={selectedIds.length === 0}
+              onClick={handleBulkDelete}
+              className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs font-bold inline-flex items-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Excluir ({selectedIds.length})
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Lista em Ordem Alfabética estilo Dicionário */}
       {groupedByLetter.length === 0 ? (
         <div className="card-surface rounded-2xl p-10 text-center space-y-3">
@@ -596,7 +726,11 @@ export default function DicionarioPage() {
                   const isEditing = editingId === it.id;
 
                   return (
-                    <div key={it.id} className="p-4 hover:bg-[var(--bg-subtle)]/40 transition">
+                    <div
+                      key={it.id}
+                      className="p-4 hover:bg-[var(--bg-subtle)]/40 transition border-l-4"
+                      style={{ borderLeftColor: sub?.color || 'transparent' }}
+                    >
                       {isEditing ? (
                         <form
                           onSubmit={(e) => handleSaveEdit(e, it.id)}
@@ -622,6 +756,23 @@ export default function DicionarioPage() {
                             placeholder="Exemplo (opcional)"
                             className={inputClass}
                           />
+                          <div>
+                            <label className="block text-[11px] font-semibold text-muted-theme mb-1">
+                              Matéria
+                            </label>
+                            <select
+                              value={editSubjectId}
+                              onChange={(e) => setEditSubjectId(e.target.value)}
+                              className={inputClass}
+                            >
+                              <option value="">Geral (sem matéria)</option>
+                              {subjects.map((s) => (
+                                <option key={s.id} value={s.id}>
+                                  {s.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                           <div className="flex justify-end gap-2">
                             <button
                               type="button"
@@ -640,10 +791,43 @@ export default function DicionarioPage() {
                           </div>
                         </form>
                       ) : (
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 space-y-1">
+                        <div
+                          className={`flex items-start justify-between gap-3 ${
+                            selectMode && selectedIds.includes(it.id)
+                              ? 'bg-teal-500/10 -m-4 p-4'
+                              : ''
+                          }`}
+                        >
+                          <div className="flex items-start gap-3 min-w-0 flex-1">
+                            {selectMode && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setSelectedIds((prev) =>
+                                    prev.includes(it.id)
+                                      ? prev.filter((id) => id !== it.id)
+                                      : [...prev, it.id]
+                                  )
+                                }
+                                className={`mt-1 w-5 h-5 rounded-md flex items-center justify-center border-2 shrink-0 transition ${
+                                  selectedIds.includes(it.id)
+                                    ? 'bg-teal-600 border-teal-600 text-white'
+                                    : 'bg-white dark:bg-slate-800 border-slate-400'
+                                }`}
+                              >
+                                {selectedIds.includes(it.id) && (
+                                  <Check className="w-3.5 h-3.5 stroke-[3]" />
+                                )}
+                              </button>
+                            )}
+                            <div className="min-w-0 space-y-1 flex-1">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <h3 className="font-extrabold text-base text-teal-700 dark:text-teal-300">
+                              <h3
+                                className={`font-extrabold text-base ${
+                                  sub?.color ? '' : 'text-teal-700 dark:text-teal-300'
+                                }`}
+                                style={sub?.color ? { color: sub.color } : undefined}
+                              >
                                 {it.word}
                               </h3>
                               {sub && (
@@ -661,6 +845,7 @@ export default function DicionarioPage() {
                                 Ex: &ldquo;{it.example}&rdquo;
                               </p>
                             )}
+                            </div>
                           </div>
 
                           <div className="flex items-center gap-1 shrink-0">
@@ -671,6 +856,7 @@ export default function DicionarioPage() {
                                 setEditWord(it.word);
                                 setEditMeaning(it.meaning);
                                 setEditExample(it.example || '');
+                                setEditSubjectId(it.subject_id || '');
                               }}
                               title="Editar"
                               className="p-1.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 text-muted-theme hover:text-[var(--text-main)]"

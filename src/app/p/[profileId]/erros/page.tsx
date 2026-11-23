@@ -11,6 +11,7 @@ import {
   Sparkles,
   Image as ImageIcon,
   Trash2,
+  Pencil,
   Zap,
   Loader2,
   X,
@@ -102,6 +103,9 @@ export default function CadernoErrosPage() {
   const [showPrevWrongByCard, setShowPrevWrongByCard] = useState<Record<string, boolean>>({});
   const [showOriginalImgByCard, setShowOriginalImgByCard] = useState<Record<string, boolean>>({});
   const [collapsedByCard, setCollapsedByCard] = useState<Record<string, boolean>>({});
+  const [editingTopicEntryId, setEditingTopicEntryId] = useState<string | null>(null);
+  const [editEntrySubjectId, setEditEntrySubjectId] = useState('');
+  const [editEntryTopicId, setEditEntryTopicId] = useState('');
 
   const [showAdd, setShowAdd] = useState(false);
   const [subjectId, setSubjectId] = useState('');
@@ -504,6 +508,8 @@ export default function CadernoErrosPage() {
         <div className="space-y-4">
           {visibleErrors.map((entry) => {
             const sub = subjects.find((s) => s.id === entry.subject_id);
+            const topicObj = topics.find((t) => t.id === entry.topic_id);
+            const isEditingTopic = editingTopicEntryId === entry.id;
             const imgUrl = entry.image_path ? signedUrls[entry.image_path] : null;
             const dq = parseDigitizedQuestion(entry.question_text);
             const picked = selectedByCard[entry.id] || '';
@@ -529,6 +535,23 @@ export default function CadernoErrosPage() {
                     <span className="text-[11px] px-2.5 py-0.5 rounded-full subtle-surface font-medium">
                       {entry.error_cause}
                     </span>
+                    {!isEditingTopic && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTopicEntryId(entry.id);
+                          setEditEntrySubjectId(entry.subject_id);
+                          setEditEntryTopicId(entry.topic_id || '');
+                        }}
+                        title="Clique para definir ou alterar a matéria/tópico desta questão"
+                        className="text-[11px] px-2.5 py-0.5 rounded-full bg-teal-500/12 border border-teal-500/30 text-teal-700 dark:text-teal-300 font-semibold inline-flex items-center gap-1 hover:bg-teal-500/20 transition max-w-[260px]"
+                      >
+                        <Pencil className="w-2.5 h-2.5 shrink-0" />
+                        <span className="truncate">
+                          {topicObj ? topicObj.title : 'Definir tópico'}
+                        </span>
+                      </button>
+                    )}
                     {dq?.header && (
                       <span className="text-[11px] font-semibold text-muted-theme">
                         · {dq.header}
@@ -594,6 +617,64 @@ export default function CadernoErrosPage() {
                     </button>
                   </div>
                 </div>
+
+                {isEditingTopic && (
+                  <form
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      await updateErrorEntry(entry.id, {
+                        subject_id: editEntrySubjectId || entry.subject_id,
+                        topic_id: editEntryTopicId || null,
+                      });
+                      setEditingTopicEntryId(null);
+                    }}
+                    className="rounded-2xl subtle-surface border border-teal-500/35 p-3 flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
+                  >
+                    <select
+                      value={editEntrySubjectId}
+                      onChange={(e) => {
+                        setEditEntrySubjectId(e.target.value);
+                        setEditEntryTopicId('');
+                      }}
+                      className="rounded-xl bg-[var(--bg-card)] border border-theme px-3 py-1.5 text-xs font-semibold sm:w-48"
+                    >
+                      {subjects.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={editEntryTopicId}
+                      onChange={(e) => setEditEntryTopicId(e.target.value)}
+                      className="flex-1 rounded-xl bg-[var(--bg-card)] border border-theme px-3 py-1.5 text-xs"
+                    >
+                      <option value="">Sem tópico específico</option>
+                      {topics
+                        .filter((t) => t.subject_id === editEntrySubjectId)
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.title}
+                          </option>
+                        ))}
+                    </select>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="submit"
+                        className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+                      >
+                        Salvar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingTopicEntryId(null)}
+                        className="px-2.5 py-1.5 rounded-xl card-surface border border-theme text-xs font-semibold"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 {isCollapsed ? (
                   <p
