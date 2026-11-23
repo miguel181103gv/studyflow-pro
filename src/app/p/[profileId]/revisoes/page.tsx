@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { addDaysISO, formatDateBR, todayISO } from '@/lib/utils';
-import { CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X } from 'lucide-react';
+import { CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X, Trash2 } from 'lucide-react';
 
 interface QuizQuestion {
   statement: string;
@@ -27,6 +27,7 @@ export default function RevisoesPage() {
     highlights,
     completeReview,
     postponeReview,
+    deleteReview,
     addStudyLog,
   } = useProfile();
   const { aiJobs, runAiJob, dismissAiJob } = useGlobal();
@@ -234,6 +235,14 @@ export default function RevisoesPage() {
                       </button>
                     </>
                   )}
+                  <button
+                    onClick={() => deleteReview(rev.id)}
+                    title="Excluir revisão"
+                    aria-label="Excluir revisão"
+                    className="p-1.5 rounded-xl subtle-surface hover:bg-rose-500/15 text-muted-theme hover:text-rose-600 transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             );
@@ -263,8 +272,22 @@ export default function RevisoesPage() {
                 {topicHighlights.map((h) => (
                   <div
                     key={h.id}
-                    className="rounded-xl p-3 text-sm text-slate-900"
-                    style={{ backgroundColor: h.color }}
+                    className="rounded-xl p-3 text-sm border-l-4"
+                    style={{
+                      backgroundColor: h.color,
+                      borderLeftColor:
+                        h.color === '#fee2e2' || h.color === '#fbcfe8'
+                          ? '#dc2626'
+                          : h.color === '#dcfce7' || h.color === '#bbf7d0'
+                          ? '#16a34a'
+                          : '#d97706',
+                      color:
+                        h.color === '#fee2e2' || h.color === '#fbcfe8'
+                          ? '#7f1d1d'
+                          : h.color === '#dcfce7' || h.color === '#bbf7d0'
+                          ? '#14532d'
+                          : '#78350f',
+                    }}
                   >
                     <p className="font-medium">&ldquo;{h.text}&rdquo;</p>
                     {h.note && <p className="text-xs mt-1 opacity-80">Obs: {h.note}</p>}

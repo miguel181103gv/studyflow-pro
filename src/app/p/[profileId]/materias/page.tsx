@@ -20,6 +20,61 @@ import {
   RefreshCw,
 } from 'lucide-react';
 
+const HIGHLIGHT_PRIORITIES = [
+  {
+    label: 'Baixa',
+    bg: '#dcfce7',
+    border: '#16a34a',
+    text: '#14532d',
+    dot: '#16a34a',
+  },
+  {
+    label: 'Média',
+    bg: '#fef3c7',
+    border: '#d97706',
+    text: '#78350f',
+    dot: '#d97706',
+  },
+  {
+    label: 'Alta',
+    bg: '#fee2e2',
+    border: '#dc2626',
+    text: '#7f1d1d',
+    dot: '#dc2626',
+  },
+] as const;
+
+function getHighlightStyle(color: string) {
+  const found = HIGHLIGHT_PRIORITIES.find((p) => p.bg.toLowerCase() === (color || '').toLowerCase());
+  if (found) return found;
+  // Compatibilidade com grifos antigos
+  if (color === '#bbf7d0') return HIGHLIGHT_PRIORITIES[0];
+  if (color === '#fef08a') return HIGHLIGHT_PRIORITIES[1];
+  if (color === '#fbcfe8') return HIGHLIGHT_PRIORITIES[2];
+  return { label: 'Nota', bg: color || '#fef3c7', border: '#d97706', text: '#0f172a', dot: '#d97706' };
+}
+
+function parseTopicList(raw: string): string[] {
+  const normalized = raw.replace(/\r\n/g, '\n').trim();
+  if (!normalized) return [];
+  const lines = normalized.includes('\n')
+    ? normalized.split('\n')
+    : normalized.includes(';')
+    ? normalized.split(';')
+    : [normalized];
+
+  return lines
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^[-*•–—]\s+/, '')
+        .replace(/^\d+(?:\.\d+)*\s*[.)-]?\s+/, '')
+        .replace(/;+$/, '')
+        .trim()
+    )
+    .filter((item) => item.length > 0);
+}
+
 interface FoundVideo {
   videoId: string;
   url: string;
@@ -35,6 +90,7 @@ export default function MateriasPage() {
     highlights,
     addSubject,
     addTopic,
+    addTopicsBatch,
     updateTopicPdf,
     updateTopicVideo,
     addHighlight,
@@ -58,7 +114,7 @@ export default function MateriasPage() {
   const [hlText, setHlText] = useState('');
   const [hlNote, setHlNote] = useState('');
   const [hlPage, setHlPage] = useState('1');
-  const [hlColor, setHlColor] = useState('#fef08a');
+  const [hlColor, setHlColor] = useState('#fef3c7');
 
   const currentSubjectId = selectedSubjectId || subjects[0]?.id || '';
   const currentSubject = subjects.find((s) => s.id === currentSubjectId);
@@ -66,16 +122,27 @@ export default function MateriasPage() {
   const activeTopic = topics.find((t) => t.id === activeTopicId);
   const activeHighlights = highlights.filter((h) => h.topic_id === activeTopicId);
 
+  const parsedTopicsToAdd = parseTopicList(newTopicTitle);
+
   async function handleAddTopic(e: React.FormEvent) {
     e.preventDefault();
-    if (!currentSubjectId || !newTopicTitle.trim()) return;
-    const duplicate = currentTopics.some(
-      (t) => t.title.trim().toLowerCase() === newTopicTitle.trim().toLowerCase()
-    );
-    if (duplicate && !confirm('Já existe um tópico com nome igual nesta matéria. Deseja adicionar mesmo assim?')) {
-      return;
+    if (!currentSubjectId || parsedTopicsToAdd.length === 0) return;
+
+    if (parsedTopicsToAdd.length === 1) {
+      const single = parsedTopicsToAdd[0];
+      const duplicate = currentTopics.some(
+        (t) => t.title.trim().toLowerCase() === single.toLowerCase()
+      );
+      if (
+        duplicate &&
+        !confirm('Já existe um tópico com nome igual nesta matéria. Deseja adicionar mesmo assim?')
+      ) {
+        return;
+      }
+      await addTopic(currentSubjectId, single);
+    } else {
+      await addTopicsBatch(currentSubjectId, parsedTopicsToAdd);
     }
-    await addTopic(currentSubjectId, newTopicTitle);
     setNewTopicTitle('');
   }
 
@@ -267,21 +334,65 @@ export default function MateriasPage() {
         </form>
       </div>
 
-      {/* Add Topic */}
-      <form onSubmit={handleAddTopic} className="flex gap-2">
-        <input
-          value={newTopicTitle}
-          onChange={(e) => setNewTopicTitle(e.target.value)}
-          placeholder="Adicionar novo tópico personalizado nesta matéria..."
-          className="flex-1 rounded-xl card-surface px-4 py-2.5 text-sm focus:outline-none"
-        />
-        <button
-          type="submit"
-          className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold inline-flex items-center gap-1.5"
-        >
-          <Plus className="w-4 h-4" />
-          Adicionar
-        </button>
+      {/* Add Topic (suporta 1 tópico ou colar uma lista inteira que vira vários checklists) */}
+      <form onSubmit={handleAddTopic} className="space-y-2.5">
+        <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-start">
+          <textarea
+            rows={parsedTopicsToAdd.length > 1 ? Math.min(6, parsedTopicsToAdd.length + 1) : 1}
+            value={newTopicTitle}
+            onChange={(e) => setNewTopicTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && parsedTopicsToAdd.length <= 1) {
+                e.preventDefault();
+                handleAddTopic(e);
+              }
+            }}
+            placeholder="Adicionar tópico ou colar uma lista (um por linha ou separado por ;)..."
+            className="flex-1 rounded-xl card-surface px-4 py-2.5 text-sm resize-y"
+          />
+          <button
+            type="submit"
+            disabled={parsedTopicsToAdd.length === 0}
+            className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 disabled:opacity-50 shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            {parsedTopicsToAdd.length > 1
+              ? `Adicionar ${parsedTopicsToAdd.length} tópicos`
+              : 'Adicionar'}
+          </button>
+        </div>
+
+        {parsedTopicsToAdd.length > 1 && (
+          <div className="card-surface rounded-2xl p-4 space-y-2.5 animate-fade-in-up border border-teal-500/35">
+            <p className="text-xs font-bold text-teal-700 dark:text-teal-300">
+              Lista detectada: serão criados {parsedTopicsToAdd.length} itens de checklist em {currentSubject?.name}:
+            </p>
+            <div className="max-h-44 overflow-y-auto space-y-1.5 pr-1">
+              {parsedTopicsToAdd.map((item, idx) => (
+                <div
+                  key={idx}
+                  className="subtle-surface rounded-xl px-3 py-1.5 flex items-center justify-between gap-2 text-xs"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className="w-4 h-4 rounded border border-slate-400/60 shrink-0 inline-block" />
+                    <span className="truncate">{item}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const remaining = parsedTopicsToAdd.filter((_, i) => i !== idx);
+                      setNewTopicTitle(remaining.join('\n'));
+                    }}
+                    className="text-muted-theme hover:text-rose-600 shrink-0"
+                    title="Remover da lista"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </form>
 
       {/* Topics List */}
@@ -516,23 +627,36 @@ export default function MateriasPage() {
                       className="w-16 rounded-xl subtle-surface border border-theme px-2 py-2 text-xs text-center"
                     />
                   </div>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <div className="flex items-center gap-1.5">
-                      {['#fef08a', '#bbf7d0', '#bae6fd', '#fbcfe8'].map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          onClick={() => setHlColor(c)}
-                          className={`w-6 h-6 rounded-full border-2 ${
-                            hlColor === c ? 'border-slate-900 scale-110' : 'border-transparent'
-                          }`}
-                          style={{ backgroundColor: c }}
-                        />
-                      ))}
+                      {HIGHLIGHT_PRIORITIES.map((prio) => {
+                        const selected = hlColor === prio.bg;
+                        return (
+                          <button
+                            key={prio.bg}
+                            type="button"
+                            onClick={() => setHlColor(prio.bg)}
+                            className={`px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1.5 border transition ${
+                              selected ? 'ring-2 ring-offset-1 ring-slate-700 dark:ring-slate-300' : 'opacity-80 hover:opacity-100'
+                            }`}
+                            style={{
+                              backgroundColor: prio.bg,
+                              borderColor: prio.border,
+                              color: prio.text,
+                            }}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full"
+                              style={{ backgroundColor: prio.dot }}
+                            />
+                            {prio.label}
+                          </button>
+                        );
+                      })}
                     </div>
                     <button
                       type="submit"
-                      className="px-3 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-semibold"
+                      className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold"
                     >
                       Salvar Grifo
                     </button>
@@ -540,22 +664,39 @@ export default function MateriasPage() {
                 </form>
 
                 <div className="space-y-2 flex-1">
-                  {activeHighlights.map((h) => (
-                    <div
-                      key={h.id}
-                      className="rounded-xl p-3 text-xs text-slate-900 relative group"
-                      style={{ backgroundColor: h.color }}
-                    >
-                      <button
-                        onClick={() => deleteHighlight(h.id)}
-                        className="opacity-0 group-hover:opacity-100 absolute top-2 right-2 p-1 rounded bg-black/10 hover:bg-red-500 hover:text-white"
+                  {activeHighlights.map((h) => {
+                    const st = getHighlightStyle(h.color);
+                    return (
+                      <div
+                        key={h.id}
+                        className="rounded-xl p-3 text-xs relative group border-l-4"
+                        style={{
+                          backgroundColor: st.bg,
+                          borderLeftColor: st.border,
+                          color: st.text,
+                        }}
                       >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                      <p className="font-medium pr-5">{h.text}</p>
-                      <p className="mt-1 text-[10px] font-bold opacity-70">Pág. {h.page_number || 1}{h.note ? ` · ${h.note}` : ''}</p>
-                    </div>
-                  ))}
+                        <button
+                          onClick={() => deleteHighlight(h.id)}
+                          aria-label="Excluir grifo"
+                          className="opacity-0 group-hover:opacity-100 absolute top-2 right-2 p-1 rounded bg-black/10 hover:bg-rose-600 hover:text-white transition"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                        <span
+                          className="inline-block text-[10px] font-extrabold uppercase tracking-wider mb-1 px-1.5 py-0.5 rounded"
+                          style={{ backgroundColor: 'rgba(255,255,255,0.6)', color: st.text }}
+                        >
+                          Prioridade {st.label}
+                        </span>
+                        <p className="font-semibold pr-5 leading-relaxed">{h.text}</p>
+                        <p className="mt-1 text-[10px] font-bold opacity-80">
+                          Pág. {h.page_number || 1}
+                          {h.note ? ` · ${h.note}` : ''}
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

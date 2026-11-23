@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { useGlobal } from '@/components/GlobalProvider';
 import { formatDurationHMS, formatDurationHM, formatDateBR, todayISO } from '@/lib/utils';
 import {
   Play,
@@ -49,6 +50,7 @@ function CycleTooltip({ active, payload }: CustomTooltipProps) {
 
 export default function CicloPage() {
   const {
+    profile,
     subjects,
     topics,
     studyLogs,
@@ -78,11 +80,60 @@ export default function CicloPage() {
   const [saving, setSaving] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const { notify } = useGlobal();
+
+  // Reiniciar Ciclo: guarda apenas o marco temporal (preserva 100% das horas e estatísticas!)
+  const cycleResetKey = `sf_cycle_reset_${profile?.id || 'default'}`;
+  const [cycleResetAt, setCycleResetAt] = useState<string | null>(null);
+  const [cycleNumber, setCycleNumber] = useState<number>(1);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(cycleResetKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setCycleResetAt(parsed.resetAt || null);
+        setCycleNumber(parsed.cycleNumber || 1);
+      } else {
+        setCycleResetAt(null);
+        setCycleNumber(1);
+      }
+    } catch {
+      // ignore
+    }
+  }, [cycleResetKey]);
+
+  function handleResetCycle() {
+    if (
+      !confirm(
+        'Reiniciar o progresso deste ciclo para 0%? Todas as suas horas estudadas e estatísticas continuarão salvas normalmente.'
+      )
+    ) {
+      return;
+    }
+    const nowIso = new Date().toISOString();
+    const nextNum = cycleNumber + 1;
+    setCycleResetAt(nowIso);
+    setCycleNumber(nextNum);
+    try {
+      localStorage.setItem(
+        cycleResetKey,
+        JSON.stringify({ resetAt: nowIso, cycleNumber: nextNum })
+      );
+    } catch {
+      // ignore
+    }
+    notify(`Ciclo #${nextNum} iniciado! Suas horas anteriores continuam salvas nas estatísticas.`, 'success');
+  }
 
   const totalCycleMinutes = subjects.reduce(
     (acc, s) => acc + s.cycle_hours * 60 + s.cycle_minutes,
     0
   );
+  const cycleLogs = cycleResetAt
+    ? studyLogs.filter((l) => l.created_at > cycleResetAt)
+    : studyLogs;
+  const cycleStudiedSeconds = cycleLogs.reduce((acc, l) => acc + l.duration_seconds, 0);
   const totalStudiedSeconds = studyLogs.reduce((acc, l) => acc + l.duration_seconds, 0);
 
   const donutData = subjects.map((s) => {
@@ -155,13 +206,24 @@ export default function CicloPage() {
             Arraste para ordenar suas matérias, ajuste a carga horária e use o cronômetro ao vivo.
           </p>
         </div>
-        <button
-          onClick={() => openRegisterModal()}
-          className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold shadow-sm transition"
-        >
-          <Plus className="w-4 h-4" />
-          Registrar Estudo Manual
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={handleResetCycle}
+            title="Zera as barras do ciclo atual sem apagar suas horas estudadas nem estatísticas"
+            className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-2xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-bold transition"
+          >
+            <RotateCcw className="w-4 h-4 text-teal-600" />
+            Reiniciar Ciclo
+          </button>
+          <button
+            onClick={() => openRegisterModal()}
+            className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold shadow-sm transition"
+          >
+            <Plus className="w-4 h-4" />
+            Registrar Estudo Manual
+          </button>
+        </div>
       </div>
 
       {/* Top Row: Donut Refinado + Cronômetro */}
@@ -205,11 +267,19 @@ export default function CicloPage() {
             </div>
           </div>
 
-          <div className="w-full mt-2 pt-3 border-t border-theme flex items-center justify-between text-xs">
-            <span className="text-muted-theme font-medium">Total já estudado:</span>
-            <span className="font-extrabold text-teal-600">
-              {formatDurationHMS(totalStudiedSeconds)}
-            </span>
+          <div className="w-full mt-2 pt-3 border-t border-theme space-y-1.5 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-theme font-medium">Neste ciclo (#{cycleNumber}):</span>
+              <span className="font-extrabold text-teal-600">
+                {formatDurationHMS(cycleStudiedSeconds)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[11px]">
+              <span className="text-muted-theme">Total histórico acumulado:</span>
+              <span className="font-bold text-muted-theme">
+                {formatDurationHMS(totalStudiedSeconds)}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -294,7 +364,7 @@ export default function CicloPage() {
 
         <div className="space-y-3">
           {subjects.map((s, idx) => {
-            const studiedForSubject = studyLogs
+            const studiedForSubject = cycleLogs
               .filter((l) => l.subject_id === s.id)
               .reduce((a, b) => a + b.duration_seconds, 0);
             const targetSecs = (s.cycle_hours * 60 + s.cycle_minutes) * 60;

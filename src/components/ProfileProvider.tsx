@@ -61,6 +61,7 @@ interface ProfileContextValue {
   moveSubject: (sourceId: string, targetId: string) => Promise<void>;
   setSubjectOrder: (orderedIds: string[]) => Promise<void>;
   addTopic: (subjectId: string, title: string) => Promise<void>;
+  addTopicsBatch: (subjectId: string, titles: string[]) => Promise<void>;
   toggleTopicStudied: (topic: Topic) => Promise<void>;
   toggleSubjectStudied: (subjectId: string, markAll: boolean) => Promise<void>;
   toggleTopicPriority: (topic: Topic) => Promise<void>;
@@ -76,6 +77,7 @@ interface ProfileContextValue {
 
   completeReview: (reviewId: string) => Promise<void>;
   postponeReview: (reviewId: string, newDueDate: string) => Promise<void>;
+  deleteReview: (reviewId: string) => Promise<void>;
   addErrorEntry: (
     payload: Omit<ErrorEntry, 'id' | 'user_id' | 'profile_id' | 'created_at'>
   ) => Promise<ErrorEntry | null>;
@@ -467,6 +469,38 @@ export function ProfileProvider({
     });
   };
 
+  const addTopicsBatch = async (subjectId: string, titles: string[]) => {
+    const clean = titles.map((t) => t.trim()).filter(Boolean);
+    if (!userId || clean.length === 0) return;
+    await withSync(async () => {
+      const supabase = createClient();
+      const baseOrder = topics.filter((t) => t.subject_id === subjectId).length;
+      const { data } = await supabase
+        .from('topics')
+        .insert(
+          clean.map((title, idx) => ({
+            user_id: userId,
+            profile_id: profileId,
+            subject_id: subjectId,
+            title,
+            studied: false,
+            is_priority: false,
+            sort_order: baseOrder + idx,
+          }))
+        )
+        .select('*');
+      if (data && data.length > 0) {
+        setTopics((prev) => [...prev, ...(data as Topic[])]);
+        notify(
+          data.length === 1
+            ? 'Tópico adicionado!'
+            : `${data.length} tópicos adicionados como checklist!`,
+          'success'
+        );
+      }
+    });
+  };
+
   const toggleSubjectStudied = async (subjectId: string, markAll: boolean) => {
     const subTopics = topics.filter((t) => t.subject_id === subjectId);
     if (subTopics.length === 0) return;
@@ -713,6 +747,35 @@ export function ProfileProvider({
     });
   };
 
+  const deleteReview = async (reviewId: string) => {
+    const deleted = reviews.find((r) => r.id === reviewId);
+    setReviews((prev) => prev.filter((r) => r.id !== reviewId));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('spaced_reviews').delete().eq('id', reviewId);
+      if (deleted) {
+        notify('Revisão excluída.', 'info', async () => {
+          const sb = createClient();
+          const { data } = await sb
+            .from('spaced_reviews')
+            .insert({
+              user_id: userId,
+              profile_id: profileId,
+              subject_id: deleted.subject_id,
+              topic_id: deleted.topic_id,
+              interval_days: deleted.interval_days,
+              due_date: deleted.due_date,
+              completed: deleted.completed,
+              completed_at: deleted.completed_at,
+            })
+            .select('*')
+            .single();
+          if (data) setReviews((prev) => [...prev, data as SpacedReview]);
+        });
+      }
+    });
+  };
+
   const addErrorEntry = async (
     payload: Omit<ErrorEntry, 'id' | 'user_id' | 'profile_id' | 'created_at'>
   ): Promise<ErrorEntry | null> => {
@@ -907,6 +970,7 @@ export function ProfileProvider({
         moveSubject,
         setSubjectOrder,
         addTopic,
+        addTopicsBatch,
         toggleTopicStudied,
         toggleSubjectStudied,
         toggleTopicPriority,
@@ -918,6 +982,7 @@ export function ProfileProvider({
         deleteStudyLog,
         completeReview,
         postponeReview,
+        deleteReview,
         addErrorEntry,
         updateErrorEntry,
         deleteErrorEntry,
