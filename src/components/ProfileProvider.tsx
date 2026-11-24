@@ -24,6 +24,7 @@ interface StopwatchState {
   subjectId: string | null;
   topicId: string | null;
   elapsedSeconds: number;
+  baseElapsedSeconds?: number;
   startedAt: number | null;
   quickNote?: string;
 }
@@ -136,6 +137,7 @@ export function ProfileProvider({
     subjectId: null,
     topicId: null,
     elapsedSeconds: 0,
+    baseElapsedSeconds: 0,
     startedAt: null,
   });
 
@@ -145,14 +147,21 @@ export function ProfileProvider({
       if (!raw) return;
       const saved = JSON.parse(raw) as StopwatchState;
       if (saved.running && saved.startedAt) {
+        const base =
+          typeof saved.baseElapsedSeconds === 'number'
+            ? saved.baseElapsedSeconds
+            : saved.elapsedSeconds;
         const extra = Math.max(0, Math.floor((Date.now() - saved.startedAt) / 1000));
         setStopwatch({
           ...saved,
-          elapsedSeconds: saved.elapsedSeconds + extra,
-          startedAt: Date.now(),
+          baseElapsedSeconds: base,
+          elapsedSeconds: base + extra,
         });
       } else if (saved.subjectId) {
-        setStopwatch(saved);
+        setStopwatch({
+          ...saved,
+          baseElapsedSeconds: saved.baseElapsedSeconds ?? saved.elapsedSeconds,
+        });
       }
     } catch {
       // ignore storage errors
@@ -173,13 +182,28 @@ export function ProfileProvider({
 
   useEffect(() => {
     if (!stopwatch.running) return;
-    const timer = setInterval(() => {
+    const syncElapsed = () => {
       setStopwatch((prev) => {
         if (!prev.running || !prev.startedAt) return prev;
-        return { ...prev, elapsedSeconds: prev.elapsedSeconds + 1, startedAt: Date.now() };
+        const base = prev.baseElapsedSeconds ?? 0;
+        const realElapsed = base + Math.max(0, Math.floor((Date.now() - prev.startedAt) / 1000));
+        if (realElapsed === prev.elapsedSeconds) return prev;
+        return { ...prev, elapsedSeconds: realElapsed };
       });
-    }, 1000);
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(syncElapsed, 1000);
+    const onResume = () => {
+      if (document.visibilityState === 'visible') syncElapsed();
+    };
+    document.addEventListener('visibilitychange', onResume);
+    window.addEventListener('focus', syncElapsed);
+    window.addEventListener('pageshow', syncElapsed);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('focus', syncElapsed);
+      window.removeEventListener('pageshow', syncElapsed);
+    };
   }, [stopwatch.running]);
 
   const setStopwatchNote = (note: string) => {
@@ -198,17 +222,36 @@ export function ProfileProvider({
       );
       if (!ok) return;
     }
-    setStopwatch((prev) => ({
-      running: true,
-      subjectId,
-      topicId: topicId ?? prev.topicId,
-      elapsedSeconds: prev.subjectId === subjectId ? prev.elapsedSeconds : 0,
-      startedAt: Date.now(),
-    }));
+    setStopwatch((prev) => {
+      const sameSubject = prev.subjectId === subjectId;
+      const base = sameSubject ? prev.elapsedSeconds : 0;
+      return {
+        running: true,
+        subjectId,
+        topicId: topicId ?? (sameSubject ? prev.topicId : null),
+        elapsedSeconds: base,
+        baseElapsedSeconds: base,
+        startedAt: Date.now(),
+        quickNote: sameSubject ? prev.quickNote : undefined,
+      };
+    });
   };
 
   const pauseStopwatch = () => {
-    setStopwatch((prev) => ({ ...prev, running: false, startedAt: null }));
+    setStopwatch((prev) => {
+      const base = prev.baseElapsedSeconds ?? prev.elapsedSeconds;
+      const finalElapsed =
+        prev.running && prev.startedAt
+          ? base + Math.max(0, Math.floor((Date.now() - prev.startedAt) / 1000))
+          : prev.elapsedSeconds;
+      return {
+        ...prev,
+        running: false,
+        elapsedSeconds: finalElapsed,
+        baseElapsedSeconds: finalElapsed,
+        startedAt: null,
+      };
+    });
   };
 
   const resetStopwatch = () => {
@@ -220,6 +263,7 @@ export function ProfileProvider({
       subjectId: null,
       topicId: null,
       elapsedSeconds: 0,
+      baseElapsedSeconds: 0,
       startedAt: null,
     });
   };
