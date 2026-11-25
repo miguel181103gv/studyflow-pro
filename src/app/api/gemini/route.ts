@@ -97,7 +97,8 @@ async function callDeepSeek(
             { role: 'user', content: userContent },
           ],
           temperature: jsonMode ? 0.2 : 0.4,
-          max_tokens: 4096,
+          max_tokens: jsonMode ? 2500 : 4096,
+          ...(dsModel === 'deepseek-flash' ? { thinking: { type: 'disabled' } } : {}),
           ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
         }),
         signal: AbortSignal.timeout(hasImage ? 35000 : 24000),
@@ -747,7 +748,7 @@ Seja objetivo, use números reais dos dados enviados e evite floreios.`,
 
       const prompt = `Crie exatamente ${safeCount} questões inéditas e fiéis à legislação/doutrina/jurisprudência atual ${topicContext}${boardText}.
 Formato obrigatório: ${isCE ? 'Certo ou Errado (apenas opções C = Certo e E = Errado)' : 'Múltipla escolha com 5 alternativas (A, B, C, D, E)'}.
-Cada questão deve ter um comentário objetivo explicando por que o gabarito está certo.
+Cada questão deve ter um comentário curto e objetivo (1 a 2 frases) explicando por que o gabarito está certo. IMPORTANTE: não use aspas duplas dentro dos textos (use aspas simples '' em citações).
 
 Retorne SOMENTE um JSON válido neste formato exato:
 {
@@ -766,8 +767,20 @@ Retorne SOMENTE um JSON válido neste formato exato:
   ]
 }`;
 
-      const raw = await callGemini([{ text: prompt }], true, false, true);
-      const data = extractJsonObject(raw);
+      let data: unknown = null;
+      let lastParseErr: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const raw = await callGemini([{ text: prompt }], true, false, true);
+          data = extractJsonObject(raw);
+          break;
+        } catch (err) {
+          lastParseErr = err;
+        }
+      }
+      if (!data) {
+        throw (lastParseErr instanceof Error ? lastParseErr : new Error('Erro ao ler JSON da questão.'));
+      }
       return NextResponse.json({ ok: true, data });
     }
 

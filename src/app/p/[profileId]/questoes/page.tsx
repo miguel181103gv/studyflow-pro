@@ -660,35 +660,42 @@ export default function QuestoesPage() {
       task: async () => {
         const collected: BankQuestion[] = [];
         try {
+          const batchSizes: number[] = [];
           let rem = countSnap;
           while (rem > 0) {
-            const batchQty = Math.min(2, rem);
-            updateAiJobProgress(
-              aiGenJobId,
-              Math.round((collected.length / countSnap) * 100),
-              `${labelTarget}: ${collected.length}/${countSnap} questões (${Math.round((collected.length / countSnap) * 100)}%)`
-            );
-            try {
-              const items = await fetchBatch(batchQty);
-              collected.push(...items);
-            } catch {
-              // Se 2 questões demorarem, tenta de 1 em 1 automaticamente
-              if (batchQty > 1) {
-                for (let k = 0; k < batchQty; k++) {
-                  const single = await fetchBatch(1);
-                  collected.push(...single);
-                }
-              } else {
-                throw new Error('Tempo esgotado no servidor. Tente novamente.');
-              }
-            }
-            rem -= batchQty;
-            updateAiJobProgress(
-              aiGenJobId,
-              Math.round((collected.length / countSnap) * 100),
-              `${labelTarget}: ${collected.length}/${countSnap} questões (${Math.round((collected.length / countSnap) * 100)}%)`
-            );
+            const q = Math.min(2, rem);
+            batchSizes.push(q);
+            rem -= q;
           }
+
+          let cursor = 0;
+          const workerCount = Math.min(3, batchSizes.length);
+          const workers = Array.from({ length: workerCount }, async () => {
+            while (cursor < batchSizes.length) {
+              const idx = cursor++;
+              const batchQty = batchSizes[idx];
+              try {
+                const items = await fetchBatch(batchQty);
+                collected.push(...items);
+              } catch {
+                if (batchQty > 1) {
+                  for (let k = 0; k < batchQty; k++) {
+                    const single = await fetchBatch(1);
+                    collected.push(...single);
+                  }
+                } else {
+                  throw new Error('Tempo esgotado no servidor. Tente novamente.');
+                }
+              }
+              const pct = Math.min(100, Math.round((collected.length / countSnap) * 100));
+              updateAiJobProgress(
+                aiGenJobId,
+                pct,
+                `${labelTarget}: ${collected.length}/${countSnap} questões (${pct}%)`
+              );
+            }
+          });
+          await Promise.all(workers);
         } finally {
           if (collected.length > 0) {
             try {

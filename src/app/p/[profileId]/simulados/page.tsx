@@ -305,63 +305,71 @@ export default function SimuladosPage() {
       task: async () => {
         const collected: SimQuestion[] = [];
         try {
+          interface SimTask {
+            subject: typeof chosenSubs[number];
+            topicTitle: string;
+            topicId: string | null;
+            qty: number;
+          }
+          const tasks: SimTask[] = [];
           for (const item of plan) {
             const subTopics = topicsSnap.filter((t) => t.subject_id === item.subject.id);
             let rem = item.count;
             let partIdx = 0;
-
             while (rem > 0) {
               const batchCount = Math.min(2, rem);
               const chosenTopic =
                 subTopics.length > 0
                   ? subTopics[(partIdx + Math.floor(Math.random() * subTopics.length)) % subTopics.length]
                   : null;
+              tasks.push({
+                subject: item.subject,
+                topicTitle: chosenTopic?.title || '',
+                topicId: chosenTopic?.id || null,
+                qty: batchCount,
+              });
+              rem -= batchCount;
+              partIdx++;
+            }
+          }
 
-              const pct = Math.round((collected.length / totalSnap) * 100);
-              updateAiJobProgress(
-                simJobId,
-                pct,
-                `${item.subject.name}: ${collected.length}/${totalSnap} questões (${pct}%)`
-              );
-
+          let cursor = 0;
+          const workerCount = Math.min(3, tasks.length);
+          const workers = Array.from({ length: workerCount }, async () => {
+            while (cursor < tasks.length) {
+              const t = tasks[cursor++];
               try {
                 const batchItems = await fetchSimBatch(
-                  item.subject,
-                  chosenTopic?.title || '',
-                  chosenTopic?.id || null,
-                  batchCount
+                  t.subject,
+                  t.topicTitle,
+                  t.topicId,
+                  t.qty
                 );
                 collected.push(...batchItems);
               } catch {
-                if (batchCount > 1) {
-                  for (let k = 0; k < batchCount; k++) {
-                    const t2 =
-                      subTopics.length > 0
-                        ? subTopics[(partIdx + k) % subTopics.length]
-                        : null;
+                if (t.qty > 1) {
+                  for (let k = 0; k < t.qty; k++) {
                     const single = await fetchSimBatch(
-                      item.subject,
-                      t2?.title || '',
-                      t2?.id || null,
+                      t.subject,
+                      t.topicTitle,
+                      t.topicId,
                       1
                     );
                     collected.push(...single);
                   }
                 } else {
-                  throw new Error(`Tempo esgotado no lote de ${item.subject.name}.`);
+                  throw new Error(`Tempo esgotado no lote de ${t.subject.name}.`);
                 }
               }
-
-              rem -= batchCount;
-              partIdx++;
-              const nextPct = Math.round((collected.length / totalSnap) * 100);
+              const nextPct = Math.min(100, Math.round((collected.length / totalSnap) * 100));
               updateAiJobProgress(
                 simJobId,
                 nextPct,
-                `${item.subject.name}: ${collected.length}/${totalSnap} questões (${nextPct}%)`
+                `${t.subject.name}: ${collected.length}/${totalSnap} questões (${nextPct}%)`
               );
             }
-          }
+          });
+          await Promise.all(workers);
         } finally {
           if (collected.length > 0) {
             const isPartial = collected.length < totalSnap;
