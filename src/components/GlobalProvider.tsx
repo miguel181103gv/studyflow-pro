@@ -1,5 +1,7 @@
 'use client';
 
+import { useAiProviderName } from '@/lib/useAiProvider';
+
 import React, { createContext, useCallback, useContext, useState } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
@@ -76,6 +78,7 @@ interface GlobalContextValue {
 const GlobalContext = createContext<GlobalContextValue | null>(null);
 
 export function GlobalProvider({ children }: { children: React.ReactNode }) {
+  const aiName = useAiProviderName();
   const [toast, setToast] = useState<ToastState | null>(null);
   const [aiJobs, setAiJobs] = useState<Record<string, AiJob>>({});
 
@@ -345,10 +348,10 @@ export function GlobalProvider({ children }: { children: React.ReactNode }) {
                   <Sparkles className="w-3.5 h-3.5 text-violet-400 shrink-0" />
                   <span className="truncate">
                     {job.status === 'running'
-                      ? 'Gemini trabalhando em segundo plano'
+                      ? `${aiName} trabalhando em segundo plano`
                       : job.status === 'error'
-                      ? 'Falha na tarefa do Gemini'
-                      : 'Tarefa do Gemini concluída'}
+                      ? `Falha na tarefa do ${aiName}`
+                      : `Tarefa do ${aiName} concluída`}
                   </span>
                 </p>
                 <p className="text-[11px] text-slate-300 mt-0.5 break-words">

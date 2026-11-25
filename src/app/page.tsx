@@ -96,6 +96,15 @@ export default function ProfileSelectorPage() {
 
   // Etapa de escolha de cargo
   const [roleOptions, setRoleOptions] = useState<string[]>([]);
+  const [preloadedRoleDetails, setPreloadedRoleDetails] = useState<Record<string, {
+    role_title?: string;
+    salary_base?: string;
+    vale_alimentacao?: string;
+    workload?: string;
+    exam_date?: string;
+    extras?: string;
+    subjects?: ParsedSubject[];
+  }>>({});
   const [chosenRole, setChosenRole] = useState<string>('');
 
   // Lista de editais adicionados para conciliação
@@ -166,6 +175,7 @@ export default function ProfileSelectorPage() {
     setQuickSubjectInput('');
     setPdfBase64Cache(null);
     setRoleOptions([]);
+    setPreloadedRoleDetails({});
     setChosenRole('');
     setAddedEditais([]);
     setPendingOrgan('');
@@ -238,6 +248,7 @@ export default function ProfileSelectorPage() {
       setStep('pick_role');
     } else if (c.cargos && c.cargos.length === 1) {
       setRoleOptions([]);
+    setPreloadedRoleDetails({});
       setChosenRole(c.cargos[0]);
       setRoleTitle(c.cargos[0]);
       setStep('review');
@@ -300,14 +311,30 @@ export default function ProfileSelectorPage() {
     }
   }
 
-  async function handleSelectRole(selectedRole: string, organOverride?: string, b64Override?: string) {
+  async function handleSelectRole(
+    selectedRole: string,
+    organOverride?: string,
+    b64Override?: string,
+    preloadedOverride?: Record<string, {
+      role_title?: string;
+      salary_base?: string;
+      vale_alimentacao?: string;
+      workload?: string;
+      exam_date?: string;
+      extras?: string;
+      subjects?: ParsedSubject[];
+    }>
+  ) {
     const organ = organOverride ?? (pendingOrgan || name);
     const b64 = b64Override ?? pdfBase64Cache;
+    const preloadedMap = preloadedOverride ?? preloadedRoleDetails;
+    const preloaded = preloadedMap[selectedRole.trim().toLowerCase()];
+
     setChosenRole(selectedRole);
     setParseError(null);
     setStep('review');
 
-    if (!b64) {
+    if (!b64 && !preloaded) {
       setRoleTitle(selectedRole);
       await enrichMissingInfo(organ, selectedRole);
       return;
@@ -315,21 +342,31 @@ export default function ProfileSelectorPage() {
 
     setExtractingRole(true);
     try {
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'extract_role_details',
-          pdfBase64: b64,
-          mimeType: pdfMimeCache,
-          organName: organ,
-          roleTitle: selectedRole,
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao extrair dados do cargo.');
+      let d = preloaded && Array.isArray(preloaded.subjects) && preloaded.subjects.length > 0
+        ? preloaded
+        : null;
 
-      const d = json.data;
+      if (!d && b64) {
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'extract_role_details',
+            pdfBase64: b64,
+            mimeType: pdfMimeCache,
+            organName: organ,
+            roleTitle: selectedRole,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao extrair dados do cargo.');
+        d = json.data;
+      }
+
+      if (!d) {
+        setRoleTitle(selectedRole);
+        return;
+      }
       const newDraft: EditalDraft = {
         organName: organ,
         roleTitle: selectedRole,
@@ -342,6 +379,7 @@ export default function ProfileSelectorPage() {
       const nextList = [...addedEditais, newDraft];
       setAddedEditais(nextList);
       setRoleOptions([]);
+    setPreloadedRoleDetails({});
       setPdfBase64Cache(null);
 
       if (nextList.length === 1) {
@@ -352,7 +390,7 @@ export default function ProfileSelectorPage() {
         if (d.workload) setWorkload(d.workload);
         if (d.extras) setExtras(d.extras);
         if (d.exam_date) setExamDate(d.exam_date);
-        if (d.status_text) setStatusText((prev) => d.status_text || prev);
+        if ('status_text' in d && d.status_text) setStatusText((prev) => String(d.status_text) || prev);
         setParsedSubjects(newDraft.subjects);
 
         if (!d.salary_base || !d.vale_alimentacao || !d.exam_date) {
@@ -373,6 +411,7 @@ export default function ProfileSelectorPage() {
       setParsingPdf(true);
       setParseError(null);
       setRoleOptions([]);
+    setPreloadedRoleDetails({});
       setChosenRole('');
 
       const buffer = await file.arrayBuffer();
@@ -411,10 +450,34 @@ export default function ProfileSelectorPage() {
       }
 
       const roles: string[] = Array.isArray(d.roles) ? d.roles.filter(Boolean) : [];
+      const detailsMap: Record<string, {
+        role_title?: string;
+        salary_base?: string;
+        vale_alimentacao?: string;
+        workload?: string;
+        exam_date?: string;
+        extras?: string;
+        subjects?: ParsedSubject[];
+      }> = {};
+      if (Array.isArray(d.roles_details)) {
+        d.roles_details.forEach((rd: {
+          role_title?: string;
+          salary_base?: string;
+          vale_alimentacao?: string;
+          workload?: string;
+          exam_date?: string;
+          extras?: string;
+          subjects?: ParsedSubject[];
+        }) => {
+          const key = String(rd?.role_title || '').trim().toLowerCase();
+          if (key) detailsMap[key] = rd;
+        });
+      }
+      setPreloadedRoleDetails(detailsMap);
       setRoleOptions(roles);
 
       if (roles.length === 1) {
-        await handleSelectRole(roles[0], organName, base64);
+        await handleSelectRole(roles[0], organName, base64, detailsMap);
       } else if (roles.length > 1) {
         setStep('pick_role');
       } else {

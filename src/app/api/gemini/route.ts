@@ -61,11 +61,22 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
   }
 }
 
-async function callDeepSeek(promptText: string, jsonMode = false): Promise<string | null> {
+async function callDeepSeek(
+  userContent: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>,
+  jsonMode = false,
+  preferPro = false,
+  hasImage = false
+): Promise<string | null> {
   const dsKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!dsKey) return null;
 
-  const dsModels = ['deepseek-flash', 'deepseek-chat'];
+  // Somente deepseek-flash suporta Vision (imagens); deepseek-v4-pro é apenas para texto.
+  const dsModels = hasImage
+    ? ['deepseek-flash']
+    : preferPro
+    ? ['deepseek-v4-pro', 'deepseek-flash', 'deepseek-chat']
+    : ['deepseek-flash', 'deepseek-chat'];
+
   for (const dsModel of dsModels) {
     try {
       const res = await fetch('https://api.deepseek.com/chat/completions', {
@@ -83,13 +94,13 @@ async function callDeepSeek(promptText: string, jsonMode = false): Promise<strin
                 ? 'Você é um especialista em concursos públicos e estudos no Brasil. Responda exclusivamente em português do Brasil e retorne apenas JSON válido.'
                 : 'Você é um especialista em concursos públicos e estudos no Brasil. Responda sempre em português do Brasil.',
             },
-            { role: 'user', content: promptText },
+            { role: 'user', content: userContent },
           ],
           temperature: jsonMode ? 0.2 : 0.4,
           max_tokens: 4096,
           ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
         }),
-        signal: AbortSignal.timeout(40000),
+        signal: AbortSignal.timeout(hasImage ? 45000 : 40000),
       });
 
       if (!res.ok) {
@@ -107,7 +118,7 @@ async function callDeepSeek(promptText: string, jsonMode = false): Promise<strin
   return null;
 }
 
-async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {
+async function callGemini(parts: unknown[], jsonMode = false, useSearch = false, preferPro = false) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -115,19 +126,45 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
     );
   }
 
-  const hasBinary = parts.some(
-    (p) => typeof p === 'object' && p !== null && 'inlineData' in (p as Record<string, unknown>)
-  );
+  const inlineItems = parts
+    .filter((p) => typeof p === 'object' && p !== null && 'inlineData' in (p as Record<string, unknown>))
+    .map((p) => (p as { inlineData: { mimeType?: string; data?: string } }).inlineData);
 
-  // Modo híbrido: se for tarefa apenas de texto (sem imagem/PDF e sem Google Search) e houver DEEPSEEK_API_KEY, usa DeepSeek primeiro (com fallback automático para o Gemini).
-  if (!hasBinary && !useSearch && process.env.DEEPSEEK_API_KEY?.trim()) {
-    const promptText = parts
-      .map((p) => (typeof p === 'object' && p !== null && 'text' in (p as Record<string, unknown>) ? String((p as { text?: unknown }).text || '') : ''))
-      .filter(Boolean)
-      .join('\n\n');
-    if (promptText.trim()) {
-      const dsResult = await callDeepSeek(promptText, jsonMode);
-      if (dsResult) return dsResult;
+  const hasBinary = inlineItems.length > 0;
+  const hasNonImageBinary = inlineItems.some((item) => !String(item?.mimeType || '').startsWith('image/'));
+  const hasImage = inlineItems.some((item) => String(item?.mimeType || '').startsWith('image/'));
+
+  // DeepSeek cuida de texto E imagens (via deepseek-flash Vision); apenas PDFs ou Google Search ficam no Gemini.
+  if (!hasNonImageBinary && !useSearch && process.env.DEEPSEEK_API_KEY?.trim()) {
+    if (hasImage) {
+      const dsParts: Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }> = [];
+      for (const p of parts) {
+        if (typeof p === 'object' && p !== null && 'text' in (p as Record<string, unknown>)) {
+          const txt = String((p as { text?: unknown }).text || '').trim();
+          if (txt) dsParts.push({ type: 'text', text: txt });
+        } else if (typeof p === 'object' && p !== null && 'inlineData' in (p as Record<string, unknown>)) {
+          const inl = (p as { inlineData: { mimeType?: string; data?: string } }).inlineData;
+          if (inl?.data && String(inl.mimeType || '').startsWith('image/')) {
+            dsParts.push({
+              type: 'image_url',
+              image_url: { url: `data:${inl.mimeType};base64,${inl.data}` },
+            });
+          }
+        }
+      }
+      if (dsParts.length > 0) {
+        const dsResult = await callDeepSeek(dsParts, jsonMode, false, true);
+        if (dsResult) return dsResult;
+      }
+    } else {
+      const promptText = parts
+        .map((p) => (typeof p === 'object' && p !== null && 'text' in (p as Record<string, unknown>) ? String((p as { text?: unknown }).text || '') : ''))
+        .filter(Boolean)
+        .join('\n\n');
+      if (promptText.trim()) {
+        const dsResult = await callDeepSeek(promptText, jsonMode, preferPro, false);
+        if (dsResult) return dsResult;
+      }
     }
   }
 
@@ -252,11 +289,14 @@ export async function POST(request: Request) {
       const { pdfBase64, mimeType = 'application/pdf' } = body;
       const parts: unknown[] = [
         {
-          text: `Analise este edital de concurso público brasileiro e identifique o órgão e TODOS os cargos disponíveis.
+          text: `Analise este edital de concurso público brasileiro e identifique o órgão, TODOS os cargos disponíveis e, JÁ NESTA MESMA LEITURA, extraia as informações, MATÉRIAS e TÓPICOS de cada cargo para que o usuário não precise esperar uma segunda leitura.
 REGRAS RÍGIDAS:
 - NUNCA agrupe ou escreva "Diversos Cargos", "Vários Cargos" ou "Todos os cargos".
 - Liste CADA cargo individualmente pelo nome exato que aparece no edital (ex: "Agente Legislativo", "Analista Administrativo", "Técnico em Informática").
 - Se o edital for de apenas 1 cargo, retorne um array com esse 1 cargo.
+- REGRA CRÍTICA SOBRE MATÉRIAS vs CATEGORIAS: "Conhecimentos Básicos", "Conhecimentos Gerais" e "Conhecimentos Específicos" são APENAS o campo "category" — JAMAIS crie uma matéria com name = "Conhecimentos Específicos", "Conhecimentos Básicos" ou "Conhecimentos Gerais"! Dentro da seção de Conhecimentos Específicos, separe CADA disciplina real como uma matéria própria (ex: "Direito do Trabalho", "Direito Processual do Trabalho", "Conhecimentos Bancários") com category: "Conhecimentos Específicos", e coloque os itens numerados de cada disciplina em "topics".
+- Em "roles_details", inclua para CADA cargo: salário base, vale-alimentação/auxílios, carga horária, data da prova e TODAS as matérias com TODOS os seus TÓPICOS do conteúdo programático (Conhecimentos Básicos/Gerais + Específicos). Nunca omita os tópicos de uma matéria!
+- Não invente valores que não estejam no PDF — deixe "" se não encontrar.
 
 Retorne SOMENTE um JSON válido neste formato:
 {
@@ -264,7 +304,25 @@ Retorne SOMENTE um JSON válido neste formato:
   "icon": "Um emoji adequado (ex: 🏛️, ⚖️, 🚔, 🏦)",
   "status_text": "Status resumido (ex: Edital publicado)",
   "exam_date": "YYYY-MM-DD se constar no edital, ou null",
-  "roles": ["Cargo 1", "Cargo 2", "Cargo 3"]
+  "roles": ["Cargo 1", "Cargo 2"],
+  "roles_details": [
+    {
+      "role_title": "Cargo 1",
+      "salary_base": "R$ 3.500,00 ou vazio",
+      "vale_alimentacao": "R$ 800,00 ou vazio",
+      "workload": "40h ou vazio",
+      "exam_date": "YYYY-MM-DD ou vazio",
+      "extras": "Resumo curto de benefícios/etapas ou vazio",
+      "subjects": [
+        {
+          "name": "Língua Portuguesa",
+          "category": "Básica",
+          "hours_target": 2,
+          "topics": ["Compreensão e interpretação de textos", "Ortografia oficial", "Acentuação gráfica"]
+        }
+      ]
+    }
+  ]
 }`,
         },
       ];
@@ -285,6 +343,7 @@ Retorne SOMENTE um JSON válido neste formato:
           text: `Neste edital de "${organName}", foque EXCLUSIVAMENTE no cargo "${roleTitle}".
 Extraia o salário base exato deste cargo, vale-alimentação/auxílios, carga horária semanal, data da prova e TODAS as matérias e tópicos do conteúdo programático que caem especificamente para "${roleTitle}" (Conhecimentos Gerais/Básicos + Conhecimentos Específicos deste cargo).
 Não invente valores que não estejam no PDF — deixe "" se não encontrar.
+- REGRA CRÍTICA SOBRE MATÉRIAS vs CATEGORIAS: "Conhecimentos Básicos", "Conhecimentos Gerais" e "Conhecimentos Específicos" são APENAS o campo "category" — JAMAIS crie uma matéria com name = "Conhecimentos Específicos", "Conhecimentos Básicos" ou "Conhecimentos Gerais"! Dentro da seção de Conhecimentos Específicos, separe CADA disciplina real como uma matéria própria (ex: "Direito do Trabalho", "Direito Processual do Trabalho", "Conhecimentos Bancários") com category: "Conhecimentos Específicos", e coloque os itens numerados de cada disciplina em "topics".
 
 Retorne SOMENTE um JSON válido neste formato:
 {
@@ -348,7 +407,7 @@ Retorne SOMENTE um JSON válido neste formato:
         ],
         true,
         false
-      );
+      , true);
       const parsed = extractJsonObject(raw);
       return NextResponse.json({ ok: true, data: parsed });
     }
@@ -411,7 +470,7 @@ Retorne exatamente um JSON neste formato:
   "questions": [
     {
       "statement": "Enunciado completo da questão",
-      "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
+      "options": ["A, false, true) ...", "B) ...", "C) ...", "D) ..."],
       "correctIndex": 0,
       "explanation": "Comentário objetivo explicando por que a alternativa está correta e as outras erradas."
     }
@@ -643,7 +702,7 @@ Retorne exatamente um JSON:
         });
       }
 
-      const raw = await callGemini(parts, true);
+      const raw = await callGemini(parts, true, false, true);
       const parsed = extractJsonObject(raw);
       return NextResponse.json({ ok: true, data: parsed });
     }
@@ -666,7 +725,7 @@ Seja objetivo, use números reais dos dados enviados e evite floreios.`,
           },
         ],
         false
-      );
+      , false, true);
 
       return NextResponse.json({ ok: true, data: { markdown: text } });
     }
@@ -707,7 +766,7 @@ Retorne SOMENTE um JSON válido neste formato exato:
   ]
 }`;
 
-      const raw = await callGemini([{ text: prompt }], true, false);
+      const raw = await callGemini([{ text: prompt }], true, false, true);
       const data = extractJsonObject(raw);
       return NextResponse.json({ ok: true, data });
     }
