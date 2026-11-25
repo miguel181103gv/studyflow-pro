@@ -5,6 +5,7 @@ import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useAiProviderName } from '@/lib/useAiProvider';
+import { extractPdfTextInBrowser } from '@/lib/pdfBrowser';
 import { getStudyMode } from '@/lib/studyModes';
 import { calcAccuracy, formatDateBR, formatDurationHMS, todayISO } from '@/lib/utils';
 import type { SimuladoSubjectScore } from '@/lib/types';
@@ -22,6 +23,7 @@ import {
   Clock,
   ArrowLeft,
   ArrowRight,
+  FileUp,
   RotateCw,
 } from 'lucide-react';
 
@@ -107,6 +109,9 @@ export default function SimuladosPage() {
   const genStorageKey = `sf_generated_simulados_${profile?.id || 'default'}`;
   const [generatedList, setGeneratedList] = useState<GeneratedSimulado[]>([]);
   const [showGenModal, setShowGenModal] = useState(false);
+  const [showPdfModal, setShowPdfModal] = useState(false);
+  const [examPdfFile, setExamPdfFile] = useState<File | null>(null);
+  const [gabaritoPdfFile, setGabaritoPdfFile] = useState<File | null>(null);
   const [genTitle, setGenTitle] = useState('');
   const [genBoard, setGenBoard] = useState('FCC');
   const [genStyle, setGenStyle] = useState<'multipla' | 'certo_errado'>('multipla');
@@ -530,6 +535,251 @@ export default function SimuladosPage() {
     });
   }
 
+  function matchSubjectId(rawSubjectName: string): { id: string; name: string } {
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim();
+    const target = norm(rawSubjectName || '');
+    if (target && subjects.length > 0) {
+      const exact = subjects.find((s) => norm(s.name) === target);
+      if (exact) return { id: exact.id, name: exact.name };
+      const partial = subjects.find(
+        (s) => norm(s.name).includes(target) || target.includes(norm(s.name))
+      );
+      if (partial) return { id: partial.id, name: partial.name };
+      // Match por palavras-chave relevantes
+      const words = target.split(/\s+/).filter((w) => w.length >= 4);
+      let bestSub = subjects[0];
+      let bestHits = 0;
+      for (const s of subjects) {
+        const sn = norm(s.name);
+        const hits = words.filter((w) => sn.includes(w)).length;
+        if (hits > bestHits) {
+          bestHits = hits;
+          bestSub = s;
+        }
+      }
+      if (bestHits > 0) return { id: bestSub.id, name: bestSub.name };
+    }
+    return subjects[0]
+      ? { id: subjects[0].id, name: subjects[0].name }
+      : { id: 'geral', name: rawSubjectName || 'Geral' };
+  }
+
+  function splitExamTextChunks(text: string, maxChars = 5500): string[] {
+    const blocks = text.split(/(?=\n\s*(?:Quest[ãa]o\s+)?\d{1,3}[.)\-\s])/i);
+    const chunks: string[] = [];
+    let cur = '';
+    for (const blk of blocks) {
+      if ((cur + '\n' + blk).length > maxChars && cur.trim()) {
+        chunks.push(cur.trim());
+        cur = blk;
+      } else {
+        cur = cur ? `${cur}\n${blk}` : blk;
+      }
+    }
+    if (cur.trim()) chunks.push(cur.trim());
+    return chunks.length > 0 ? chunks : [text.slice(0, maxChars)];
+  }
+
+  function handleImportExamPdf(e: React.FormEvent) {
+    e.preventDefault();
+    if (!examPdfFile || !profile?.id) return;
+    const examFileSnap = examPdfFile;
+    const gabFileSnap = gabaritoPdfFile;
+    const storageKeySnap = genStorageKey;
+    const subjectNamesSnap = subjects.map((s) => s.name);
+
+    setShowPdfModal(false);
+    setExamPdfFile(null);
+    setGabaritoPdfFile(null);
+
+    runAiJob({
+      id: simJobId,
+      kind: 'quiz',
+      label: `Importando prova: ${examFileSnap.name}`,
+      route: `/p/${profile.id}/simulados`,
+      successMsg: `Prova "${examFileSnap.name}" importada e pronta para resolver!`,
+      task: async () => {
+        updateAiJobProgress(simJobId, 5, 'Lendo páginas do PDF da prova...');
+        const examText = await extractPdfTextInBrowser(
+          examFileSnap,
+          (p, total) => {
+            const pct = Math.min(25, Math.round((p / Math.max(1, total)) * 25));
+            updateAiJobProgress(simJobId, pct, `Lendo PDF (${p}/${total} páginas)...`);
+          },
+          false
+        );
+
+        if (!examText.trim()) {
+          throw new Error('Não foi possível extrair texto desse PDF (pode ser imagem escaneada).');
+        }
+
+        let gabaritoText = '';
+        if (gabFileSnap) {
+          updateAiJobProgress(simJobId, 28, 'Lendo PDF do gabarito...');
+          gabaritoText = await extractPdfTextInBrowser(gabFileSnap, undefined, false);
+        }
+
+        updateAiJobProgress(
+          simJobId,
+          32,
+          gabFileSnap
+            ? 'Identificando banca e lendo gabarito...'
+            : 'Identificando banca e buscando gabarito oficial online...'
+        );
+
+        const idRes = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'identify_exam_pdf',
+            sampleText: examText.slice(0, 4500),
+            gabaritoText,
+          }),
+        });
+        const idJson = await idRes.json();
+        if (!idRes.ok || !idJson.ok) {
+          throw new Error(idJson.error || 'Erro ao identificar a prova.');
+        }
+        const meta = idJson.data as {
+          exam_title?: string;
+          board?: string;
+          style?: string;
+          gabarito_map?: Record<string, string>;
+          gabarito_found?: boolean;
+          gabarito_source_url?: string;
+        };
+
+        const boardSnap = meta.board || 'Concurso';
+        const styleSnap: 'multipla' | 'certo_errado' =
+          String(meta.style || '').toLowerCase().includes('certo') ? 'certo_errado' : 'multipla';
+        const gabMap = meta.gabarito_map || {};
+
+        const chunks = splitExamTextChunks(examText, 5500);
+        const rawQuestions: Array<{
+          number?: string;
+          subject_name?: string;
+          statement?: string;
+          options?: SimOption[];
+          correct_answer?: string;
+          explanation?: string;
+        }> = [];
+
+        let doneChunks = 0;
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(3, chunks.length) }, async () => {
+          while (cursor < chunks.length) {
+            const idx = cursor++;
+            const chunkText = chunks[idx];
+            const res = await fetch('/api/gemini', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'parse_exam_questions_chunk',
+                chunkText,
+                board: boardSnap,
+                style: styleSnap,
+                subjectNames: subjectNamesSnap,
+              }),
+            });
+            const rawResp = await res.text();
+            let json: { ok?: boolean; data?: { questions?: typeof rawQuestions } } = {};
+            try {
+              json = JSON.parse(rawResp);
+            } catch {
+              // skip malformed chunk response
+            }
+            if (res.ok && json.ok && Array.isArray(json.data?.questions)) {
+              rawQuestions.push(...json.data.questions);
+            }
+            doneChunks++;
+            const pct = 35 + Math.round((doneChunks / chunks.length) * 60);
+            updateAiJobProgress(
+              simJobId,
+              pct,
+              `${boardSnap}: extraindo questões (${rawQuestions.length} encontradas)...`
+            );
+          }
+        });
+        await Promise.all(workers);
+
+        if (rawQuestions.length === 0) {
+          throw new Error('Nenhuma questão estruturada foi identificada no PDF.');
+        }
+
+        // Ordena pelo número da questão e aplica gabarito oficial (online/PDF) quando encontrado
+        rawQuestions.sort((a, b) => (Number(a.number) || 999) - (Number(b.number) || 999));
+
+        const nowTs = Date.now();
+        const finalQuestions: SimQuestion[] = rawQuestions
+          .filter((q) => q?.statement && Array.isArray(q.options) && q.options.length > 0)
+          .map((q, idx) => {
+            const qNum = String(q.number || idx + 1).replace(/\D/g, '') || String(idx + 1);
+            const matchedSub = matchSubjectId(q.subject_name || '');
+            const officialGab = (gabMap[qNum] || '').trim().toUpperCase();
+            const finalAns =
+              officialGab && officialGab !== 'ANULADA'
+                ? officialGab
+                : String(q.correct_answer || '').trim().toUpperCase();
+            return {
+              id: `simpdf-${nowTs}-${idx}`,
+              subject_id: matchedSub.id,
+              subject_name: matchedSub.name,
+              topic_id: null,
+              header: `${boardSnap}${meta.exam_title ? ` · ${meta.exam_title}` : ''} · Q${qNum}`,
+              statement: String(q.statement || '').trim(),
+              options: q.options || [],
+              correct_answer: finalAns,
+              explanation: [
+                officialGab ? `Gabarito oficial: ${officialGab}` : '',
+                q.explanation || '',
+              ]
+                .filter(Boolean)
+                .join(' — '),
+            };
+          });
+
+        const newSim: GeneratedSimulado = {
+          id: `gensim-pdf-${Date.now()}`,
+          title: meta.exam_title || examFileSnap.name.replace(/\.pdf$/i, ''),
+          board: boardSnap,
+          style: styleSnap,
+          created_at: new Date().toISOString(),
+          weights: computeDefaultWeights(subjects),
+          questions: finalQuestions,
+        };
+
+        try {
+          const rawExisting = localStorage.getItem(storageKeySnap);
+          const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
+          const nextArr = [newSim, ...(Array.isArray(prevArr) ? prevArr : [])];
+          localStorage.setItem(storageKeySnap, JSON.stringify(nextArr));
+          window.dispatchEvent(new CustomEvent('sf-simulados-updated'));
+        } catch {
+          // ignore
+        }
+
+        if (meta.gabarito_found) {
+          notify(
+            `Prova importada (${finalQuestions.length}q) com gabarito oficial localizado${
+              meta.gabarito_source_url ? ' online' : ' no PDF'
+            }!`,
+            'success'
+          );
+        } else {
+          notify(
+            `Prova importada (${finalQuestions.length}q)! Gabarito oficial não encontrado online — ${aiName} preencheu as respostas comentadas.`,
+            'info'
+          );
+        }
+      },
+    });
+  }
+
   function startExamRunner(sim: GeneratedSimulado, restartFresh = false) {
     setActiveSim(sim);
     setShowClosePrompt(false);
@@ -758,6 +1008,14 @@ export default function SimuladosPage() {
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           <button
             type="button"
+            onClick={() => setShowPdfModal(true)}
+            className="px-4 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
+          >
+            <FileUp className="w-4 h-4" />
+            Importar Prova (PDF)
+          </button>
+          <button
+            type="button"
             onClick={() => setShowGenModal(true)}
             className="px-4 py-3 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
           >
@@ -960,6 +1218,76 @@ export default function SimuladosPage() {
           </div>
         </div>
       ) : null}
+
+      {/* MODAL IMPORTAR PROVA EM PDF */}
+      {showPdfModal && (
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-surface w-full max-w-lg rounded-3xl p-6 space-y-4 my-8 animate-pop-in">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-lg flex items-center gap-2">
+                <FileUp className="w-5 h-5 text-indigo-600" />
+                Importar Prova Anterior (PDF)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowPdfModal(false)}
+                className="p-2 rounded-xl subtle-surface"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleImportExamPdf} className="space-y-4">
+              <div className="rounded-2xl bg-indigo-500/10 border border-indigo-500/25 p-3.5 text-xs text-muted-theme leading-relaxed">
+                Envie o PDF de uma prova anterior. O StudyFlow lê as páginas no navegador, identifica automaticamente a <strong>banca</strong>, extrai as <strong>questões</strong> e procura o <strong>gabarito oficial online</strong> (ou usa o PDF de gabarito se você já tiver).
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1.5">
+                  1. Arquivo PDF da Prova *
+                </label>
+                <input
+                  type="file"
+                  required
+                  accept="application/pdf"
+                  onChange={(e) => setExamPdfFile(e.target.files?.[0] || null)}
+                  className="w-full text-xs file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold mb-1.5">
+                  2. PDF do Gabarito Oficial (opcional — se deixar vazio, busca online)
+                </label>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => setGabaritoPdfFile(e.target.files?.[0] || null)}
+                  className="w-full text-xs file:mr-3 file:py-2 file:px-3.5 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-teal-600 file:text-white hover:file:bg-teal-500 cursor-pointer"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowPdfModal(false)}
+                  className="px-4 py-2.5 rounded-xl subtle-surface text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!examPdfFile || generating}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Processar Prova e Buscar Gabarito
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* MODAL GERAR SIMULADO COM IA */}
       {showGenModal && (

@@ -61,7 +61,7 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
   }
 }
 
-async function searchDeepSeekWeb(query: string): Promise<string | null> {
+async function searchDeepSeekWeb(query: string, needContent = false, resultCount = 5): Promise<string | null> {
   const dsKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!dsKey || !query.trim()) return null;
   try {
@@ -73,8 +73,8 @@ async function searchDeepSeekWeb(query: string): Promise<string | null> {
       },
       body: JSON.stringify({
         query: query.trim().slice(0, 128),
-        count: 5,
-        need_content: false,
+        count: resultCount,
+        need_content: needContent,
       }),
       signal: AbortSignal.timeout(7000),
     });
@@ -84,8 +84,8 @@ async function searchDeepSeekWeb(query: string): Promise<string | null> {
     if (results.length === 0) return null;
     return results
       .map(
-        (r: { title?: string; url?: string; summary?: string; snippet?: string }, i: number) =>
-          `[${i + 1}] ${r.title || ''} (${r.url || ''})\n${r.summary || r.snippet || ''}`
+        (r: { title?: string; url?: string; summary?: string; snippet?: string; content?: string }, i: number) =>
+          `[${i + 1}] ${r.title || ''} (${r.url || ''})\n${(r.content || r.summary || r.snippet || '').slice(0, 2500)}`
       )
       .join('\n\n');
   } catch {
@@ -832,6 +832,139 @@ Seja objetivo, use números reais dos dados enviados e evite floreios.`,
       , false, true);
 
       return NextResponse.json({ ok: true, data: { markdown: text } });
+    }
+
+    if (action === 'identify_exam_pdf') {
+      const { sampleText = '', gabaritoText = '' } = body;
+      if (!sampleText || !String(sampleText).trim()) {
+        return NextResponse.json({ error: 'Texto da prova vazio.' }, { status: 400 });
+      }
+
+      const idPrompt = `Analise o início desta prova de concurso brasileiro e identifique os dados da prova.
+TEXTO INICIAL DA PROVA:
+${String(sampleText).slice(0, 4500)}
+
+Retorne SOMENTE JSON válido:
+{
+  "exam_title": "Título curto (ex: TRT-MG · Técnico Judiciário · 2022)",
+  "board": "Nome da banca (ex: FCC, FGV, Cebraspe, Cesgranrio, Vunesp ou outra)",
+  "organ": "Órgão (ex: TRT-MG)",
+  "role": "Cargo (ex: Técnico Judiciário - Área Administrativa)",
+  "year": "Ano (ex: 2022 ou vazio)",
+  "style": "multipla ou certo_errado"
+}`;
+
+      const idRaw = await callGemini([{ text: idPrompt }], true, false, false);
+      const meta = extractJsonObject(idRaw) as {
+        exam_title?: string;
+        board?: string;
+        organ?: string;
+        role?: string;
+        year?: string;
+        style?: string;
+      };
+
+      let gabaritoMap: Record<string, string> = {};
+      let gabaritoSourceUrl = '';
+      let gabaritoFound = false;
+
+      if (gabaritoText && String(gabaritoText).trim()) {
+        const gabPrompt = `Extraia o gabarito oficial (número da questão -> letra correta A, B, C, D, E, C, E ou ANULADA) do texto abaixo.
+TEXTO DO GABARITO:
+${String(gabaritoText).slice(0, 12000)}
+
+Retorne SOMENTE JSON:
+{"gabarito":{"1":"A","2":"C"}}`;
+        try {
+          const gRaw = await callGemini([{ text: gabPrompt }], true, false, false);
+          const gParsed = extractJsonObject(gRaw) as { gabarito?: Record<string, string> };
+          if (gParsed?.gabarito && typeof gParsed.gabarito === 'object') {
+            gabaritoMap = gParsed.gabarito;
+            gabaritoFound = Object.keys(gabaritoMap).length > 0;
+          }
+        } catch {
+          // ignore
+        }
+      } else {
+        const qStr = [meta.board, meta.organ, meta.role, meta.year, 'gabarito oficial definitivo']
+          .filter(Boolean)
+          .join(' ');
+        const webHits = await searchDeepSeekWeb(qStr, true, 4);
+        if (webHits) {
+          const webGabPrompt = `Procure nos resultados de busca abaixo o gabarito oficial desta prova (${meta.exam_title || qStr}).
+Se encontrar o gabarito (mesmo parcial) com números de questões e letras, extraia em "gabarito" e coloque a URL da fonte em "source_url". Se NÃO encontrar a tabela de gabarito nos textos, retorne "gabarito": {} e "source_url" do melhor link oficial encontrado.
+
+RESULTADOS:
+${webHits}
+
+JSON:
+{"gabarito":{"1":"A"},"source_url":"https://..."}`;
+          try {
+            const wgRaw = await callGemini([{ text: webGabPrompt }], true, false, false);
+            const wgParsed = extractJsonObject(wgRaw) as {
+              gabarito?: Record<string, string>;
+              source_url?: string;
+            };
+            if (wgParsed?.gabarito && typeof wgParsed.gabarito === 'object') {
+              gabaritoMap = wgParsed.gabarito;
+              gabaritoFound = Object.keys(gabaritoMap).length > 0;
+            }
+            if (wgParsed?.source_url) gabaritoSourceUrl = String(wgParsed.source_url);
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        data: {
+          ...meta,
+          gabarito_map: gabaritoMap,
+          gabarito_found: gabaritoFound,
+          gabarito_source_url: gabaritoSourceUrl,
+        },
+      });
+    }
+
+    if (action === 'parse_exam_questions_chunk') {
+      const { chunkText = '', board = 'Concurso', style = 'multipla', subjectNames = [] } = body;
+      if (!chunkText || !String(chunkText).trim()) {
+        return NextResponse.json({ ok: true, data: { questions: [] } });
+      }
+      const isCE = String(style).toLowerCase().includes('certo');
+      const subsList = Array.isArray(subjectNames) && subjectNames.length > 0
+        ? `Matérias do aluno: ${subjectNames.join(', ')}.`
+        : '';
+
+      const prompt = `Extraia TODAS as questões completas encontradas neste trecho de prova (${board}). ${subsList}
+Regras:
+1. Preserve fielmente o número, o enunciado (incluindo texto-base curto se houver) e todas as alternativas (${isCE ? 'C e E' : 'A-E'}).
+2. Em "subject_name", classifique na matéria mais próxima da lista do aluno (ou nome claro da disciplina).
+3. Se o gabarito não estiver no trecho, resolva com precisão em "correct_answer" e dê um comentário curto (1-2 frases) em "explanation".
+4. Não use aspas duplas sem escape dentro dos textos (use aspas simples '').
+
+TRECHO DA PROVA:
+${String(chunkText).slice(0, 7000)}
+
+Retorne SOMENTE JSON válido:
+{"questions":[{"number":"1","subject_name":"Língua Portuguesa","statement":"...","options":[{"letter":"A","text":"..."}],"correct_answer":"A","explanation":"..."}]}`;
+
+      let data: unknown = null;
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const raw = await callGemini([{ text: prompt }], true, false, false);
+          data = extractJsonObject(raw);
+          break;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (!data) {
+        throw (lastErr instanceof Error ? lastErr : new Error('Erro ao extrair bloco da prova.'));
+      }
+      return NextResponse.json({ ok: true, data });
     }
 
     if (action === 'generate_topic_questions') {
