@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
@@ -94,6 +95,7 @@ export default function CadernoErrosPage() {
     updateErrorEntry,
     deleteErrorEntry,
   } = useProfile();
+  const aiName = useAiProviderName();
 
   const { aiJobs, runAiJob, notify } = useGlobal();
 
@@ -917,7 +919,7 @@ export default function CadernoErrosPage() {
                         ) : (
                           <Sparkles className="w-3.5 h-3.5" />
                         )}
-                        {isExplaining ? 'Analisando...' : 'Explicar com Gemini'}
+                        {isExplaining ? 'Analisando...' : `Explicar com ${aiName}`}
                       </button>
                     </div>
                   </div>
@@ -975,7 +977,7 @@ export default function CadernoErrosPage() {
                           ) : (
                             <Sparkles className="w-3.5 h-3.5" />
                           )}
-                          {isExplaining ? 'Analisando...' : 'Explicar com Gemini'}
+                          {isExplaining ? 'Analisando...' : `Explicar com ${aiName}`}
                         </button>
                       </div>
                     )}

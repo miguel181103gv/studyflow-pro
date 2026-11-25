@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
@@ -8,6 +9,7 @@ import { addDaysISO, calcAccuracy, formatDateBR, formatDurationHM, todayISO } fr
 import { Sparkles, Loader2, FileBarChart2, AlertTriangle } from 'lucide-react';
 
 export default function RelatoriosPage() {
+  const aiName = useAiProviderName();
   const { userId, profile, subjects, topics, studyLogs, reviews, errors, simulados, reports } =
     useProfile();
 
@@ -218,7 +220,7 @@ export default function RelatoriosPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-              Relatórios & Mentor Gemini AI
+              Relatórios & Mentor {aiName} AI
             </h1>
             <p className="text-xs sm:text-sm text-muted-theme mt-1">
               <strong>{profile?.name}</strong> · Período: {formatDateBR(startDate)} a{' '}
@@ -436,7 +438,7 @@ export default function RelatoriosPage() {
           <div>
             <h2 className="font-bold text-base flex items-center gap-2">
               <Sparkles className="w-5 h-5 text-teal-600" />
-              Diagnóstico do Mentor Gemini AI
+              Diagnóstico do Mentor {aiName} AI
             </h2>
             <p className="text-xs text-muted-theme">
               Gera uma análise textual e plano de ação com base nos números reais acima.

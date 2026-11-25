@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { dispatchDictionaryUpdated } from '@/components/DictionaryText';
@@ -71,6 +72,7 @@ function normalizeFirstLetter(word: string): string {
 
 export default function DicionarioPage() {
   const { profile, subjects } = useProfile();
+  const aiName = useAiProviderName();
   const { notify } = useGlobal();
 
   const storageKey = `sf_dictionary_${profile?.id || 'default'}`;
@@ -564,7 +566,7 @@ export default function DicionarioPage() {
                     ) : (
                       <Sparkles className="w-3 h-3" />
                     )}
-                    {definingAi ? 'Definindo...' : 'Definir com Gemini'}
+                    {definingAi ? 'Definindo...' : `Definir com ${aiName}`}
                   </button>
                 </div>
                 <textarea
@@ -600,7 +602,7 @@ export default function DicionarioPage() {
                   {definingAi
                     ? 'Gerando significado...'
                     : !meaning.trim() && word.trim()
-                    ? 'Definir com Gemini e Salvar'
+                    ? `Definir com ${aiName} e Salvar`
                     : 'Salvar Palavra'}
                 </button>
               </div>
