@@ -319,7 +319,7 @@ export async function POST(request: Request) {
     const { action } = body;
 
     if (action === 'list_edital_roles') {
-      const { pdfBase64, mimeType = 'application/pdf' } = body;
+      const { pdfBase64, pdfText = '', mimeType = 'application/pdf' } = body;
       const parts: unknown[] = [
         {
           text: `Analise este edital de concurso público brasileiro e identifique o órgão, TODOS os cargos disponíveis e, JÁ NESTA MESMA LEITURA, extraia as informações, MATÉRIAS e TÓPICOS de cada cargo para que o usuário não precise esperar uma segunda leitura.
@@ -362,7 +362,9 @@ Retorne SOMENTE um JSON válido neste formato:
         },
       ];
 
-      if (pdfBase64) {
+      if (pdfText && String(pdfText).trim()) {
+        parts.push({ text: `TEXTO DO EDITAL:\n${String(pdfText).slice(0, 48000)}` });
+      } else if (pdfBase64) {
         parts.push({ inlineData: { mimeType, data: pdfBase64 } });
       }
 
@@ -372,7 +374,7 @@ Retorne SOMENTE um JSON válido neste formato:
     }
 
     if (action === 'extract_role_details') {
-      const { pdfBase64, mimeType = 'application/pdf', roleTitle, organName } = body;
+      const { pdfBase64, pdfText = '', mimeType = 'application/pdf', roleTitle, organName } = body;
       const parts: unknown[] = [
         {
           text: `Neste edital de "${organName}", foque EXCLUSIVAMENTE no cargo "${roleTitle}".
@@ -401,7 +403,9 @@ Retorne SOMENTE um JSON válido neste formato:
         },
       ];
 
-      if (pdfBase64) {
+      if (pdfText && String(pdfText).trim()) {
+        parts.push({ text: `TEXTO DO EDITAL:\n${String(pdfText).slice(0, 48000)}` });
+      } else if (pdfBase64) {
         parts.push({ inlineData: { mimeType, data: pdfBase64 } });
       }
 
@@ -518,6 +522,34 @@ Pergunta digitada: "${cleanF}"
 Retorne SOMENTE JSON válido:
 {"corrected_front":"...","corrected_back":"..."}`;
 
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
+    }
+
+    if (action === 'generate_study_curriculum') {
+      const { goalText = '', studyModeLabel = 'Estudo Livre' } = body;
+      if (!goalText || !String(goalText).trim()) {
+        return NextResponse.json({ error: 'Descreva o que você quer estudar.' }, { status: 400 });
+      }
+      const prompt = `Você é um designer pedagógico especialista em criar currículos completos e progressivos (${studyModeLabel}).
+O estudante pediu: "${String(goalText).trim()}".
+
+Monte um currículo organizado por MATÉRIAS (ou blocos temáticos) e, dentro de cada matéria, liste os TÓPICOS em ordem lógica/cronológica do início (básico/origem) até o avançado/atual (ex: em História, começar na Pré-História até Mundo Contemporâneo; em Política/Economia, começar pelos fundamentos até temas atuais).
+Se o usuário pediu apenas 1 tema (ex: só História), crie os grandes módulos como matérias ou 1-3 matérias bem divididas; se pediu vários temas (ex: História Geral, História do Brasil, Política, Economia), crie 1 matéria para cada tema com 6 a 12 tópicos progressivos cada.
+
+Retorne SOMENTE JSON válido:
+{
+  "title": "Nome curto do plano (ex: Política, História & Economia)",
+  "subtitle": "Descrição curta do objetivo em 1 linha",
+  "subjects": [
+    {
+      "name": "História Geral",
+      "category": "${studyModeLabel}",
+      "topics": ["1. Pré-História e Primeiras Civilizações", "2. Antiguidade Clássica (Grécia e Roma)"]
+    }
+  ]
+}`;
       const raw = await callGemini([{ text: prompt }], true, false, false);
       const data = extractJsonObject(raw);
       return NextResponse.json({ ok: true, data });

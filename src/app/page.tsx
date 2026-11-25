@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client';
 import type { Profile } from '@/lib/types';
 import { SUBJECT_COLORS } from '@/lib/utils';
 import { STUDY_MODES, STUDY_MODE_LIST, encodeStudyModeSlug, getStudyMode, type StudyMode } from '@/lib/studyModes';
+import { extractPdfTextInBrowser } from '@/lib/pdfBrowser';
 import {
   Plus,
   LogOut,
@@ -81,6 +82,9 @@ export default function ProfileSelectorPage() {
   const [quickSubjectInput, setQuickSubjectInput] = useState('');
 
   const [pdfBase64Cache, setPdfBase64Cache] = useState<string | null>(null);
+  const [pdfTextCache, setPdfTextCache] = useState<string>('');
+  const [curriculumGoal, setCurriculumGoal] = useState('');
+  const [buildingCurriculum, setBuildingCurriculum] = useState(false);
   const [pdfMimeCache, setPdfMimeCache] = useState<string>('application/pdf');
   const [parsingPdf, setParsingPdf] = useState(false);
   const [extractingRole, setExtractingRole] = useState(false);
@@ -190,6 +194,8 @@ export default function ProfileSelectorPage() {
     setPickedMode(null);
     setQuickSubjectInput('');
     setPdfBase64Cache(null);
+    setPdfTextCache('');
+    setCurriculumGoal('');
     setRoleOptions([]);
     setPreloadedRoleDetails({});
     setChosenRole('');
@@ -397,6 +403,8 @@ export default function ProfileSelectorPage() {
       setRoleOptions([]);
     setPreloadedRoleDetails({});
       setPdfBase64Cache(null);
+    setPdfTextCache('');
+    setCurriculumGoal('');
 
       if (nextList.length === 1) {
         setName(organ);
@@ -430,23 +438,44 @@ export default function ProfileSelectorPage() {
     setPreloadedRoleDetails({});
       setChosenRole('');
 
-      const buffer = await file.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = '';
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const base64 = btoa(binary);
       const mime = file.type || 'application/pdf';
-      setPdfBase64Cache(base64);
       setPdfMimeCache(mime);
+
+      let extractedText = '';
+      try {
+        const rawPdfText = await extractPdfTextInBrowser(file, undefined, false);
+        if (rawPdfText.trim()) {
+          if (rawPdfText.length <= 45000) {
+            extractedText = rawPdfText;
+          } else {
+            extractedText = `${rawPdfText.slice(0, 18000)}\n\n[... MEIO OMITIDO ...]\n\n${rawPdfText.slice(-27000)}`;
+          }
+        }
+      } catch {
+        extractedText = '';
+      }
+
+      let base64 = '';
+      if (!extractedText) {
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+          binary += String.fromCharCode(bytes[i]);
+        }
+        base64 = btoa(binary);
+      }
+
+      setPdfTextCache(extractedText);
+      setPdfBase64Cache(base64 || extractedText ? (base64 || '__TEXT__') : null);
 
       const res = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'list_edital_roles',
-          pdfBase64: base64,
+          pdfText: extractedText,
+          pdfBase64: extractedText ? '' : base64,
           mimeType: mime,
         }),
       });
@@ -503,6 +532,35 @@ export default function ProfileSelectorPage() {
       setParseError(err instanceof Error ? err.message : 'Erro ao analisar PDF.');
     } finally {
       setParsingPdf(false);
+    }
+  }
+
+  async function handleGenerateCurriculum() {
+    if (!curriculumGoal.trim()) return;
+    setBuildingCurriculum(true);
+    setParseError(null);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate_study_curriculum',
+          goalText: curriculumGoal.trim(),
+          studyModeLabel: STUDY_MODES[studyMode].label,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !Array.isArray(json.data?.subjects)) {
+        throw new Error(json.error || 'Erro ao montar currículo com a IA.');
+      }
+      if (!name.trim() && json.data.title) setName(String(json.data.title));
+      if (!roleTitle.trim() && json.data.subtitle) setRoleTitle(String(json.data.subtitle));
+      setParsedSubjects(json.data.subjects);
+      setCurriculumGoal('');
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : 'Erro ao gerar currículo.');
+    } finally {
+      setBuildingCurriculum(false);
     }
   }
 
@@ -1395,6 +1453,39 @@ export default function ProfileSelectorPage() {
                       onChange={(e) => setExamDate(e.target.value)}
                       className="w-full sm:w-64 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm"
                     />
+                  </div>
+                )}
+
+                {studyMode !== 'concurso' && (
+                  <div className="rounded-2xl bg-violet-500/10 border border-violet-500/30 p-4 space-y-2.5 text-xs">
+                    <p className="font-bold text-violet-700 dark:text-violet-300 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4" />
+                      Criar Currículo & Tópicos automaticamente com IA
+                    </p>
+                    <p className="text-[11px] text-muted-theme leading-relaxed">
+                      Diga o que quer aprender (ex: <em>&ldquo;História desde a pré-história até hoje&rdquo;</em> ou <em>&ldquo;Entender política: história geral, história do Brasil, política e economia&rdquo;</em>) e a IA monta todas as matérias e tópicos em ordem progressiva.
+                    </p>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        value={curriculumGoal}
+                        onChange={(e) => setCurriculumGoal(e.target.value)}
+                        placeholder="Descreva o tema ou matérias que deseja estudar..."
+                        className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-xs"
+                      />
+                      <button
+                        type="button"
+                        disabled={buildingCurriculum || !curriculumGoal.trim()}
+                        onClick={() => void handleGenerateCurriculum()}
+                        className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 disabled:opacity-50 shrink-0"
+                      >
+                        {buildingCurriculum ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        {buildingCurriculum ? 'Montando...' : 'Montar Currículo'}
+                      </button>
+                    </div>
                   </div>
                 )}
 
