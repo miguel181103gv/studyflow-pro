@@ -53,6 +53,49 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
   }
 }
 
+async function callDeepSeek(promptText: string, jsonMode = false): Promise<string | null> {
+  const dsKey = process.env.DEEPSEEK_API_KEY?.trim();
+  if (!dsKey) return null;
+
+  try {
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${dsKey}`,
+      },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        messages: [
+          {
+            role: 'system',
+            content: jsonMode
+              ? 'Você é um especialista em concursos públicos e estudos no Brasil. Responda exclusivamente em português do Brasil e retorne apenas JSON válido.'
+              : 'Você é um especialista em concursos públicos e estudos no Brasil. Responda sempre em português do Brasil.',
+          },
+          { role: 'user', content: promptText },
+        ],
+        temperature: jsonMode ? 0.2 : 0.4,
+        max_tokens: 4096,
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      }),
+      signal: AbortSignal.timeout(40000),
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content === 'string' && content.trim()) {
+      return content.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -64,6 +107,19 @@ async function callGemini(parts: unknown[], jsonMode = false, useSearch = false)
   const hasBinary = parts.some(
     (p) => typeof p === 'object' && p !== null && 'inlineData' in (p as Record<string, unknown>)
   );
+
+  // Modo híbrido: se for tarefa apenas de texto (sem imagem/PDF e sem Google Search) e houver DEEPSEEK_API_KEY, usa DeepSeek primeiro (com fallback automático para o Gemini).
+  if (!hasBinary && !useSearch && process.env.DEEPSEEK_API_KEY?.trim()) {
+    const promptText = parts
+      .map((p) => (typeof p === 'object' && p !== null && 'text' in (p as Record<string, unknown>) ? String((p as { text?: unknown }).text || '') : ''))
+      .filter(Boolean)
+      .join('\n\n');
+    if (promptText.trim()) {
+      const dsResult = await callDeepSeek(promptText, jsonMode);
+      if (dsResult) return dsResult;
+    }
+  }
+
   const timeoutMs = hasBinary ? 45000 : 25000;
 
   // Usa SOMENTE modelos Flash confirmados como ativos na conta (evita 404 NotFound!)
