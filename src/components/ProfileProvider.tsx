@@ -223,60 +223,101 @@ export function ProfileProvider({
       );
       if (!ok) return;
     }
-    setStopwatch((prev) => {
-      const sameSubject = prev.subjectId === subjectId;
-      const base = sameSubject ? prev.elapsedSeconds : 0;
-      const next: StopwatchState = {
-        running: true,
-        subjectId,
-        topicId: topicId ?? (sameSubject ? prev.topicId : null),
-        elapsedSeconds: base,
-        baseElapsedSeconds: base,
-        startedAt: Date.now(),
-        updatedAt: Date.now(),
-        quickNote: sameSubject ? prev.quickNote : undefined,
-      };
-      void syncStopwatchToCloud(next);
-      return next;
-    });
+    const sameSubject = stopwatch.subjectId === subjectId;
+    const base = sameSubject ? stopwatch.elapsedSeconds : 0;
+    const now = Date.now();
+    const next: StopwatchState = {
+      running: true,
+      subjectId,
+      topicId: topicId ?? (sameSubject ? stopwatch.topicId : null),
+      elapsedSeconds: base,
+      baseElapsedSeconds: base,
+      startedAt: now,
+      updatedAt: now,
+      quickNote: sameSubject ? stopwatch.quickNote : undefined,
+    };
+    setStopwatch(next);
+    void syncStopwatchToCloud(next);
   };
 
   const pauseStopwatch = () => {
-    setStopwatch((prev) => {
-      const base = prev.baseElapsedSeconds ?? prev.elapsedSeconds;
-      const finalElapsed =
-        prev.running && prev.startedAt
-          ? base + Math.max(0, Math.floor((Date.now() - prev.startedAt) / 1000))
-          : prev.elapsedSeconds;
-      const next: StopwatchState = {
-        ...prev,
-        running: false,
-        elapsedSeconds: finalElapsed,
-        baseElapsedSeconds: finalElapsed,
-        startedAt: null,
-        updatedAt: Date.now(),
-      };
-      void syncStopwatchToCloud(next);
-      return next;
-    });
+    const base = stopwatch.baseElapsedSeconds ?? stopwatch.elapsedSeconds;
+    const finalElapsed =
+      stopwatch.running && stopwatch.startedAt
+        ? base + Math.max(0, Math.floor((Date.now() - stopwatch.startedAt) / 1000))
+        : stopwatch.elapsedSeconds;
+    const next: StopwatchState = {
+      ...stopwatch,
+      running: false,
+      elapsedSeconds: finalElapsed,
+      baseElapsedSeconds: finalElapsed,
+      startedAt: null,
+      updatedAt: Date.now(),
+    };
+    setStopwatch(next);
+    void syncStopwatchToCloud(next);
   };
+
+  const swSyncRowIdRef = useRef<string | null>(null);
 
   const syncStopwatchToCloud = useCallback(
     async (nextSw: StopwatchState | null) => {
       try {
         const supabase = createClient();
-        await supabase.auth.updateUser({
-          data: {
-            sf_stopwatch: nextSw
-              ? { ...nextSw, profileId, updatedAt: nextSw.updatedAt || Date.now() }
-              : { clearedAt: Date.now(), profileId },
-          },
-        });
+        let uid = userId;
+        if (!uid) {
+          const { data } = await supabase.auth.getUser();
+          uid = data.user?.id || '';
+        }
+        if (!uid) return;
+
+        const snapshot = nextSw
+          ? { ...nextSw, profileId, updatedAt: nextSw.updatedAt || Date.now() }
+          : { clearedAt: Date.now(), profileId };
+
+        if (swSyncRowIdRef.current) {
+          const { error } = await supabase
+            .from('ai_reports')
+            .update({ metrics_snapshot: snapshot })
+            .eq('id', swSyncRowIdRef.current);
+          if (!error) return;
+        }
+
+        const { data: existing } = await supabase
+          .from('ai_reports')
+          .select('id')
+          .eq('profile_id', profileId)
+          .eq('period_type', '__SYNC_SW__')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (existing?.id) {
+          swSyncRowIdRef.current = existing.id;
+          await supabase
+            .from('ai_reports')
+            .update({ metrics_snapshot: snapshot })
+            .eq('id', existing.id);
+        } else {
+          const { data: inserted } = await supabase
+            .from('ai_reports')
+            .insert({
+              user_id: uid,
+              profile_id: profileId,
+              period_type: '__SYNC_SW__',
+              period_label: 'stopwatch',
+              content_markdown: 'sync',
+              metrics_snapshot: snapshot,
+            })
+            .select('id')
+            .single();
+          if (inserted?.id) swSyncRowIdRef.current = inserted.id;
+        }
       } catch {
         // silencioso se offline
       }
     },
-    [profileId]
+    [profileId, userId]
   );
 
   const applyCloudStopwatch = useCallback(
@@ -366,9 +407,6 @@ export function ProfileProvider({
     if (!user) return;
     setUserId(user.id);
     setUserEmail(user.email || '');
-    if (user.user_metadata?.sf_stopwatch) {
-      applyCloudStopwatch(user.user_metadata.sf_stopwatch);
-    }
 
     const [
       profRes,
@@ -437,7 +475,13 @@ export function ProfileProvider({
     setReviews((revRes.data as SpacedReview[]) || []);
     setErrors((errRes.data as ErrorEntry[]) || []);
     setSimulados((simRes.data as Simulado[]) || []);
-    setReports((repRes.data as AIReport[]) || []);
+    const allReports = (repRes.data as AIReport[]) || [];
+    const swSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_SW__');
+    if (swSyncRow) {
+      swSyncRowIdRef.current = swSyncRow.id;
+      applyCloudStopwatch(swSyncRow.metrics_snapshot);
+    }
+    setReports(allReports.filter((r) => String(r.period_type) !== '__SYNC_SW__'));
     setFlashcards((fcRes?.data as Flashcard[]) || []);
 
     const savedTheme = (setRes.data?.theme as ThemeId) || 'clean';
@@ -1201,15 +1245,23 @@ export function ProfileProvider({
     });
   };
 
-  // Sincroniza cronômetro entre PC e Celular ao abrir/voltar para o app
+  // Sincroniza cronômetro entre PC e Celular direto no PostgreSQL (ai_reports __SYNC_SW__)
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || !profileId) return;
     const pullCloudStopwatch = async () => {
       try {
         const supabase = createClient();
-        const { data } = await supabase.auth.getUser();
-        if (data?.user?.user_metadata?.sf_stopwatch) {
-          applyCloudStopwatch(data.user.user_metadata.sf_stopwatch);
+        const { data } = await supabase
+          .from('ai_reports')
+          .select('id, metrics_snapshot')
+          .eq('profile_id', profileId)
+          .eq('period_type', '__SYNC_SW__')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (data?.id) {
+          swSyncRowIdRef.current = data.id;
+          applyCloudStopwatch(data.metrics_snapshot);
         }
       } catch {
         // ignore
@@ -1220,13 +1272,15 @@ export function ProfileProvider({
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', pullCloudStopwatch);
-    const poll = window.setInterval(pullCloudStopwatch, 20000);
+    window.addEventListener('pageshow', pullCloudStopwatch);
+    const poll = window.setInterval(pullCloudStopwatch, 10000);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', pullCloudStopwatch);
+      window.removeEventListener('pageshow', pullCloudStopwatch);
       window.clearInterval(poll);
     };
-  }, [userId, applyCloudStopwatch]);
+  }, [userId, profileId, applyCloudStopwatch]);
 
   // Pontos de restauração automáticos a cada 1 hora (mantém últimos 7 dias)
   const backupDataRef = useRef({
