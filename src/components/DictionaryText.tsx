@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useProfile } from './ProfileProvider';
+import { BookOpen, ExternalLink, Loader2, Scale, X } from 'lucide-react';
 
 export interface DictEntryLite {
   id: string;
@@ -10,6 +11,20 @@ export interface DictEntryLite {
   meaning: string;
   example?: string;
   subject_id?: string;
+}
+
+interface LeiSecaStored {
+  id: string;
+  subjectId?: string;
+  lawName?: string;
+  title?: string;
+  rawText?: string;
+  note?: string;
+  studied?: boolean;
+  readCount?: number;
+  highlights?: Record<string, string>;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 const DICT_EVENT = 'sf-dictionary-updated';
@@ -76,6 +91,29 @@ function parseLawCitation(raw: string): { article: string; lawHint: string } {
   return { article, lawHint };
 }
 
+/**
+ * Extrai apenas o trecho do artigo específico quando o registro salvo contém um bloco de 20 artigos.
+ */
+function extractSingleArticleSnippet(rawText: string, artNum: string): string {
+  const clean = (rawText || '').trim();
+  if (!clean || !artNum) return clean;
+  const escaped = escapeRegExp(artNum);
+  const startRe = new RegExp(`(?:^|\\n)\\s*(Art\\.?\\s*${escaped}[º°oª]?\\b[\\s\\S]*)`, 'i');
+  const m = clean.match(startRe);
+  if (!m) {
+    // Tenta localizar no meio da linha
+    const inlineRe = new RegExp(`(Art\\.?\\s*${escaped}[º°oª]?\\b[\\s\\S]*)`, 'i');
+    const m2 = clean.match(inlineRe);
+    if (!m2) return clean;
+    const sliced = m2[1];
+    const nextArt = sliced.slice(8).search(/\n\s*Art\.?\s*\d+/i);
+    return (nextArt > 0 ? sliced.slice(0, nextArt + 8) : sliced).trim();
+  }
+  const rest = m[1];
+  const nextArtIdx = rest.slice(8).search(/\n\s*Art\.?\s*\d+/i);
+  return (nextArtIdx > 0 ? rest.slice(0, nextArtIdx + 8) : rest).trim();
+}
+
 interface DictIndex {
   regex: RegExp | null;
   map: Map<string, DictEntryLite>;
@@ -93,10 +131,8 @@ function buildDictIndex(entries: DictEntryLite[]): DictIndex {
   }
   if (valid.length === 0) return { regex: null, map };
 
-  // Ordena do termo mais longo para o mais curto para priorizar expressões compostas
   valid.sort((a, b) => b.word.length - a.word.length);
 
-  // Limita a 400 termos mais relevantes para manter regex ultrarrápida
   const patterns = valid.slice(0, 400).map((e) => toAccentInsensitivePattern(e.word));
   try {
     const wordChar = 'a-zA-Z0-9_áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ';
@@ -145,6 +181,21 @@ type Segment =
   | { type: 'term'; value: string; entry: DictEntryLite }
   | { type: 'law'; value: string; article: string; lawHint: string };
 
+type FloatingModalState =
+  | { kind: 'dict'; entry: DictEntryLite }
+  | {
+      kind: 'law';
+      article: string;
+      lawHint: string;
+      loading: boolean;
+      error?: string;
+      title?: string;
+      lawName?: string;
+      text?: string;
+      savedId?: string;
+      downloadedFromWeb?: boolean;
+    };
+
 export function DictionaryText({
   text,
   className,
@@ -166,12 +217,25 @@ export function DictionaryText({
     keyId: string;
   } | null>(null);
 
+  const [modal, setModal] = useState<FloatingModalState | null>(null);
+
+  useEffect(() => {
+    if (!modal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setModal(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [modal]);
+
   const segments = useMemo(() => {
     if (!text) return null;
 
-    // 1. Primeiro detecta citações de artigos de lei (CF/88, CLT, CP, etc.)
     const lawRegex = new RegExp(LAW_ARTICLE_PATTERN, 'gi');
-    const firstPass: Array<{ type: 'text'; value: string } | { type: 'law'; value: string; article: string; lawHint: string }> = [];
+    const firstPass: Array<
+      | { type: 'text'; value: string }
+      | { type: 'law'; value: string; article: string; lawHint: string }
+    > = [];
     let lastIdx = 0;
     let lawMatch: RegExpExecArray | null;
     while ((lawMatch = lawRegex.exec(text)) !== null) {
@@ -191,7 +255,6 @@ export function DictionaryText({
     const hasLaw = firstPass.some((p) => p.type === 'law');
     if (!regex && !hasLaw) return null;
 
-    // 2. Nos trechos de texto livre, aplica o destaque do dicionário
     const parts: Segment[] = [];
     for (const chunk of firstPass) {
       if (chunk.type === 'law') {
@@ -251,6 +314,118 @@ export function DictionaryText({
     setHovered({ ...payload, x, y, below });
   };
 
+  async function openLawModal(article: string, lawHint: string) {
+    setHovered(null);
+    const numMatch = article.match(/\d+(?:-[A-Za-z]+)?/);
+    const artNum = numMatch ? numMatch[0].toLowerCase() : '';
+    const artRegex = artNum
+      ? new RegExp(`\\bArt\\.?\\s*${escapeRegExp(artNum)}[º°oª]?\\b`, 'i')
+      : null;
+    const lawNorm = lawHint.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const lsKey = `sf_lei_seca_${profile?.id || 'default'}`;
+    let stored: LeiSecaStored[] = [];
+    try {
+      const raw = localStorage.getItem(lsKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) stored = parsed;
+    } catch {
+      stored = [];
+    }
+
+    const existing = stored.find((a) => {
+      const lawNameStr = (a.lawName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const lawOk =
+        !lawNorm ||
+        !lawNameStr ||
+        lawNameStr.includes(lawNorm) ||
+        lawNorm.includes(lawNameStr);
+      if (!lawOk) return false;
+      if (artRegex) {
+        return artRegex.test(a.title || '') || artRegex.test(a.rawText || '');
+      }
+      return (a.title || '').toLowerCase().includes(article.toLowerCase());
+    });
+
+    if (existing && existing.rawText) {
+      const snippet = extractSingleArticleSnippet(existing.rawText, artNum);
+      setModal({
+        kind: 'law',
+        article,
+        lawHint,
+        loading: false,
+        title: article,
+        lawName: existing.lawName || lawHint,
+        text: snippet,
+        savedId: existing.id,
+        downloadedFromWeb: false,
+      });
+      return;
+    }
+
+    // Não encontrou salvo: abre modal carregando e baixa da internet
+    setModal({
+      kind: 'law',
+      article,
+      lawHint,
+      loading: true,
+    });
+
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'fetch_law_article',
+          article,
+          lawHint,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !json.data?.rawText) {
+        throw new Error(json.error || 'Não foi possível localizar o artigo na internet.');
+      }
+      const now = new Date().toISOString();
+      const created: LeiSecaStored = {
+        id: `ls_web_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        subjectId: '',
+        lawName: String(json.data.lawName || lawHint || '').trim(),
+        title: String(json.data.title || article).trim(),
+        rawText: String(json.data.rawText).trim(),
+        note: 'Baixado automaticamente da internet via StudyFlow.',
+        studied: false,
+        readCount: 0,
+        highlights: {},
+        createdAt: now,
+        updatedAt: now,
+      };
+      try {
+        localStorage.setItem(lsKey, JSON.stringify([created, ...stored]));
+      } catch {
+        // ignore quota errors
+      }
+      setModal({
+        kind: 'law',
+        article,
+        lawHint,
+        loading: false,
+        title: created.title,
+        lawName: created.lawName,
+        text: created.rawText,
+        savedId: created.id,
+        downloadedFromWeb: true,
+      });
+    } catch (err) {
+      setModal({
+        kind: 'law',
+        article,
+        lawHint,
+        loading: false,
+        error: err instanceof Error ? err.message : 'Erro ao buscar artigo na internet.',
+      });
+    }
+  }
+
   return (
     <span className={className}>
       {segments.map((seg, i) => {
@@ -262,37 +437,26 @@ export function DictionaryText({
           return (
             <span
               key={i}
-              role="link"
+              role="button"
               tabIndex={0}
               onMouseEnter={(e) =>
                 showTooltip(e.currentTarget, {
                   kind: 'law',
                   keyId: `law_${i}_${seg.article}`,
                   title: `📜 ${lawLabel}`,
-                  body: 'Clique para abrir na Lei Seca (ou baixar automaticamente da internet se ainda não estiver salvo).',
+                  body: 'Clique para ler em janela flutuante sem sair daqui (baixa da internet se não tiver).',
                 })
               }
               onMouseLeave={() => setHovered(null)}
               onClick={(e) => {
                 e.stopPropagation();
-                setHovered(null);
-                if (profile?.id) {
-                  const params = new URLSearchParams();
-                  params.set('art', seg.article);
-                  if (seg.lawHint) params.set('law', seg.lawHint);
-                  router.push(`/p/${profile.id}/lei-seca?${params.toString()}`);
-                }
+                void openLawModal(seg.article, seg.lawHint);
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   e.stopPropagation();
-                  if (profile?.id) {
-                    const params = new URLSearchParams();
-                    params.set('art', seg.article);
-                    if (seg.lawHint) params.set('law', seg.lawHint);
-                    router.push(`/p/${profile.id}/lei-seca?${params.toString()}`);
-                  }
+                  void openLawModal(seg.article, seg.lawHint);
                 }
               }}
               className="border-b border-dotted border-indigo-500/80 dark:border-indigo-400/80 text-indigo-700 dark:text-indigo-300 font-semibold cursor-pointer rounded-sm px-0.5 hover:bg-indigo-500/15 hover:border-solid transition-colors"
@@ -305,6 +469,8 @@ export function DictionaryText({
         return (
           <span
             key={i}
+            role="button"
+            tabIndex={0}
             onMouseEnter={(e) =>
               showTooltip(e.currentTarget, {
                 kind: 'dict',
@@ -316,28 +482,26 @@ export function DictionaryText({
             }
             onMouseLeave={() => setHovered(null)}
             onClick={(e) => {
-              // No celular (toque), alterna tooltip sem impedir seleção no desktop
-              if (window.matchMedia('(pointer: coarse)').matches) {
-                if (hovered?.keyId === seg.entry.id) setHovered(null);
-                else {
-                  showTooltip(e.currentTarget, {
-                    kind: 'dict',
-                    keyId: seg.entry.id,
-                    title: seg.entry.word,
-                    body: seg.entry.meaning,
-                    example: seg.entry.example,
-                  });
-                }
+              e.stopPropagation();
+              setHovered(null);
+              setModal({ kind: 'dict', entry: seg.entry });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                setHovered(null);
+                setModal({ kind: 'dict', entry: seg.entry });
               }
             }}
-            className="border-b border-dotted border-teal-500/80 dark:border-teal-400/80 text-teal-700 dark:text-teal-300 font-medium cursor-help rounded-sm hover:bg-teal-500/10 transition-colors"
+            className="border-b border-dotted border-teal-500/80 dark:border-teal-400/80 text-teal-700 dark:text-teal-300 font-medium cursor-pointer rounded-sm hover:bg-teal-500/15 hover:border-solid transition-colors"
           >
             {seg.value}
           </span>
         );
       })}
 
-      {hovered && (
+      {hovered && !modal && (
         <span
           role="tooltip"
           style={{
@@ -365,6 +529,146 @@ export function DictionaryText({
             </span>
           )}
         </span>
+      )}
+
+      {modal && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            setModal(null);
+          }}
+          className="fixed inset-0 z-[9998] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl max-h-[82vh] flex flex-col rounded-3xl card-surface border border-theme shadow-2xl overflow-hidden animate-fade-in-up"
+          >
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-theme flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                    modal.kind === 'law'
+                      ? 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+                      : 'bg-teal-500/15 text-teal-600 dark:text-teal-300'
+                  }`}
+                >
+                  {modal.kind === 'law' ? (
+                    <Scale className="w-4 h-4" />
+                  ) : (
+                    <BookOpen className="w-4 h-4" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-extrabold text-base truncate">
+                      {modal.kind === 'law'
+                        ? modal.title || modal.article
+                        : modal.entry.word}
+                    </h3>
+                    {modal.kind === 'law' && (modal.lawName || modal.lawHint) && (
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-700 dark:text-indigo-300">
+                        {modal.lawName || modal.lawHint}
+                      </span>
+                    )}
+                    {modal.kind === 'law' && modal.downloadedFromWeb && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                        Salvo na Lei Seca
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-theme">
+                    {modal.kind === 'law'
+                      ? 'Leitura rápida · Feche para continuar de onde parou'
+                      : 'Dicionário Pessoal · Feche para continuar'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                title="Fechar (Esc)"
+                className="p-2 rounded-xl subtle-surface hover:opacity-80 shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 overflow-y-auto space-y-3 text-sm leading-relaxed">
+              {modal.kind === 'dict' ? (
+                <>
+                  <p className="whitespace-pre-wrap">{modal.entry.meaning}</p>
+                  {modal.entry.example && (
+                    <div className="rounded-2xl subtle-surface border border-theme px-4 py-3 text-xs italic text-muted-theme">
+                      <span className="font-bold not-italic text-teal-600 dark:text-teal-300">
+                        Exemplo:{' '}
+                      </span>
+                      {modal.entry.example}
+                    </div>
+                  )}
+                </>
+              ) : modal.loading ? (
+                <div className="py-10 flex flex-col items-center justify-center gap-3 text-center">
+                  <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
+                  <p className="text-sm font-semibold">
+                    Buscando {modal.article}
+                    {modal.lawHint ? ` (${modal.lawHint})` : ''} na internet...
+                  </p>
+                  <p className="text-xs text-muted-theme">
+                    O artigo será salvo automaticamente na sua aba Lei Seca.
+                  </p>
+                </div>
+              ) : modal.error ? (
+                <div className="rounded-2xl border border-rose-500/40 bg-rose-500/10 p-4 text-xs text-rose-600 dark:text-rose-300">
+                  {modal.error}
+                </div>
+              ) : (
+                <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed">
+                  {modal.text}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-3.5 border-t border-theme flex items-center justify-between gap-2 bg-[var(--bg-subtle)]/40">
+              {profile?.id ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const m = modal;
+                    setModal(null);
+                    if (m.kind === 'dict') {
+                      router.push(
+                        `/p/${profile.id}/dicionario?q=${encodeURIComponent(m.entry.word)}`
+                      );
+                    } else {
+                      const params = new URLSearchParams();
+                      if (m.savedId) params.set('id', m.savedId);
+                      params.set('art', m.article);
+                      if (m.lawName || m.lawHint) params.set('law', m.lawName || m.lawHint);
+                      router.push(`/p/${profile.id}/lei-seca?${params.toString()}`);
+                    }
+                  }}
+                  className="px-3.5 py-2 rounded-xl subtle-surface border border-theme text-xs font-bold inline-flex items-center gap-1.5 hover:opacity-85"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  {modal.kind === 'law' ? 'Abrir na aba Lei Seca' : 'Abrir no Dicionário'}
+                </button>
+              ) : (
+                <span />
+              )}
+
+              <button
+                type="button"
+                onClick={() => setModal(null)}
+                className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+              >
+                Fechar e voltar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </span>
   );

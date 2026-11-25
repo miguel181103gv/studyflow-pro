@@ -55,7 +55,36 @@ interface LeiSecaArticle {
   updatedAt: string;
 }
 
-const LAW_PRESETS = ['CF/88', 'CLT', 'Lei 8.112/90', 'CPC', 'Código Civil', 'Lei 14.133/21', 'LGPD'];
+const LAW_PRESETS = ['CF/88', 'CLT', 'CPC', 'CDC', 'Código Civil', 'Código Penal', 'Lei 8.112/90', 'Lei 14.133/21', 'LGPD'];
+
+function normalizeLawBucket(lawName: string, title = '', rawText = ''): string {
+  const combined = `${lawName} ${title} ${rawText.slice(0, 350)}`.trim();
+  const primary = lawName.trim();
+  const target = primary || combined;
+
+  if (/\bcf(?:\/88)?\b|constitui[çc][ãa]o\s+federal|\bcrfb\b/i.test(target)) return 'CF/88';
+  if (/\bclt\b|5\.?452|consolida[çc][ãa]o\s+das\s+leis\s+do\s+trabalho/i.test(target)) return 'CLT';
+  if (/\bcpc\b|13\.?105|processo\s+civil/i.test(target)) return 'CPC';
+  if (/\bcpp\b|3\.?689|processo\s+penal/i.test(target)) return 'CPP';
+  if (/\bcdc\b|8\.?078|defesa\s+do\s+consumidor/i.test(target)) return 'CDC';
+  if (/\bctn\b|5\.?172|tribut[áa]rio\s+nacional/i.test(target)) return 'CTN';
+  if (/\beca\b|8\.?069|estatuto\s+da\s+crian[çc]a/i.test(target)) return 'ECA';
+  if (/\blgpd\b|13\.?709/i.test(target)) return 'LGPD';
+  if (/8\.?112/i.test(target)) return 'Lei 8.112/90';
+  if (/14\.?133/i.test(target)) return 'Lei 14.133/21';
+  if (/9\.?784/i.test(target)) return 'Lei 9.784/99';
+  if (/\bcc\b|10\.?406|c[óo]digo\s+civil/i.test(target)) return 'Código Civil';
+  if (/\bcp\b|2\.?848|c[óo]digo\s+penal/i.test(target)) return 'Código Penal';
+
+  if (primary) return primary;
+
+  // Se lawName estiver vazio, tenta inferir pelo texto completo
+  if (/\bcf(?:\/88)?\b|constitui[çc][ãa]o/i.test(combined)) return 'CF/88';
+  if (/\bclt\b|5\.?452/i.test(combined)) return 'CLT';
+  if (/\bcpc\b|13\.?105/i.test(combined)) return 'CPC';
+  if (/\bcdc\b|8\.?078/i.test(combined)) return 'CDC';
+  return 'Outras leis';
+}
 
 const HIGHLIGHT_STYLES: Record<HighlightTone, { bg: string; border: string; label: string }> = {
   none: { bg: '', border: '', label: 'Sem destaque' },
@@ -205,11 +234,15 @@ function LegalBlocksView({
   highlights,
   onToggleHighlight,
   interactive = true,
+  articleId,
+  targetArtNum,
 }: {
   blocks: LegalBlock[];
   highlights?: Record<string, HighlightTone>;
   onToggleHighlight?: (blockId: string) => void;
   interactive?: boolean;
+  articleId?: string;
+  targetArtNum?: string;
 }) {
   if (blocks.length === 0) return null;
 
@@ -220,11 +253,16 @@ function LegalBlocksView({
         const style = HIGHLIGHT_STYLES[tone];
 
         if (b.kind === 'artigo') {
+          const blockArtNum = b.marker.match(/\d+(?:-[A-Za-z]+)?/)?.[0]?.toLowerCase() || '';
+          const isTargetBlock = Boolean(targetArtNum && blockArtNum && blockArtNum === targetArtNum);
           return (
             <div
               key={b.id}
-              className={`group rounded-2xl p-3.5 border border-teal-500/25 ${
-                tone !== 'none' ? `${style.bg} ${style.border}` : 'bg-teal-500/5'
+              id={articleId && blockArtNum ? `${articleId}-art-${blockArtNum}` : undefined}
+              className={`group scroll-mt-24 rounded-2xl p-3.5 border ${
+                isTargetBlock
+                  ? 'border-indigo-500 ring-2 ring-indigo-500/60 bg-indigo-500/12'
+                  : `border-teal-500/25 ${tone !== 'none' ? `${style.bg} ${style.border}` : 'bg-teal-500/5'}`
               } transition`}
             >
               <div className="flex items-start justify-between gap-2">
@@ -577,10 +615,11 @@ export default function LeiSecaPage() {
   const searchParams = useSearchParams();
   const [fetchingLawBanner, setFetchingLawBanner] = useState<string>('');
   const [highlightedArticleId, setHighlightedArticleId] = useState<string | null>(null);
+  const [highlightedArtNum, setHighlightedArtNum] = useState<string>('');
   const handledDeepLinkRef = useRef<string>('');
 
   // Filtros
-  const [selectedSubject, setSelectedSubject] = useState<string>('ALL');
+  const [selectedLaw, setSelectedLaw] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'highlighted'>('all');
 
@@ -642,16 +681,27 @@ export default function LeiSecaPage() {
 
     const lawNorm = lawParam.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-    const focusArticle = (targetId: string) => {
-      setSelectedSubject('ALL');
+    const focusArticle = (targetId: string, targetArt?: string) => {
+      setSelectedLaw('ALL');
       setStatusFilter('all');
       setSearchQuery('');
       setCollapsedIds((prev) => ({ ...prev, [targetId]: false }));
       setHighlightedArticleId(targetId);
+      setHighlightedArtNum(targetArt || '');
+      const tryScroll = () => {
+        const exactEl = targetArt ? document.getElementById(`${targetId}-art-${targetArt}`) : null;
+        const cardEl = document.getElementById(`ls-art-${targetId}`);
+        const el = exactEl || cardEl;
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      };
       setTimeout(() => {
-        const el = document.getElementById(`ls-art-${targetId}`);
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }, 150);
+        requestAnimationFrame(tryScroll);
+      }, 200);
+      setTimeout(() => {
+        requestAnimationFrame(tryScroll);
+      }, 450);
     };
 
     const existing =
@@ -669,7 +719,7 @@ export default function LeiSecaPage() {
       });
 
     if (existing) {
-      focusArticle(existing.id);
+      focusArticle(existing.id, artNum);
       notify(`Abrindo ${existing.title}${existing.lawName ? ` (${existing.lawName})` : ''}`, 'info');
       return;
     }
@@ -709,7 +759,7 @@ export default function LeiSecaPage() {
           updatedAt: now,
         };
         persist([created, ...articles]);
-        focusArticle(created.id);
+        focusArticle(created.id, artNum);
         notify(`${created.title} baixado e salvo na Lei Seca!`, 'success');
       } catch (err) {
         if (!cancelled) {
@@ -736,12 +786,9 @@ export default function LeiSecaPage() {
   const filteredArticles = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return articles.filter((a) => {
-      if (selectedSubject !== 'ALL') {
-        if (selectedSubject === 'NONE') {
-          if (a.subjectId) return false;
-        } else if (a.subjectId !== selectedSubject) {
-          return false;
-        }
+      if (selectedLaw !== 'ALL') {
+        const bucket = normalizeLawBucket(a.lawName, a.title, a.rawText);
+        if (bucket !== selectedLaw) return false;
       }
       if (statusFilter === 'unread' && a.studied) return false;
       if (statusFilter === 'highlighted') {
@@ -760,20 +807,28 @@ export default function LeiSecaPage() {
             .trim();
         const tokens = norm(q).split(' ').filter(Boolean);
         const subName = subjectMap.get(a.subjectId)?.name || '';
-        const hay = norm(`${a.title} ${a.lawName} ${subName} ${a.rawText} ${a.note}`);
+        const bucket = normalizeLawBucket(a.lawName, a.title, a.rawText);
+        const hay = norm(`${a.title} ${a.lawName} ${bucket} ${subName} ${a.rawText} ${a.note}`);
         if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
-  }, [articles, selectedSubject, searchQuery, statusFilter, subjectMap]);
+  }, [articles, selectedLaw, searchQuery, statusFilter, subjectMap]);
 
-  const countsBySubject = useMemo(() => {
-    const counts: Record<string, number> = { ALL: articles.length, NONE: 0 };
+  const lawBuckets = useMemo(() => {
+    const map = new Map<string, number>();
     for (const a of articles) {
-      if (!a.subjectId) counts.NONE += 1;
-      else counts[a.subjectId] = (counts[a.subjectId] || 0) + 1;
+      const bucket = normalizeLawBucket(a.lawName, a.title, a.rawText);
+      map.set(bucket, (map.get(bucket) || 0) + 1);
     }
-    return counts;
+    const entries = Array.from(map.entries()).map(([name, count]) => ({ name, count }));
+    entries.sort((a, b) => {
+      if (a.name === 'Outras leis') return 1;
+      if (b.name === 'Outras leis') return -1;
+      if (b.count !== a.count) return b.count - a.count;
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
+    return entries;
   }, [articles]);
 
   function getReadCount(art: LeiSecaArticle): number {
@@ -789,7 +844,8 @@ export default function LeiSecaPage() {
 
   function openNewForm() {
     setEditingId(null);
-    setFormSubjectId(selectedSubject !== 'ALL' && selectedSubject !== 'NONE' ? selectedSubject : subjects[0]?.id || '');
+    setFormSubjectId(subjects[0]?.id || '');
+    if (selectedLaw !== 'ALL' && selectedLaw !== 'Outras leis') setFormLawName(selectedLaw);
     setFormLawName('');
     setFormTitle('');
     setFormRawText('');
@@ -948,7 +1004,7 @@ export default function LeiSecaPage() {
           setEditingId(null);
           setFormTitle('');
           setFormNote('');
-          setFormSubjectId(selectedSubject || '');
+          setFormSubjectId('');
           setShowForm(true);
         }
         notify('Texto do PDF extraído! Clique em "Formatar com IA" ou salve direto.', 'success');
@@ -956,7 +1012,7 @@ export default function LeiSecaPage() {
         const now = Date.now();
         const created: LeiSecaArticle[] = sections.map((sec, idx) => ({
           id: `ls-pdf-${now}-${idx}`,
-          subjectId: selectedSubject || formSubjectId || '',
+          subjectId: formSubjectId || '',
           lawName: inferredLaw,
           title: sec.title,
           rawText: sec.text,
@@ -1130,7 +1186,7 @@ export default function LeiSecaPage() {
         </div>
       </div>
 
-      {/* Filtros por Matéria + Busca */}
+      {/* Filtros por Lei + Busca */}
       <div className="card-surface rounded-3xl p-4 sm:p-5 space-y-3.5">
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
@@ -1138,7 +1194,7 @@ export default function LeiSecaPage() {
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Buscar por artigo, lei (ex: CF/88, CLT) ou palavra dentro dos incisos..."
+              placeholder="Buscar por artigo, lei (ex: CF/88, CLT, CPC) ou palavra dentro dos incisos..."
               className="w-full rounded-2xl subtle-surface border border-theme pl-10 pr-4 py-2.5 text-sm"
             />
           </div>
@@ -1147,19 +1203,16 @@ export default function LeiSecaPage() {
             <div className="relative">
               <Filter className="w-3.5 h-3.5 text-muted-theme absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <select
-                value={selectedSubject}
-                onChange={(e) => setSelectedSubject(e.target.value)}
+                value={selectedLaw}
+                onChange={(e) => setSelectedLaw(e.target.value)}
                 className="rounded-2xl subtle-surface border border-theme pl-8 pr-4 py-2.5 text-xs font-bold"
               >
-                <option value="ALL">Todas as matérias ({countsBySubject.ALL || 0})</option>
-                {subjects.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name} ({countsBySubject[s.id] || 0})
+                <option value="ALL">Todas as leis ({articles.length})</option>
+                {lawBuckets.map((law) => (
+                  <option key={law.name} value={law.name}>
+                    {law.name} ({law.count})
                   </option>
                 ))}
-                {countsBySubject.NONE > 0 && (
-                  <option value="NONE">Geral / Sem matéria ({countsBySubject.NONE})</option>
-                )}
               </select>
             </div>
 
@@ -1175,39 +1228,35 @@ export default function LeiSecaPage() {
           </div>
         </div>
 
-        {/* Pills rápidas de matéria + status */}
+        {/* Pills rápidas por Lei + status */}
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setSelectedSubject('ALL')}
+            onClick={() => setSelectedLaw('ALL')}
             className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
-              selectedSubject === 'ALL'
+              selectedLaw === 'ALL'
                 ? 'bg-teal-600 text-white border-teal-600'
                 : 'subtle-surface border-theme hover:opacity-85'
             }`}
           >
-            Todas ({countsBySubject.ALL || 0})
+            Todas ({articles.length})
           </button>
-          {subjects.map((s) => {
-            const count = countsBySubject[s.id] || 0;
-            const active = selectedSubject === s.id;
+          {lawBuckets.map((law) => {
+            const active = selectedLaw === law.name;
             return (
               <button
-                key={s.id}
+                key={law.name}
                 type="button"
-                onClick={() => setSelectedSubject(s.id)}
+                onClick={() => setSelectedLaw(law.name)}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition inline-flex items-center gap-1.5 ${
                   active
                     ? 'bg-teal-600 text-white border-teal-600'
                     : 'subtle-surface border-theme hover:opacity-85'
                 }`}
               >
-                <span
-                  className="w-2 h-2 rounded-full shrink-0"
-                  style={{ backgroundColor: active ? '#ffffff' : s.color || '#0d9488' }}
-                />
-                <span className="truncate max-w-[160px]">{s.name}</span>
-                <span className="opacity-75">({count})</span>
+                <Scale className="w-3 h-3 shrink-0 opacity-80" />
+                <span className="truncate max-w-[160px]">{law.name}</span>
+                <span className="opacity-75">({law.count})</span>
               </button>
             );
           })}
@@ -1419,6 +1468,8 @@ export default function LeiSecaPage() {
                       highlights={art.highlights}
                       onToggleHighlight={(blockId) => handleToggleHighlight(art.id, blockId)}
                       interactive
+                      articleId={art.id}
+                      targetArtNum={highlightedArticleId === art.id ? highlightedArtNum : undefined}
                     />
 
                     {art.note && (

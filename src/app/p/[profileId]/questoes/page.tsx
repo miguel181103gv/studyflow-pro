@@ -447,6 +447,7 @@ export default function QuestoesPage() {
   const [quizShowPrevWrong, setQuizShowPrevWrong] = useState(false);
   const [quizHits, setQuizHits] = useState(0);
   const [quizMisses, setQuizMisses] = useState(0);
+  const [quizRedos, setQuizRedos] = useState(0);
   const [quizDone, setQuizDone] = useState(false);
 
   useEffect(() => {
@@ -562,23 +563,29 @@ export default function QuestoesPage() {
         (q) => q.subject_id === selectedScope.subjectId && q.topic_id === selectedScope.topicId
       );
 
-  const visibleScopeQuestions = scopeQuestions.filter((q) => {
-    if (solvedFilter === 'unsolved' && solvedMap[q.id]) return false;
-    if (solvedFilter === 'solved' && !solvedMap[q.id]) return false;
-    if (scopeTopicFilter) {
-      if (scopeTopicFilter === 'NONE') {
-        if (q.topic_id) return false;
-      } else if (q.topic_id !== scopeTopicFilter) {
-        return false;
+  const visibleScopeQuestions = scopeQuestions
+    .filter((q) => {
+      if (solvedFilter === 'unsolved' && solvedMap[q.id]) return false;
+      if (solvedFilter === 'solved' && !solvedMap[q.id]) return false;
+      if (scopeTopicFilter) {
+        if (scopeTopicFilter === 'NONE') {
+          if (q.topic_id) return false;
+        } else if (q.topic_id !== scopeTopicFilter) {
+          return false;
+        }
       }
-    }
-    const sq = scopeSearch.trim().toLowerCase();
-    if (sq) {
-      const hay = `${q.statement} ${q.header || ''} ${q.explanation || ''}`.toLowerCase();
-      if (!hay.includes(sq)) return false;
-    }
-    return true;
-  });
+      const sq = scopeSearch.trim().toLowerCase();
+      if (sq) {
+        const hay = `${q.statement} ${q.header || ''} ${q.explanation || ''}`.toLowerCase();
+        if (!hay.includes(sq)) return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const aSolved = solvedMap[a.id] ? 1 : 0;
+      const bSolved = solvedMap[b.id] ? 1 : 0;
+      return aSolved - bSolved;
+    });
   const scopeSolvedCount = scopeQuestions.filter((q) => Boolean(solvedMap[q.id])).length;
 
   const effectiveSubjectId = targetSubjectId || subjects[0]?.id || '';
@@ -946,6 +953,7 @@ export default function QuestoesPage() {
     setQuizShowPrevWrong(false);
     setQuizHits(0);
     setQuizMisses(0);
+    setQuizRedos(0);
     setQuizSessionResults([]);
     setQuizLoggedToStats(false);
     setQuizDone(false);
@@ -1058,17 +1066,22 @@ ${q.statement}`;
       );
     }
     if (quizPicked) {
+      const alreadySolved = Boolean(solvedMap[currentQ.id]);
       const hit = quizPicked === clean;
       markQuestionSolved(currentQ.id, hit);
-      setQuizSessionResults((prev) => [
-        ...prev,
-        { subject_id: currentQ.subject_id, topic_id: currentQ.topic_id, hit },
-      ]);
-      if (hit) {
-        setQuizHits((h) => h + 1);
+      if (alreadySolved) {
+        setQuizRedos((r) => r + 1);
       } else {
-        setQuizMisses((m) => m + 1);
-        void handleSendQuizMissToErrors({ ...currentQ, correct_answer: clean }, quizPicked, clean);
+        setQuizSessionResults((prev) => [
+          ...prev,
+          { subject_id: currentQ.subject_id, topic_id: currentQ.topic_id, hit },
+        ]);
+        if (hit) {
+          setQuizHits((h) => h + 1);
+        } else {
+          setQuizMisses((m) => m + 1);
+          void handleSendQuizMissToErrors({ ...currentQ, correct_answer: clean }, quizPicked, clean);
+        }
       }
     }
     notify(`Gabarito "${clean}" salvo nesta questão!`, 'success');
@@ -1756,74 +1769,83 @@ ${q.statement}`;
                 const isCol = !!collapsedQ[q.id];
                 const qSub = subjects.find((s) => s.id === q.subject_id);
                 const qTopic = q.topic_id ? topics.find((t) => t.id === q.topic_id) : undefined;
+                const solvedInfo = solvedMap[q.id];
+                const boardLabel = q.header
+                  ? q.header.split('·')[0].trim()
+                  : '';
+
                 return (
-                  <div key={q.id} className="card-surface rounded-2xl p-4 space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full subtle-surface">
+                  <div
+                    key={q.id}
+                    className={`card-surface rounded-2xl p-4 sm:p-5 space-y-3 border transition ${
+                      solvedInfo ? 'border-theme/70 opacity-85' : 'border-theme'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 flex-wrap min-w-0">
+                        <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-lg subtle-surface text-muted-theme">
                           #{i + 1}
                         </span>
-                        {qSub && (
-                          <span
-                            className="text-[10px] font-bold px-2.5 py-0.5 rounded-full text-white shrink-0"
-                            style={{ backgroundColor: qSub.color || '#0d9488' }}
-                          >
-                            {qSub.name}
+                        {boardLabel && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-500/12 text-[var(--text-main)]">
+                            {boardLabel}
                           </span>
                         )}
-                        <span className="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-teal-500/12 border border-teal-500/25 text-teal-700 dark:text-teal-300 truncate max-w-[260px]">
-                          {qTopic ? qTopic.title : 'Geral da matéria'}
-                        </span>
+                        {qSub && (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-theme min-w-0">
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: qSub.color || '#0d9488' }}
+                            />
+                            <span className="truncate max-w-[160px]">{qSub.name}</span>
+                            {qTopic && (
+                              <>
+                                <span className="opacity-40">›</span>
+                                <span className="truncate max-w-[200px] text-[var(--text-main)]">
+                                  {qTopic.title}
+                                </span>
+                              </>
+                            )}
+                          </span>
+                        )}
                         {q.id.startsWith('err-') && (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
                             Caderno de Erros
                           </span>
                         )}
-                        {solvedMap[q.id] && (
+                        {solvedInfo && (
                           <span
-                            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 ${
-                              solvedMap[q.id].hit
+                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              solvedInfo.hit
                                 ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                                 : 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
                             }`}
                           >
-                            {solvedMap[q.id].hit ? '✓ Resolvida (Acertou)' : '✕ Resolvida (Errou)'}
+                            {solvedInfo.hit ? '✓ Acertou' : '✕ Errou'}
                           </span>
                         )}
-                        {q.header && (
-                          <span className="text-[11px] text-muted-theme font-medium truncate">
-                            {q.header}
-                          </span>
-                        )}
-                        <span className="text-[11px] text-muted-theme">
-                          · {q.options.length} alternativas
-                        </span>
                       </div>
+
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
                           onClick={() =>
                             setCollapsedQ((prev) => ({ ...prev, [q.id]: !isCol }))
                           }
-                          className="px-2 py-1 rounded-lg subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)] inline-flex items-center gap-1"
+                          title={isCol ? 'Expandir' : 'Recolher'}
+                          className="p-1.5 rounded-lg subtle-surface text-muted-theme hover:text-[var(--text-main)]"
                         >
                           {isCol ? (
-                            <>
-                              <ChevronDown className="w-3.5 h-3.5" />
-                              Expandir
-                            </>
+                            <ChevronDown className="w-3.5 h-3.5" />
                           ) : (
-                            <>
-                              <ChevronUp className="w-3.5 h-3.5" />
-                              Recolher
-                            </>
+                            <ChevronUp className="w-3.5 h-3.5" />
                           )}
                         </button>
                         {!q.id.startsWith('err-') && (
                           <button
                             type="button"
                             onClick={() => saveBank(questions.filter((x) => x.id !== q.id))}
-                            className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
+                            className="p-1.5 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
                             title="Excluir questão"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -1831,6 +1853,7 @@ ${q.statement}`;
                         )}
                       </div>
                     </div>
+
                     {isCol ? (
                       <p
                         onClick={() => setCollapsedQ((prev) => ({ ...prev, [q.id]: false }))}
@@ -1839,15 +1862,25 @@ ${q.statement}`;
                         {q.statement}
                       </p>
                     ) : (
-                      <div className="space-y-1.5">
-                        <p className="text-sm font-medium whitespace-pre-wrap"><DictionaryText text={q.statement} /></p>
-                        <div className="pt-1 flex justify-end">
+                      <div className="space-y-3">
+                        <p className="text-[14px] leading-relaxed whitespace-pre-wrap">
+                          <DictionaryText text={q.statement} />
+                        </p>
+                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-theme/50">
+                          <span className="text-[11px] text-muted-theme">
+                            {q.options.length} alternativas
+                            {solvedInfo ? ' · Refazer não altera seus acertos' : ''}
+                          </span>
                           <button
                             type="button"
                             onClick={() => startQuiz([q], `Questão #${i + 1}`)}
-                            className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+                            className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
+                              solvedInfo
+                                ? 'subtle-surface border border-theme hover:border-teal-500/50 text-[var(--text-main)]'
+                                : 'bg-teal-600 hover:bg-teal-500 text-white shadow-xs'
+                            }`}
                           >
-                            Resolver esta questão
+                            {solvedInfo ? 'Refazer questão' : 'Resolver questão'}
                           </button>
                         </div>
                       </div>
@@ -1872,6 +1905,7 @@ ${q.statement}`;
                     Questão {quizIdx + 1} de {quizQueue.length} ·{' '}
                     <span className="text-emerald-600 font-bold">{quizHits} acerto(s)</span> ·{' '}
                     <span className="text-rose-600 font-bold">{quizMisses} erro(s)</span>
+                    {quizRedos > 0 ? ` · ${quizRedos} refeita(s)` : ''}
                   </p>
                 )}
               </div>
@@ -2062,21 +2096,29 @@ ${q.statement}`;
                       onClick={() => {
                         setQuizAnswered(true);
                         if (!currentQCorrect) return;
+                        const alreadySolved = Boolean(solvedMap[currentQ.id]);
                         const hit = quizPicked === currentQCorrect;
                         markQuestionSolved(currentQ.id, hit);
-                        const nextRes = [
-                          ...quizSessionResults,
-                          { subject_id: currentQ.subject_id, topic_id: currentQ.topic_id, hit },
-                        ];
-                        setQuizSessionResults(nextRes);
-                        if (quizIdx + 1 >= quizQueue.length) {
-                          void flushQuizResultsToStats(nextRes);
-                        }
-                        if (hit) {
-                          setQuizHits((h) => h + 1);
+                        if (alreadySolved) {
+                          setQuizRedos((r) => r + 1);
+                          if (quizIdx + 1 >= quizQueue.length && quizSessionResults.length > 0) {
+                            void flushQuizResultsToStats(quizSessionResults);
+                          }
                         } else {
-                          setQuizMisses((m) => m + 1);
-                          void handleSendQuizMissToErrors(currentQ, quizPicked, currentQCorrect);
+                          const nextRes = [
+                            ...quizSessionResults,
+                            { subject_id: currentQ.subject_id, topic_id: currentQ.topic_id, hit },
+                          ];
+                          setQuizSessionResults(nextRes);
+                          if (quizIdx + 1 >= quizQueue.length) {
+                            void flushQuizResultsToStats(nextRes);
+                          }
+                          if (hit) {
+                            setQuizHits((h) => h + 1);
+                          } else {
+                            setQuizMisses((m) => m + 1);
+                            void handleSendQuizMissToErrors(currentQ, quizPicked, currentQCorrect);
+                          }
                         }
                       }}
                       className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-40"
