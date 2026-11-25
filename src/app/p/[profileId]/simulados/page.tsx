@@ -81,7 +81,7 @@ export default function SimuladosPage() {
     addErrorEntry,
     addStudyLog,
   } = useProfile();
-  const { notify, aiJobs, runAiJob } = useGlobal();
+  const { notify, aiJobs, runAiJob, updateAiJobProgress } = useGlobal();
   const aiName = useAiProviderName();
   const studyMode = getStudyMode(profile);
 
@@ -241,6 +241,61 @@ export default function SimuladosPage() {
     setShowGenModal(false);
     setGenTitle('');
 
+    const fetchSimBatch = async (
+      sub: typeof chosenSubs[number],
+      topicTitle: string,
+      topicId: string | null,
+      qty: number
+    ): Promise<SimQuestion[]> => {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate_topic_questions',
+          subjectName: sub.name,
+          topicTitle,
+          count: qty,
+          style: styleSnap,
+          board: boardSnap,
+        }),
+      });
+      const rawResp = await res.text();
+      let json: { ok?: boolean; error?: string; data?: { questions?: unknown[] } } = {};
+      try {
+        json = JSON.parse(rawResp);
+      } catch {
+        throw new Error(`Tempo esgotado no lote de ${sub.name}.`);
+      }
+      if (!res.ok || !json.ok || !Array.isArray(json.data?.questions)) {
+        throw new Error(json.error || `Falha ao gerar questões de ${sub.name}.`);
+      }
+      const nowTs = Date.now();
+      return json.data.questions
+        .map((rawQ, idx) => {
+          const q = rawQ as {
+            header?: string;
+            statement?: string;
+            options?: SimOption[];
+            correct_answer?: string;
+            explanation?: string;
+          };
+          if (!q?.statement) return null;
+          return {
+            id: `simq-${nowTs}-${Math.random().toString(36).slice(2, 6)}-${idx}`,
+            subject_id: sub.id,
+            subject_name: sub.name,
+            topic_id: topicId,
+            topic_title: topicTitle || undefined,
+            header: q.header || `${boardSnap} · ${sub.name}`,
+            statement: q.statement,
+            options: Array.isArray(q.options) ? q.options : [],
+            correct_answer: String(q.correct_answer || '').trim().toUpperCase(),
+            explanation: q.explanation || '',
+          } as SimQuestion;
+        })
+        .filter((x): x is SimQuestion => Boolean(x));
+    };
+
     runAiJob({
       id: simJobId,
       kind: 'quiz',
@@ -249,90 +304,89 @@ export default function SimuladosPage() {
       successMsg: `Simulado "${titleSnap}" pronto!`,
       task: async () => {
         const collected: SimQuestion[] = [];
-        for (const item of plan) {
-          const subTopics = topicsSnap.filter((t) => t.subject_id === item.subject.id);
-          let rem = item.count;
-          let partIdx = 0;
+        try {
+          for (const item of plan) {
+            const subTopics = topicsSnap.filter((t) => t.subject_id === item.subject.id);
+            let rem = item.count;
+            let partIdx = 0;
 
-          while (rem > 0) {
-            const batchCount = Math.min(3, rem);
-            const chosenTopic =
-              subTopics.length > 0
-                ? subTopics[(partIdx + Math.floor(Math.random() * subTopics.length)) % subTopics.length]
-                : null;
+            while (rem > 0) {
+              const batchCount = Math.min(2, rem);
+              const chosenTopic =
+                subTopics.length > 0
+                  ? subTopics[(partIdx + Math.floor(Math.random() * subTopics.length)) % subTopics.length]
+                  : null;
 
-            const res = await fetch('/api/gemini', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                action: 'generate_topic_questions',
-                subjectName: item.subject.name,
-                topicTitle: chosenTopic?.title || '',
-                count: batchCount,
-                style: styleSnap,
-                board: boardSnap,
-              }),
-            });
-            const rawResp = await res.text();
-            let json: { ok?: boolean; error?: string; data?: { questions?: unknown[] } } = {};
+              const pct = Math.round((collected.length / totalSnap) * 100);
+              updateAiJobProgress(
+                simJobId,
+                pct,
+                `${item.subject.name}: ${collected.length}/${totalSnap} questões (${pct}%)`
+              );
+
+              try {
+                const batchItems = await fetchSimBatch(
+                  item.subject,
+                  chosenTopic?.title || '',
+                  chosenTopic?.id || null,
+                  batchCount
+                );
+                collected.push(...batchItems);
+              } catch {
+                if (batchCount > 1) {
+                  for (let k = 0; k < batchCount; k++) {
+                    const t2 =
+                      subTopics.length > 0
+                        ? subTopics[(partIdx + k) % subTopics.length]
+                        : null;
+                    const single = await fetchSimBatch(
+                      item.subject,
+                      t2?.title || '',
+                      t2?.id || null,
+                      1
+                    );
+                    collected.push(...single);
+                  }
+                } else {
+                  throw new Error(`Tempo esgotado no lote de ${item.subject.name}.`);
+                }
+              }
+
+              rem -= batchCount;
+              partIdx++;
+              const nextPct = Math.round((collected.length / totalSnap) * 100);
+              updateAiJobProgress(
+                simJobId,
+                nextPct,
+                `${item.subject.name}: ${collected.length}/${totalSnap} questões (${nextPct}%)`
+              );
+            }
+          }
+        } finally {
+          if (collected.length > 0) {
+            const isPartial = collected.length < totalSnap;
+            const newSim: GeneratedSimulado = {
+              id: `gensim-${Date.now()}`,
+              title: isPartial ? `${titleSnap} (${collected.length}q)` : titleSnap,
+              board: boardSnap,
+              style: styleSnap,
+              created_at: new Date().toISOString(),
+              questions: collected,
+            };
+
             try {
-              json = JSON.parse(rawResp);
+              const rawExisting = localStorage.getItem(storageKeySnap);
+              const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
+              const nextArr = [newSim, ...(Array.isArray(prevArr) ? prevArr : [])];
+              localStorage.setItem(storageKeySnap, JSON.stringify(nextArr));
+              window.dispatchEvent(new CustomEvent('sf-simulados-updated'));
             } catch {
-              throw new Error(`Tempo esgotado no lote de ${item.subject.name}.`);
+              // ignore
             }
-            if (!res.ok || !json.ok || !Array.isArray(json.data?.questions)) {
-              throw new Error(json.error || `Falha ao gerar questões de ${item.subject.name}.`);
-            }
-
-            const nowTs = Date.now();
-            json.data.questions.forEach((rawQ, idx) => {
-              const q = rawQ as {
-                header?: string;
-                statement?: string;
-                options?: SimOption[];
-                correct_answer?: string;
-                explanation?: string;
-              };
-              if (!q?.statement) return;
-              collected.push({
-                id: `simq-${nowTs}-${partIdx}-${idx}`,
-                subject_id: item.subject.id,
-                subject_name: item.subject.name,
-                topic_id: chosenTopic?.id || null,
-                topic_title: chosenTopic?.title,
-                header: q.header || `${boardSnap} · ${item.subject.name}`,
-                statement: q.statement,
-                options: Array.isArray(q.options) ? q.options : [],
-                correct_answer: String(q.correct_answer || '').trim().toUpperCase(),
-                explanation: q.explanation || '',
-              });
-            });
-
-            rem -= batchCount;
-            partIdx++;
           }
         }
 
         if (collected.length === 0) throw new Error('Nenhuma questão foi gerada.');
-
-        const newSim: GeneratedSimulado = {
-          id: `gensim-${Date.now()}`,
-          title: titleSnap,
-          board: boardSnap,
-          style: styleSnap,
-          created_at: new Date().toISOString(),
-          questions: collected,
-        };
-
-        try {
-          const rawExisting = localStorage.getItem(storageKeySnap);
-          const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
-          const nextArr = [newSim, ...(Array.isArray(prevArr) ? prevArr : [])];
-          localStorage.setItem(storageKeySnap, JSON.stringify(nextArr));
-          window.dispatchEvent(new CustomEvent('sf-simulados-updated'));
-        } catch {
-          // ignore
-        }
       },
     });
   }
@@ -532,6 +586,24 @@ export default function SimuladosPage() {
           </button>
         </div>
       </div>
+
+      {simJob?.status === 'running' && (
+        <div className="rounded-2xl bg-violet-500/10 border border-violet-500/30 p-4 space-y-2">
+          <div className="flex items-center justify-between text-xs font-bold text-violet-700 dark:text-violet-300">
+            <span className="inline-flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              {simJob.progressText || simJob.label}
+            </span>
+            <span>{simJob.progressPct ?? 5}%</span>
+          </div>
+          <div className="h-2 rounded-full bg-violet-500/20 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-violet-600 to-teal-500 transition-all duration-300"
+              style={{ width: `${Math.max(5, simJob.progressPct ?? 5)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Provas Geradas com IA prontas para resolver */}
       {generatedList.length > 0 && (

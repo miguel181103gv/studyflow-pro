@@ -41,6 +41,8 @@ export interface AiJob {
   route?: string;
   result?: unknown;
   error?: string;
+  progressPct?: number;
+  progressText?: string;
   updatedAt: number;
 }
 
@@ -71,6 +73,7 @@ interface GlobalContextValue {
   dismissVideoJob: () => void;
   aiJobs: Record<string, AiJob>;
   runAiJob: <T>(config: RunAiJobConfig<T>) => void;
+  updateAiJobProgress: (id: string, progressPct: number, progressText?: string) => void;
   dismissAiJob: (id: string) => void;
   notify: (msg: string, tone?: 'success' | 'info' | 'error', onUndo?: () => void) => void;
 }
@@ -105,6 +108,22 @@ export function GlobalProvider({ children }: { children: React.ReactNode }) {
 
   const dismissVideoJob = useCallback(() => {
     setVideoJob((prev) => ({ ...prev, finished: false, errorMsg: null }));
+  }, []);
+
+  const updateAiJobProgress = useCallback((id: string, progressPct: number, progressText?: string) => {
+    setAiJobs((prev) => {
+      const cur = prev[id];
+      if (!cur || cur.status !== 'running') return prev;
+      return {
+        ...prev,
+        [id]: {
+          ...cur,
+          progressPct: Math.max(0, Math.min(100, progressPct)),
+          progressText: progressText ?? cur.progressText,
+          updatedAt: Date.now(),
+        },
+      };
+    });
   }, []);
 
   const dismissAiJob = useCallback((id: string) => {
@@ -287,6 +306,7 @@ export function GlobalProvider({ children }: { children: React.ReactNode }) {
         dismissVideoJob,
         aiJobs,
         runAiJob,
+        updateAiJobProgress,
         dismissAiJob,
         notify,
       }}
@@ -355,8 +375,22 @@ export function GlobalProvider({ children }: { children: React.ReactNode }) {
                   </span>
                 </p>
                 <p className="text-[11px] text-slate-300 mt-0.5 break-words">
-                  {job.status === 'error' ? job.error : job.label}
+                  {job.status === 'error'
+                    ? job.error
+                    : job.status === 'running' && job.progressText
+                    ? job.progressText
+                    : job.label}
                 </p>
+                {job.status === 'running' && typeof job.progressPct === 'number' && (
+                  <div className="mt-2 space-y-1">
+                    <div className="h-1.5 w-full rounded-full bg-white/15 overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-violet-400 to-teal-400 transition-all duration-300"
+                        style={{ width: `${Math.max(6, job.progressPct)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
                 {job.route && (
                   <Link
                     href={job.route}

@@ -407,7 +407,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 export default function QuestoesPage() {
   const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog } = useProfile();
   const aiName = useAiProviderName();
-  const { notify, aiJobs, runAiJob } = useGlobal();
+  const { notify, aiJobs, runAiJob, updateAiJobProgress } = useGlobal();
 
   const storageKey = `sf_question_bank_${profile?.id || 'default'}`;
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
@@ -602,6 +602,55 @@ export default function QuestoesPage() {
 
     setShowAddPanel(false);
 
+    const fetchBatch = async (qty: number): Promise<BankQuestion[]> => {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate_topic_questions',
+          subjectName: subjectNameSnap,
+          topicTitle: topicTitleSnap,
+          count: qty,
+          style: styleSnap,
+          board: boardSnap,
+        }),
+      });
+      const rawResp = await res.text();
+      let json: { ok?: boolean; error?: string; data?: { questions?: unknown[] } } = {};
+      try {
+        json = JSON.parse(rawResp);
+      } catch {
+        throw new Error('Tempo esgotado neste lote.');
+      }
+      if (!res.ok || !json.ok || !Array.isArray(json.data?.questions)) {
+        throw new Error(json.error || 'Erro ao gerar questões com IA.');
+      }
+      const nowTs = Date.now();
+      return json.data.questions
+        .map((rawQ: unknown, i: number) => {
+          const q = rawQ as {
+            header?: string;
+            statement: string;
+            options?: QuizOption[];
+            correct_answer?: string;
+            explanation?: string;
+          };
+          if (!q?.statement) return null;
+          return {
+            id: `q-ai-${nowTs}-${Math.random().toString(36).slice(2, 6)}-${i}`,
+            subject_id: subjectIdSnap,
+            topic_id: topicIdSnap,
+            header: q.header || `${boardSnap || 'Questão IA'} · ${subjectNameSnap}`,
+            statement: q.statement || '',
+            options: Array.isArray(q.options) ? q.options : [],
+            correct_answer: (q.correct_answer || '').trim().toUpperCase(),
+            explanation: q.explanation || '',
+            created_at: new Date().toISOString(),
+          } as BankQuestion;
+        })
+        .filter((x): x is BankQuestion => Boolean(x));
+    };
+
     runAiJob({
       id: aiGenJobId,
       kind: 'quiz',
@@ -609,75 +658,53 @@ export default function QuestoesPage() {
       route: `/p/${profile.id}/questoes`,
       successMsg: `${plural(countSnap, 'questão gerada', 'questões geradas')} para ${labelTarget}!`,
       task: async () => {
-        const chunks: number[] = [];
-        let rem = countSnap;
-        while (rem > 0) {
-          const step = Math.min(3, rem);
-          chunks.push(step);
-          rem -= step;
-        }
-
         const collected: BankQuestion[] = [];
-        for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
-          const batchCount = chunks[cIdx];
-          const res = await fetch('/api/gemini', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              action: 'generate_topic_questions',
-              subjectName: subjectNameSnap,
-              topicTitle: topicTitleSnap,
-              count: batchCount,
-              style: styleSnap,
-              board: boardSnap,
-            }),
-          });
-          const rawResp = await res.text();
-          let json: { ok?: boolean; error?: string; data?: { questions?: unknown[] } } = {};
-          try {
-            json = JSON.parse(rawResp);
-          } catch {
-            throw new Error('O servidor demorou para responder neste lote.');
+        try {
+          let rem = countSnap;
+          while (rem > 0) {
+            const batchQty = Math.min(2, rem);
+            updateAiJobProgress(
+              aiGenJobId,
+              Math.round((collected.length / countSnap) * 100),
+              `${labelTarget}: ${collected.length}/${countSnap} questões (${Math.round((collected.length / countSnap) * 100)}%)`
+            );
+            try {
+              const items = await fetchBatch(batchQty);
+              collected.push(...items);
+            } catch {
+              // Se 2 questões demorarem, tenta de 1 em 1 automaticamente
+              if (batchQty > 1) {
+                for (let k = 0; k < batchQty; k++) {
+                  const single = await fetchBatch(1);
+                  collected.push(...single);
+                }
+              } else {
+                throw new Error('Tempo esgotado no servidor. Tente novamente.');
+              }
+            }
+            rem -= batchQty;
+            updateAiJobProgress(
+              aiGenJobId,
+              Math.round((collected.length / countSnap) * 100),
+              `${labelTarget}: ${collected.length}/${countSnap} questões (${Math.round((collected.length / countSnap) * 100)}%)`
+            );
           }
-          if (!res.ok || !json.ok || !Array.isArray(json.data?.questions)) {
-            throw new Error(json.error || 'Erro ao gerar questões com IA.');
+        } finally {
+          if (collected.length > 0) {
+            try {
+              const rawExisting = localStorage.getItem(bankKeySnap);
+              const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
+              const nextArr = [...collected, ...(Array.isArray(prevArr) ? prevArr : [])];
+              localStorage.setItem(bankKeySnap, JSON.stringify(nextArr));
+              window.dispatchEvent(new CustomEvent('sf-question-bank-updated'));
+            } catch {
+              // ignore
+            }
           }
-          const nowTs = Date.now();
-          json.data.questions.forEach((rawQ: unknown, i: number) => {
-            const q = rawQ as {
-              header?: string;
-              statement: string;
-              options?: QuizOption[];
-              correct_answer?: string;
-              explanation?: string;
-            };
-            if (!q?.statement) return;
-            collected.push({
-              id: `q-ai-${nowTs}-${cIdx}-${i}`,
-              subject_id: subjectIdSnap,
-              topic_id: topicIdSnap,
-              header: q.header || `${boardSnap || 'Questão IA'} · ${subjectNameSnap}`,
-              statement: q.statement || '',
-              options: Array.isArray(q.options) ? q.options : [],
-              correct_answer: (q.correct_answer || '').trim().toUpperCase(),
-              explanation: q.explanation || '',
-              created_at: new Date().toISOString(),
-            });
-          });
         }
 
         if (collected.length === 0) {
           throw new Error('Nenhuma questão foi gerada.');
-        }
-
-        try {
-          const rawExisting = localStorage.getItem(bankKeySnap);
-          const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
-          const nextArr = [...collected, ...(Array.isArray(prevArr) ? prevArr : [])];
-          localStorage.setItem(bankKeySnap, JSON.stringify(nextArr));
-          window.dispatchEvent(new CustomEvent('sf-question-bank-updated'));
-        } catch {
-          // ignore
         }
       },
     });
