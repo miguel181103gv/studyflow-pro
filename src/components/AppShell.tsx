@@ -403,19 +403,73 @@ export function AppShell({
   }
 
   const searchResults = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (q.length < 2) return [];
+    const rawQ = searchQuery.trim();
+    if (rawQ.length < 2) return [];
+
+    const normText = (s: string) =>
+      (s || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/\bartigo\b/g, 'art')
+        .replace(/[.,;:º°ª()\[\]\-\/]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const qTokens = normText(rawQ).split(' ').filter(Boolean);
+    if (qTokens.length === 0) return [];
+
+    const smartMatch = (hay: string) => {
+      const n = normText(hay);
+      return qTokens.every((t) => n.includes(t));
+    };
 
     const out: {
       id: string;
-      type: 'Matéria' | 'Tópico' | 'PDF' | 'Grifo' | 'Flashcard' | 'Erro' | 'Dicionário';
+      type: 'Matéria' | 'Tópico' | 'PDF' | 'Grifo' | 'Flashcard' | 'Erro' | 'Dicionário' | 'Lei Seca';
       title: string;
       subtitle: string;
       href: string;
     }[] = [];
 
+    // Busca na Lei Seca (artigos e blocos salvos)
+    try {
+      const rawLs = localStorage.getItem(`sf_lei_seca_${profile?.id || 'default'}`);
+      const lsItems = rawLs ? JSON.parse(rawLs) : [];
+      if (Array.isArray(lsItems)) {
+        const numM = rawQ.match(/\d+(?:-[A-Za-z]+)?/);
+        const exactArtRe = numM
+          ? new RegExp(`\\bArt\\.?\\s*${numM[0]}[º°oª]?(?:-[A-Za-z]+)?[^\n]{0,110}`, 'i')
+          : null;
+
+        lsItems.forEach((a: { id: string; title?: string; lawName?: string; rawText?: string; note?: string }) => {
+          const fullHay = `${a.title || ''} ${a.lawName || ''} ${a.rawText || ''} ${a.note || ''}`;
+          if (smartMatch(fullHay)) {
+            const artSnippet = exactArtRe ? (a.rawText || '').match(exactArtRe)?.[0] : null;
+            const cleanSnippet = artSnippet
+              ? artSnippet.replace(/\s+/g, ' ').trim()
+              : (a.rawText || '').replace(/\s+/g, ' ').slice(0, 100);
+            const artParam = numM ? `Art. ${numM[0]}` : '';
+            const params = new URLSearchParams();
+            params.set('id', a.id);
+            if (artParam) params.set('art', artParam);
+            if (a.lawName) params.set('law', a.lawName);
+            out.push({
+              id: `ls-${a.id}`,
+              type: 'Lei Seca',
+              title: `${a.title || 'Lei Seca'}${a.lawName ? ` · ${a.lawName}` : ''}`,
+              subtitle: cleanSnippet,
+              href: `${basePath}/lei-seca?${params.toString()}`,
+            });
+          }
+        });
+      }
+    } catch {
+      // ignore
+    }
+
     subjects.forEach((s) => {
-      if (s.name.toLowerCase().includes(q)) {
+      if (smartMatch(s.name)) {
         out.push({
           id: `sub-${s.id}`,
           type: 'Matéria',
@@ -428,7 +482,7 @@ export function AppShell({
 
     topics.forEach((t) => {
       const sub = subjects.find((s) => s.id === t.subject_id);
-      if (t.title.toLowerCase().includes(q)) {
+      if (smartMatch(t.title)) {
         out.push({
           id: `top-${t.id}`,
           type: 'Tópico',
@@ -437,7 +491,7 @@ export function AppShell({
           href: `${basePath}/estudos`,
         });
       }
-      if (t.pdf_name && t.pdf_name.toLowerCase().includes(q)) {
+      if (t.pdf_name && smartMatch(t.pdf_name)) {
         out.push({
           id: `pdf-${t.id}`,
           type: 'PDF',
@@ -449,7 +503,7 @@ export function AppShell({
     });
 
     highlights.forEach((h) => {
-      if (h.text.toLowerCase().includes(q) || h.note.toLowerCase().includes(q)) {
+      if (smartMatch(`${h.text} ${h.note}`)) {
         const t = topics.find((tp) => tp.id === h.topic_id);
         out.push({
           id: `hl-${h.id}`,
@@ -466,8 +520,8 @@ export function AppShell({
       const dictEntries = rawDict ? JSON.parse(rawDict) : [];
       if (Array.isArray(dictEntries)) {
         dictEntries.forEach((d: DictEntryLite) => {
-          const hay = `${d.word || ''} ${d.meaning || ''} ${d.example || ''}`.toLowerCase();
-          if (hay.includes(q)) {
+          const hay = `${d.word || ''} ${d.meaning || ''} ${d.example || ''}`;
+          if (smartMatch(hay)) {
             const sub = subjects.find((s) => s.id === d.subject_id);
             out.push({
               id: `dict-${d.id}`,
@@ -484,7 +538,7 @@ export function AppShell({
     }
 
     flashcards.forEach((c) => {
-      if (c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q)) {
+      if (smartMatch(`${c.front} ${c.back}`)) {
         const sub = subjects.find((s) => s.id === c.subject_id);
         out.push({
           id: `fc-${c.id}`,
@@ -497,11 +551,7 @@ export function AppShell({
     });
 
     errors.forEach((er) => {
-      if (
-        er.question_text.toLowerCase().includes(q) ||
-        er.golden_rule.toLowerCase().includes(q) ||
-        er.explanation.toLowerCase().includes(q)
-      ) {
+      if (smartMatch(`${er.question_text} ${er.golden_rule} ${er.explanation}`)) {
         const sub = subjects.find((s) => s.id === er.subject_id);
         out.push({
           id: `err-${er.id}`,

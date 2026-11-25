@@ -625,11 +625,12 @@ export default function LeiSecaPage() {
   // Abre automaticamente artigo clicado via DictionaryText (?art=...&law=...) ou baixa da internet se não existir
   useEffect(() => {
     if (!loaded) return;
+    const idParam = (searchParams.get('id') || '').trim();
     const artParam = (searchParams.get('art') || '').trim();
     const lawParam = (searchParams.get('law') || '').trim();
-    if (!artParam) return;
+    if (!idParam && !artParam) return;
 
-    const key = `${artParam}|${lawParam}`;
+    const key = `${idParam}|${artParam}|${lawParam}`;
     if (handledDeepLinkRef.current === key) return;
     handledDeepLinkRef.current = key;
 
@@ -653,17 +654,19 @@ export default function LeiSecaPage() {
       }, 150);
     };
 
-    const existing = articles.find((a) => {
-      const lawOk =
-        !lawNorm ||
-        a.lawName.toLowerCase().replace(/[^a-z0-9]/g, '').includes(lawNorm) ||
-        lawNorm.includes(a.lawName.toLowerCase().replace(/[^a-z0-9]/g, ''));
-      if (!lawOk && a.lawName.trim()) return false;
-      if (artRegex) {
-        return artRegex.test(a.title) || artRegex.test(a.rawText);
-      }
-      return a.title.toLowerCase().includes(artParam.toLowerCase());
-    });
+    const existing =
+      (idParam ? articles.find((a) => a.id === idParam) : undefined) ||
+      articles.find((a) => {
+        const lawOk =
+          !lawNorm ||
+          a.lawName.toLowerCase().replace(/[^a-z0-9]/g, '').includes(lawNorm) ||
+          lawNorm.includes(a.lawName.toLowerCase().replace(/[^a-z0-9]/g, ''));
+        if (!lawOk && a.lawName.trim()) return false;
+        if (artRegex) {
+          return artRegex.test(a.title) || artRegex.test(a.rawText);
+        }
+        return a.title.toLowerCase().includes(artParam.toLowerCase());
+      });
 
     if (existing) {
       focusArticle(existing.id);
@@ -746,9 +749,19 @@ export default function LeiSecaPage() {
         if (!hasHl) return false;
       }
       if (q) {
+        const norm = (s: string) =>
+          (s || '')
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/\bartigo\b/g, 'art')
+            .replace(/[.,;:º°ª()\[\]\-\/]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+        const tokens = norm(q).split(' ').filter(Boolean);
         const subName = subjectMap.get(a.subjectId)?.name || '';
-        const hay = `${a.title} ${a.lawName} ${subName} ${a.rawText} ${a.note}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+        const hay = norm(`${a.title} ${a.lawName} ${subName} ${a.rawText} ${a.note}`);
+        if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
