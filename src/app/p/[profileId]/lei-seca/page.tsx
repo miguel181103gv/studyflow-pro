@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -573,6 +574,10 @@ export default function LeiSecaPage() {
 
   const [articles, setArticles] = useState<LeiSecaArticle[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const searchParams = useSearchParams();
+  const [fetchingLawBanner, setFetchingLawBanner] = useState<string>('');
+  const [highlightedArticleId, setHighlightedArticleId] = useState<string | null>(null);
+  const handledDeepLinkRef = useRef<string>('');
 
   // Filtros
   const [selectedSubject, setSelectedSubject] = useState<string>('ALL');
@@ -616,6 +621,106 @@ export default function LeiSecaPage() {
       // ignore
     }
   }
+
+  // Abre automaticamente artigo clicado via DictionaryText (?art=...&law=...) ou baixa da internet se não existir
+  useEffect(() => {
+    if (!loaded) return;
+    const artParam = (searchParams.get('art') || '').trim();
+    const lawParam = (searchParams.get('law') || '').trim();
+    if (!artParam) return;
+
+    const key = `${artParam}|${lawParam}`;
+    if (handledDeepLinkRef.current === key) return;
+    handledDeepLinkRef.current = key;
+
+    const numMatch = artParam.match(/\d+(?:-[A-Za-z]+)?/);
+    const artNum = numMatch ? numMatch[0].toLowerCase() : '';
+    const artRegex = artNum
+      ? new RegExp(`\\bArt\\.?\\s*${artNum.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[º°oª]?\\b`, 'i')
+      : null;
+
+    const lawNorm = lawParam.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const focusArticle = (targetId: string) => {
+      setSelectedSubject('ALL');
+      setStatusFilter('all');
+      setSearchQuery('');
+      setCollapsedIds((prev) => ({ ...prev, [targetId]: false }));
+      setHighlightedArticleId(targetId);
+      setTimeout(() => {
+        const el = document.getElementById(`ls-art-${targetId}`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 150);
+    };
+
+    const existing = articles.find((a) => {
+      const lawOk =
+        !lawNorm ||
+        a.lawName.toLowerCase().replace(/[^a-z0-9]/g, '').includes(lawNorm) ||
+        lawNorm.includes(a.lawName.toLowerCase().replace(/[^a-z0-9]/g, ''));
+      if (!lawOk && a.lawName.trim()) return false;
+      if (artRegex) {
+        return artRegex.test(a.title) || artRegex.test(a.rawText);
+      }
+      return a.title.toLowerCase().includes(artParam.toLowerCase());
+    });
+
+    if (existing) {
+      focusArticle(existing.id);
+      notify(`Abrindo ${existing.title}${existing.lawName ? ` (${existing.lawName})` : ''}`, 'info');
+      return;
+    }
+
+    // Não encontrado localmente: baixa da internet com IA (Planalto / fontes oficiais)
+    let cancelled = false;
+    (async () => {
+      const label = lawParam ? `${artParam} (${lawParam})` : artParam;
+      setFetchingLawBanner(`Buscando ${label} na internet...`);
+      try {
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'fetch_law_article',
+            article: artParam,
+            lawHint: lawParam,
+          }),
+        });
+        const json = await res.json();
+        if (cancelled) return;
+        if (!res.ok || !json.ok || !json.data?.rawText) {
+          throw new Error(json.error || 'Não foi possível localizar o artigo na internet.');
+        }
+        const now = new Date().toISOString();
+        const created: LeiSecaArticle = {
+          id: `ls_web_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          subjectId: '',
+          lawName: String(json.data.lawName || lawParam || '').trim(),
+          title: String(json.data.title || artParam).trim(),
+          rawText: String(json.data.rawText).trim(),
+          note: 'Baixado automaticamente da internet via StudyFlow.',
+          studied: false,
+          readCount: 0,
+          highlights: {},
+          createdAt: now,
+          updatedAt: now,
+        };
+        persist([created, ...articles]);
+        focusArticle(created.id);
+        notify(`${created.title} baixado e salvo na Lei Seca!`, 'success');
+      } catch (err) {
+        if (!cancelled) {
+          notify(err instanceof Error ? err.message : 'Erro ao baixar artigo.', 'error');
+        }
+      } finally {
+        if (!cancelled) setFetchingLawBanner('');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loaded, searchParams, articles]);
 
   const subjectMap = useMemo(() => {
     const m = new Map<string, { name: string; color: string }>();
@@ -1119,6 +1224,13 @@ export default function LeiSecaPage() {
         </div>
       </div>
 
+      {fetchingLawBanner && (
+        <div className="rounded-2xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-3 flex items-center gap-3 text-sm font-semibold text-indigo-700 dark:text-indigo-300">
+          <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+          <span>{fetchingLawBanner}</span>
+        </div>
+      )}
+
       {/* Lista de Artigos */}
       {!loaded ? null : filteredArticles.length === 0 ? (
         <div className="card-surface rounded-3xl p-10 text-center space-y-3 border border-dashed border-theme">
@@ -1161,8 +1273,13 @@ export default function LeiSecaPage() {
             return (
               <div
                 key={art.id}
+                id={`ls-art-${art.id}`}
                 className={`card-surface rounded-3xl border transition ${
-                  art.studied ? 'border-emerald-500/35' : 'border-theme'
+                  highlightedArticleId === art.id
+                    ? 'border-indigo-500 ring-2 ring-indigo-500/40'
+                    : art.studied
+                      ? 'border-emerald-500/35'
+                      : 'border-theme'
                 }`}
               >
                 {/* Cabeçalho do Artigo */}

@@ -731,6 +731,31 @@ JSON:
       return NextResponse.json({ ok: true, data: parsed });
     }
 
+    if (action === 'fetch_law_article') {
+      const { article = '', lawHint = '' } = body;
+      if (!article || !String(article).trim()) {
+        return NextResponse.json({ error: 'Informe o artigo para buscar.' }, { status: 400 });
+      }
+      const artClean = String(article).trim();
+      const lawClean = String(lawHint || '').trim();
+      const q = `${artClean} ${lawClean || 'Constituição Federal CLT'} site:planalto.gov.br OR texto oficial`.trim();
+      const webHits = await searchDeepSeekWeb(q, true, 4);
+
+      const prompt = `Você é um assistente jurídico brasileiro. Extraia/forneça o TEXTO OFICIAL LITERAL E COMPLETO do "${artClean}"${
+        lawClean ? ` da norma "${lawClean}"` : ''
+      } (incluindo caput, parágrafos, incisos e alíneas, formatando cada elemento em sua própria linha para leitura em Lei Seca).
+${webHits ? `\nFONTES DA WEB (Planalto/Oficiais):\n${webHits.slice(0, 6000)}\n` : ''}
+Retorne SOMENTE JSON válido neste formato:
+{
+  "lawName": "${lawClean || 'CF/88 ou Norma identificada'}",
+  "title": "${artClean}${lawClean ? ` (${lawClean})` : ''}",
+  "rawText": "Art. ...\nI - ...\n§ 1º ..."
+}`;
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
+    }
+
     if (action === 'format_lei_seca') {
       const { rawText, lawName = '' } = body;
       if (!rawText || !String(rawText).trim()) {
@@ -754,6 +779,37 @@ ${String(rawText).slice(0, 12000)}`;
 
       const formattedText = await callGemini([{ text: prompt }], false, false, false);
       return NextResponse.json({ ok: true, data: { formattedText: formattedText.trim() } });
+    }
+
+    if (action === 'generate_study_summary') {
+      const { subjectName = '', topicTitle = '', profileName = '' } = body;
+      if (!topicTitle && !subjectName) {
+        return NextResponse.json({ error: 'Informe a matéria ou tópico.' }, { status: 400 });
+      }
+      const prompt = `Crie um RESUMO DIDÁTICO COMPLETO E ESTRUTURADO para prova/concurso (${profileName || 'Estudos'}) sobre:
+Matéria: "${subjectName}"
+Tópico: "${topicTitle || subjectName}"
+
+Regras:
+- Cubra os conceitos essenciais, regras gerais, exceções, prazos e o que mais cai em prova.
+- Seja claro, direto e didático (fácil de revisar antes da prova).
+- Em cada seção, se houver pegadinha clássica de banca, coloque em "callout".
+
+Retorne SOMENTE JSON válido neste formato exato:
+{
+  "title": "Resumo: ${topicTitle || subjectName}",
+  "summary": "Visão geral do assunto em 2 frases diretas.",
+  "sections": [
+    {
+      "heading": "1. Conceito e Fundamento",
+      "points": ["Ponto objetivo 1", "Ponto objetivo 2"],
+      "callout": "Pegadinha de prova ou exceção importante (ou vazio)"
+    }
+  ]
+}`;
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
     }
 
     if (action === 'format_study_notes') {

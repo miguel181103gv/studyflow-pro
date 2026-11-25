@@ -315,6 +315,7 @@ export default function ProgressoEditalPage() {
   const [topicNotesMap, setTopicNotesMap] = useState<Record<string, TopicNoteRecord>>({});
   const [editingNoteMode, setEditingNoteMode] = useState(false);
   const [formattingNote, setFormattingNote] = useState(false);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
   const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
   const [activePdfIdx, setActivePdfIdx] = useState(0);
   const [activeNoteIdx, setActiveNoteIdx] = useState(0);
@@ -347,6 +348,69 @@ export default function ProgressoEditalPage() {
       localStorage.setItem(notesStorageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+  }
+
+  async function handleGenerateTopicSummary() {
+    if (!activeTopicId || !activeTopic) return;
+    setGeneratingSummary(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate_study_summary',
+          subjectName: activeTopicSub?.name || '',
+          topicTitle: activeTopic.title,
+          profileName: profile?.name || '',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !json.data?.sections) {
+        throw new Error(json.error || 'Não foi possível gerar o resumo.');
+      }
+      const fmt = json.data as FormattedNote;
+      const plainRaw = [
+        fmt.title,
+        fmt.summary,
+        ...fmt.sections.map(
+          (s) => `${s.heading}\n${s.points.map((p) => `- ${p}`).join('\n')}${s.callout ? `\nAtenção: ${s.callout}` : ''}`
+        ),
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      const items = getTopicNoteItems(topicNotesMap[activeTopicId]);
+      const safeIdx = Math.min(activeNoteIdx, Math.max(0, items.length - 1));
+      const cur = items[safeIdx];
+
+      if (!cur.rawText?.trim() && !cur.formatted) {
+        const nextItems = items.map((it, idx) =>
+          idx === safeIdx
+            ? { ...it, title: fmt.title || `Resumo ${aiName}`, rawText: plainRaw, formatted: fmt }
+            : it
+        );
+        saveTopicNote(activeTopicId, { items: nextItems });
+      } else {
+        const nextItems: TopicNoteItem[] = [
+          ...items,
+          {
+            id: `note-${Date.now()}`,
+            title: fmt.title || `Resumo ${aiName}`,
+            rawText: plainRaw,
+            formatted: fmt,
+          },
+        ];
+        saveTopicNote(activeTopicId, { items: nextItems });
+        setActiveNoteIdx(nextItems.length - 1);
+      }
+
+      setEditingNoteMode(false);
+      notify(`Resumo gerado pelo ${aiName} e salvo nos textos do tópico!`, 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao gerar resumo.', 'error');
+    } finally {
+      setGeneratingSummary(false);
     }
   }
 
@@ -2362,7 +2426,20 @@ export default function ProgressoEditalPage() {
                               )}
                               <button
                                 type="button"
-                                disabled={formattingNote || !rec.rawText.trim()}
+                                disabled={generatingSummary || formattingNote}
+                                onClick={() => void handleGenerateTopicSummary()}
+                                className="px-3.5 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                              >
+                                {generatingSummary ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                )}
+                                {generatingSummary ? 'Gerando resumo...' : `Gerar Resumo c/ ${aiName}`}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={formattingNote || generatingSummary || !rec.rawText.trim()}
                                 onClick={handleFormatNoteWithGemini}
                                 className="px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
                               >
