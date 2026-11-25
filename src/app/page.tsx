@@ -292,6 +292,7 @@ export default function ProfileSelectorPage() {
           action: 'enrich_edital',
           organName,
           roleTitle: targetRole,
+          includeSyllabus: parsedSubjects.length === 0,
         }),
       });
       const json = await res.json();
@@ -303,6 +304,9 @@ export default function ProfileSelectorPage() {
         if (w.extras) setExtras((prev) => prev || w.extras);
         if (w.status_text) setStatusText((prev) => prev || w.status_text);
         if (w.exam_date) setExamDate((prev) => prev || w.exam_date);
+        if (Array.isArray(w.subjects) && w.subjects.length > 0) {
+          setParsedSubjects((prev) => (prev.length === 0 ? w.subjects : prev));
+        }
       }
     } catch {
       // Silencioso
@@ -1021,7 +1025,7 @@ export default function ProfileSelectorPage() {
                   <h2 className="text-xl font-extrabold tracking-tight">
                     {step === 'choose_mode' && 'O que você está estudando agora?'}
                     {step === 'start' && 'Como quer configurar seu concurso?'}
-                    {step === 'pci' && 'Procurar Concurso (PCI Concursos)'}
+                    {step === 'pci' && 'Procurar Concurso / Edital (Web)'}
                     {step === 'pick_role' && 'Qual cargo você quer estudar?'}
                     {step === 'review' &&
                       (studyMode === 'concurso'
@@ -1242,17 +1246,47 @@ export default function ProfileSelectorPage() {
                 {pciMessage && <p className="text-xs text-amber-600 font-medium">{pciMessage}</p>}
 
                 <div className="max-h-72 overflow-y-auto space-y-2">
-                  {pciResults.map((c, i) => (
+                  {pciResults.map((c, i) => {
+                    const anyC = c as PciConcurso & { banca?: string; ano?: string; url?: string };
+                    const cargosList = Array.isArray(c.cargos) ? c.cargos.filter(Boolean) : [];
+                    const mainTitle = c.titulo && c.titulo !== c.orgao ? c.titulo : (c.orgao || c.titulo);
+                    const subMeta = [
+                      c.uf ? c.uf.toUpperCase() : '',
+                      anyC.banca ? `Banca: ${anyC.banca}` : '',
+                      c.vagas_salario || `${c.vagas ? `${c.vagas} vagas` : ''}${c.vagas && c.salario ? ' • ' : ''}${c.salario || ''}`,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ');
+
+                    return (
                     <div
                       key={c.id || i}
                       className="rounded-2xl subtle-surface border border-theme p-3.5 flex items-center justify-between gap-3 text-xs"
                     >
-                      <div className="min-w-0">
-                        <p className="font-bold text-sm truncate">{c.orgao || c.titulo}</p>
-                        <p className="text-muted-theme mt-0.5">
-                          {c.uf ? `${c.uf} • ` : ''}
-                          {c.vagas_salario || `${c.vagas ? `${c.vagas} vagas • ` : ''}${c.salario || ''}`}
-                        </p>
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-bold text-sm truncate">{mainTitle}</p>
+                          {c.datas?.aberto ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                              Aberto
+                            </span>
+                          ) : anyC.ano ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-500/15 text-muted-theme">
+                              {anyC.ano}
+                            </span>
+                          ) : null}
+                        </div>
+                        {cargosList.length > 0 && (
+                          <p className="text-[11px] text-teal-700 dark:text-teal-300 font-semibold truncate">
+                            Cargos: {cargosList.slice(0, 3).join(', ')}
+                            {cargosList.length > 3 ? ` (+${cargosList.length - 3})` : ''}
+                          </p>
+                        )}
+                        {subMeta && (
+                          <p className="text-[11px] text-muted-theme truncate">
+                            {subMeta}
+                          </p>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
                         {c.noticia?.link && (
@@ -1275,7 +1309,8 @@ export default function ProfileSelectorPage() {
                         </button>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

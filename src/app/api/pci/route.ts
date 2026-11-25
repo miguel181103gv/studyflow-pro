@@ -84,7 +84,11 @@ async function searchConcursosOnWeb(termo: string, uf: string) {
   const combined = [web1, web2].filter(Boolean).join('\n\n');
   if (!combined) return [];
 
-  const prompt = `Com base nos resultados da web abaixo sobre "${qBase}", liste até 8 concursos (incluindo editais abertos OU editais anteriores/antigos já encerrados, do mais recente/relevante ao mais antigo).
+  const prompt = `Com base nos resultados da web abaixo sobre "${qBase}", liste até 6 concursos DISTINTOS (sem repetir o mesmo concurso/edital!). Inclua editais abertos OU anteriores/antigos, do mais recente ao mais antigo.
+REGRAS IMPORTANTES:
+- NUNCA repita o mesmo concurso duas vezes na lista.
+- SEMPRE preencha "cargos" com os principais cargos do edital (ex: ["Técnico Bancário Novo", "Técnico Bancário - TI"]).
+- SEMPRE coloque o ano e a banca no "titulo" (ex: "CAIXA Econômica Federal 2024 · Cesgranrio").
 
 RESULTADOS DA WEB:
 ${combined.slice(0, 10000)}
@@ -93,10 +97,12 @@ Retorne SOMENTE JSON válido neste formato exato:
 {
   "concursos": [
     {
-      "titulo": "Nome do Concurso e Ano (ex: TRT-MG 2022 - 3ª Região)",
-      "orgao": "Órgão (ex: TRT-MG)",
-      "banca": "Banca (ex: Fumarc / FCC / FGV / Cebraspe ou vazio)",
-      "salario": "Faixa salarial se houver (ex: R$ 8.529,65 a R$ 13.994,78 ou vazio)",
+      "titulo": "Nome do Concurso, Ano e Banca (ex: CAIXA Econômica Federal 2024 · Cesgranrio)",
+      "orgao": "Órgão (ex: CAIXA Econômica Federal)",
+      "banca": "Banca (ex: Cesgranrio)",
+      "ano": "2024",
+      "vagas": "4.050",
+      "salario": "Faixa salarial (ex: R$ 3.762,00 a R$ 14.915,00 ou vazio)",
       "cargos": ["Cargo 1", "Cargo 2"],
       "datas": {
         "aberto": false,
@@ -163,14 +169,40 @@ export async function POST(request: Request) {
         ? pciData.resultados
         : [];
 
-      // Mescla priorizando abertos do PCI + editais (incluindo antigos) achados na web
-      const seen = new Set<string>();
-      const merged = [...pciList, ...webList].filter((item) => {
-        const key = String(item?.titulo || item?.orgao || '').toLowerCase().trim();
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+      // Mescla e remove duplicatas reais (inclusive edições repetidas do PCI sem ano/cargo)
+      const normKey = (v: unknown) =>
+        String(v || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+
+      const seen = new Map<string, Record<string, unknown>>();
+      for (const item of [...webList, ...pciList]) {
+        if (!item || typeof item !== 'object') continue;
+        const rec = item as Record<string, unknown>;
+        const orgaoK = normKey(rec.orgao || rec.titulo);
+        const salK = normKey(rec.salario || rec.vagas_salario);
+        const cargosArr = Array.isArray(rec.cargos) ? rec.cargos.map(String).filter(Boolean) : [];
+        const cargosK = normKey(cargosArr.slice(0, 3).join(' '));
+        const yearM = String(rec.ano || rec.titulo || '').match(/20\d{2}/)?.[0] || '';
+        const dedupKey = `${orgaoK}__${yearM || salK}__${cargosK ? cargosK.slice(0, 30) : salK}`;
+        if (!orgaoK) continue;
+
+        const prev = seen.get(dedupKey);
+        if (!prev) {
+          seen.set(dedupKey, rec);
+        } else {
+          // Enriquece o registro existente com cargos/banca/link que estiverem faltando
+          const prevCargos = Array.isArray(prev.cargos) ? prev.cargos : [];
+          if (prevCargos.length === 0 && cargosArr.length > 0) prev.cargos = cargosArr;
+          if (!prev.banca && rec.banca) prev.banca = rec.banca;
+          if (!prev.ano && rec.ano) prev.ano = rec.ano;
+          if (!prev.url && rec.url) prev.url = rec.url;
+        }
+      }
+      const merged = Array.from(seen.values());
 
       return NextResponse.json({
         ok: true,

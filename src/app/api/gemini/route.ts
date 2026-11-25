@@ -490,24 +490,50 @@ Retorne SOMENTE um JSON válido neste formato:
     }
 
     if (action === 'enrich_edital') {
-      const { organName, roleTitle } = body;
-      const webResults = await searchDeepSeekWeb(
-        `${organName} ${roleTitle} concurso salario vale alimentacao edital`
-      );
-      if (webResults && process.env.DEEPSEEK_API_KEY?.trim()) {
-        const dsPrompt = `Com base nos resultados de busca abaixo sobre o concurso "${organName}" para o cargo "${roleTitle}" no Brasil, extraia remuneração inicial / salário base, vale-alimentação, jornada semanal, principais benefícios, situação atual e data de prova se houver.
+      const { organName, roleTitle, includeSyllabus = false } = body;
+      const [webInfo, webSyllabus] = await Promise.all([
+        searchDeepSeekWeb(
+          `${organName} ${roleTitle} concurso salario vale alimentacao edital`,
+          false,
+          4
+        ),
+        includeSyllabus
+          ? searchDeepSeekWeb(
+              `${organName} ${roleTitle} conteudo programatico materias disciplinas edital`,
+              true,
+              5
+            )
+          : Promise.resolve(''),
+      ]);
+      const combinedWeb = [webInfo, webSyllabus].filter(Boolean).join('\n\n--- CONTEÚDO PROGRAMÁTICO ---\n');
+      if (process.env.DEEPSEEK_API_KEY?.trim()) {
+        const dsPrompt = `Com base nos resultados de busca abaixo (e no seu conhecimento sobre editais oficiais brasileiros quando complementar) sobre o concurso "${organName}" para o cargo "${roleTitle}", extraia remuneração inicial / salário base, vale-alimentação, jornada semanal, principais benefícios, situação atual, data de prova${includeSyllabus ? ' e TODAS as matérias e tópicos do conteúdo programático deste cargo' : ''}.
+${includeSyllabus ? `
+REGRA CRÍTICA SOBRE MATÉRIAS:
+- Separe CADA disciplina real (ex: "Língua Portuguesa", "Língua Inglesa", "Matemática Financeira", "Conhecimentos Bancários", "Direito do Trabalho") — JAMAIS crie uma matéria chamada "Conhecimentos Específicos" ou "Conhecimentos Básicos" (use isso apenas em "category").
+- Inclua os tópicos principais de cada matéria em "topics".` : ''}
 
-RESULTADOS DA WEB:
-${webResults}
-
+${combinedWeb ? `RESULTADOS DA WEB:
+${combinedWeb.slice(0, 12000)}
+` : ''}
 Responda SOMENTE com um JSON válido neste formato exato:
 {
   "salary_base": "Ex: R$ 9.776,71 (ou '' se não encontrar)",
   "vale_alimentacao": "Ex: R$ 1.860,51 (ou '' se não encontrar)",
   "workload": "Ex: 40h/sem (ou '' se não encontrar)",
   "extras": "Principais benefícios em 1 linha curta",
-  "status_text": "Situação atual resumida (ex: Edital previsto / Autorizado / Publicado)",
-  "exam_date": "YYYY-MM-DD se já houver data marcada, ou null"
+  "status_text": "Situação atual resumida (ex: Edital publicado / Anterior)",
+  "exam_date": "YYYY-MM-DD se houver data marcada, ou null"${includeSyllabus ? `,
+  "subjects": [
+    {
+      "name": "Língua Portuguesa",
+      "category": "Conhecimentos Básicos",
+      "hours_target": 2,
+      "weight": 1,
+      "exam_questions": null,
+      "topics": ["Compreensão e interpretação de textos", "Ortografia", "Sintaxe"]
+    }
+  ]` : ''}
 }`;
         const dsRaw = await callDeepSeek(dsPrompt, true, false, false);
         if (dsRaw) {
