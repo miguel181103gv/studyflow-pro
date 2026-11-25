@@ -602,7 +602,7 @@ export default function QuestoesPage() {
 
     setShowAddPanel(false);
 
-    const fetchBatch = async (qty: number): Promise<BankQuestion[]> => {
+    const fetchBatch = async (qty: number, boardExamples = ''): Promise<BankQuestion[]> => {
       const res = await fetch('/api/gemini', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -614,6 +614,7 @@ export default function QuestoesPage() {
           style: styleSnap,
           board: boardSnap,
           profileName: profile?.name || '',
+          boardExamples,
         }),
       });
       const rawResp = await res.text();
@@ -659,6 +660,28 @@ export default function QuestoesPage() {
       route: `/p/${profile.id}/questoes`,
       successMsg: `${plural(countSnap, 'questão gerada', 'questões geradas')} para ${labelTarget}!`,
       task: async () => {
+        let boardExamples = '';
+        if (boardSnap) {
+          try {
+            updateAiJobProgress(aiGenJobId, 4, `Pesquisando estilo da banca ${boardSnap}...`);
+            const stRes = await fetch('/api/gemini', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                action: 'fetch_board_style',
+                board: boardSnap,
+                profileName: profile?.name || '',
+                subjectName: subjectNameSnap,
+              }),
+            });
+            const stJson = await stRes.json();
+            if (stRes.ok && stJson.ok && stJson.data?.examples) {
+              boardExamples = String(stJson.data.examples);
+            }
+          } catch {
+            // ignore
+          }
+        }
         const collected: BankQuestion[] = [];
         try {
           const batchSizes: number[] = [];
@@ -676,12 +699,12 @@ export default function QuestoesPage() {
               const idx = cursor++;
               const batchQty = batchSizes[idx];
               try {
-                const items = await fetchBatch(batchQty);
+                const items = await fetchBatch(batchQty, boardExamples);
                 collected.push(...items);
               } catch {
                 if (batchQty > 1) {
                   for (let k = 0; k < batchQty; k++) {
-                    const single = await fetchBatch(1);
+                    const single = await fetchBatch(1, boardExamples);
                     collected.push(...single);
                   }
                 } else {

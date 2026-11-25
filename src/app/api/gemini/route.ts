@@ -498,6 +498,31 @@ Responda SOMENTE com um JSON válido neste formato exato (sem markdown):
       return NextResponse.json({ ok: true, data: parsed });
     }
 
+    if (action === 'complete_flashcard') {
+      const { front = '', back = '', subjectName = '', topicTitle = '', profileName = '' } = body;
+      if (!front || !String(front).trim()) {
+        return NextResponse.json({ error: 'Digite a pergunta/frente do flashcard.' }, { status: 400 });
+      }
+      const cleanF = String(front).trim();
+      const cleanB = String(back || '').trim();
+      const ctx = [profileName, subjectName, topicTitle].filter(Boolean).join(' · ');
+
+      const prompt = cleanB
+        ? `Corrija erros de digitação, acentuação e clareza deste flashcard (${ctx || 'concursos'}).
+Frente: "${cleanF}"
+Verso: "${cleanB}"
+Retorne SOMENTE JSON válido:
+{"corrected_front":"...","corrected_back":"..."}`
+        : `Corrija erros de digitação, acentuação e pontuação da pergunta abaixo (${ctx || 'concursos'}) em "corrected_front", e escreva uma resposta curta, precisa e de alta retenção para prova (1 a 3 frases objetivas, citando artigo/regra se houver) em "corrected_back".
+Pergunta digitada: "${cleanF}"
+Retorne SOMENTE JSON válido:
+{"corrected_front":"...","corrected_back":"..."}`;
+
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
+    }
+
     if (action === 'generate_flashcards') {
       const { subjectName, topicTitle, profileName, count = 5 } = body;
       const raw = await callGemini(
@@ -967,6 +992,36 @@ Retorne SOMENTE JSON válido:
       return NextResponse.json({ ok: true, data });
     }
 
+    if (action === 'search_past_exams') {
+      const { query = '' } = body;
+      if (!query || !String(query).trim()) {
+        return NextResponse.json({ error: 'Digite o concurso, cargo ou banca para buscar.' }, { status: 400 });
+      }
+      const hits = await searchDeepSeekWeb(`${String(query).trim()} prova concurso pdf gabarito`, false, 8);
+      if (!hits) {
+        return NextResponse.json({ ok: true, data: { exams: [] } });
+      }
+      const prompt = `Com base nos resultados abaixo, liste até 6 provas anteriores reais encontradas para o usuário escolher.
+RESULTADOS:
+${hits}
+
+Retorne SOMENTE JSON válido:
+{"exams":[{"title":"Nome da Prova (ex: TRT-MG 2022 - Técnico Judiciário)","board":"FCC","organ":"TRT-MG","year":"2022","url":"https://...","snippet":"Resumo curto"}]}`;
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
+    }
+
+    if (action === 'fetch_board_style') {
+      const { board = '', profileName = '', subjectName = '' } = body;
+      const q = [board, profileName, subjectName, 'questão comentada concurso'].filter(Boolean).join(' ');
+      const hits = await searchDeepSeekWeb(q, false, 4);
+      return NextResponse.json({
+        ok: true,
+        data: { examples: hits ? hits.slice(0, 1400) : '' },
+      });
+    }
+
     if (action === 'generate_topic_questions') {
       const {
         subjectName = '',
@@ -975,6 +1030,7 @@ Retorne SOMENTE JSON válido:
         style = 'Múltipla escolha (A-E)',
         board = '',
         profileName = '',
+        boardExamples = '',
       } = body;
       const safeCount = Math.min(10, Math.max(1, Number(count) || 5));
       const isCE = String(style).toLowerCase().includes('certo');
@@ -984,7 +1040,10 @@ Retorne SOMENTE JSON válido:
         ? `tópico(s): "${topicTitle}" | matéria: "${subjectName}"`
         : `matéria: "${subjectName}"`;
 
-      const prompt = `Gere ${safeCount} questões nível REAL de prova da banca ${boardLabel}${organHint}, inspiradas no estilo de cobrança de provas anteriores dessa banca/órgão. ${topicContext}.
+      const refBlock = boardExamples
+        ? `\nREFERÊNCIA REAL DA WEB (use apenas como inspiração de estilo, tamanho e pegadinhas da banca ${boardLabel}):\n${String(boardExamples).slice(0, 1200)}\n`
+        : '';
+      const prompt = `Gere ${safeCount} questões inéditas nível REAL de prova da banca ${boardLabel}${organHint}, inspiradas no estilo de cobrança de provas anteriores dessa banca/órgão. ${topicContext}.${refBlock}
 Regras:
 1. PROIBIDO questão escolar/infantil, conta solta ou definição seca.
 2. Use sempre SITUAÇÃO-PROBLEMA, CASO PRÁTICO ou análise aplicada, cobrando exceções legais, súmulas e distratores plausíveis da banca ${boardLabel}.

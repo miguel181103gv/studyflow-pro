@@ -23,8 +23,10 @@ import {
   Clock,
   ArrowLeft,
   ArrowRight,
+  ExternalLink,
   FileUp,
   RotateCw,
+  Search,
 } from 'lucide-react';
 
 interface SimOption {
@@ -50,6 +52,7 @@ interface GeneratedSimulado {
   title: string;
   board: string;
   style: 'multipla' | 'certo_errado';
+  kind?: 'simulado' | 'prova_real' | 'prova_anterior';
   created_at: string;
   weights?: Record<string, number>;
   questions: SimQuestion[];
@@ -75,6 +78,46 @@ const PRESET_BOARDS = [
   'Cesgranrio',
   'Vunesp',
 ];
+
+function splitStatementForDisplay(raw: string): {
+  intro?: string;
+  passage?: string;
+  question: string;
+} {
+  let txt = (raw || '').trim();
+  if (!txt) return { question: '' };
+
+  // Quebra itens romanos (I., II., III.) em novas linhas para leitura agradável
+  txt = txt.replace(/\s+(?=(?:I|II|III|IV|V)[.)\-]\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ])/g, '\n');
+
+  // Detecta padrão de texto-base ("Atenção: Considere o texto..." / "Texto para as questões...")
+  const introRe = /^((?:Aten[çc][ãa]o:\s*)?(?:Considere|Leia|Texto\s+base|Com\s+base\s+no\s+texto)[\s\S]{10,130}?(?:quest[õo]es\s+de\s+n[úu]meros?\s+\d+\s+a\s+\d+\.?|a\s+seguir\.?:|abaixo\.?:))\s*([\s\S]+)$/i;
+  const introMatch = txt.match(introRe);
+  if (introMatch) {
+    const intro = introMatch[1].trim();
+    const rest = introMatch[2].trim();
+    // Tenta separar o texto-base (geralmente termina com referência bibliográfica "(AUTOR...)" ou antes da pergunta final)
+    const citMatch = rest.match(/^([\s\S]+?\([A-ZÁÉÍÓÚÂÊÔÃÕÇ][^)]{8,120}\))\s+([\s\S]+)$/);
+    if (citMatch) {
+      return {
+        intro,
+        passage: citMatch[1].trim(),
+        question: citMatch[2].trim(),
+      };
+    }
+    const qStartMatch = rest.match(/^([\s\S]{120,}?)\s+((?:O\s+texto|No\s+texto|De\s+acordo|Segundo|Assinale|Considerando|A\s+respeito|Em\s+rela[çc][ãa]o|Infere-se|Depreende-se)[\s\S]+)$/i);
+    if (qStartMatch) {
+      return {
+        intro,
+        passage: qStartMatch[1].trim(),
+        question: qStartMatch[2].trim(),
+      };
+    }
+    return { intro, question: rest };
+  }
+
+  return { question: txt };
+}
 
 export default function SimuladosPage() {
   const {
@@ -112,6 +155,13 @@ export default function SimuladosPage() {
   const [showPdfModal, setShowPdfModal] = useState(false);
   const [examPdfFile, setExamPdfFile] = useState<File | null>(null);
   const [gabaritoPdfFile, setGabaritoPdfFile] = useState<File | null>(null);
+  const [examDraftChoice, setExamDraftChoice] = useState<string>('');
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchingExams, setSearchingExams] = useState(false);
+  const [searchedExams, setSearchedExams] = useState<
+    Array<{ title: string; board?: string; organ?: string; year?: string; url?: string; snippet?: string }>
+  >([]);
   const [genTitle, setGenTitle] = useState('');
   const [genBoard, setGenBoard] = useState('FCC');
   const [genStyle, setGenStyle] = useState<'multipla' | 'certo_errado'>('multipla');
@@ -353,6 +403,7 @@ export default function SimuladosPage() {
       return;
     }
 
+    const kindSnap: 'simulado' | 'prova_real' = genMode === 'prova_real' ? 'prova_real' : 'simulado';
     const titleSnap =
       genTitle.trim() ||
       `${genMode === 'prova_real' ? 'Prova Real' : 'Simulado'} ${boardSnap} · ${
@@ -366,7 +417,8 @@ export default function SimuladosPage() {
       sub: typeof chosenSubs[number],
       topicTitle: string,
       topicId: string | null,
-      qty: number
+      qty: number,
+      boardExamples = ''
     ): Promise<SimQuestion[]> => {
       const res = await fetch('/api/gemini', {
         method: 'POST',
@@ -379,6 +431,7 @@ export default function SimuladosPage() {
           style: styleSnap,
           board: boardSnap,
           profileName: profile?.name || '',
+          boardExamples,
         }),
       });
       const rawResp = await res.text();
@@ -425,6 +478,27 @@ export default function SimuladosPage() {
       route: `/p/${profile.id}/simulados`,
       successMsg: `Simulado "${titleSnap}" pronto!`,
       task: async () => {
+        let boardExamples = '';
+        try {
+          updateAiJobProgress(simJobId, 3, `Pesquisando estilo real da banca ${boardSnap}...`);
+          const stRes = await fetch('/api/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'fetch_board_style',
+              board: boardSnap,
+              profileName: profile?.name || '',
+              subjectName: plan[0]?.subject.name || '',
+            }),
+          });
+          const stJson = await stRes.json();
+          if (stRes.ok && stJson.ok && stJson.data?.examples) {
+            boardExamples = String(stJson.data.examples);
+          }
+        } catch {
+          // ignore
+        }
+
         const collected: SimQuestion[] = [];
         try {
           interface SimTask {
@@ -475,7 +549,8 @@ export default function SimuladosPage() {
                   t.subject,
                   t.topicTitle,
                   t.topicId,
-                  t.qty
+                  t.qty,
+                  boardExamples
                 );
                 collected.push(...batchItems);
               } catch {
@@ -485,7 +560,8 @@ export default function SimuladosPage() {
                       t.subject,
                       t.topicTitle,
                       t.topicId,
-                      1
+                      1,
+                      boardExamples
                     );
                     collected.push(...single);
                   }
@@ -513,6 +589,7 @@ export default function SimuladosPage() {
               title: isPartial ? `${titleSnap} (${collected.length}q)` : titleSnap,
               board: boardSnap,
               style: styleSnap,
+              kind: kindSnap,
               created_at: new Date().toISOString(),
               weights: weightsSnap,
               questions: collected,
@@ -748,6 +825,7 @@ export default function SimuladosPage() {
           title: meta.exam_title || examFileSnap.name.replace(/\.pdf$/i, ''),
           board: boardSnap,
           style: styleSnap,
+          kind: 'prova_anterior',
           created_at: new Date().toISOString(),
           weights: computeDefaultWeights(subjects),
           questions: finalQuestions,
@@ -778,6 +856,28 @@ export default function SimuladosPage() {
         }
       },
     });
+  }
+
+  async function handleSearchPastExams(e: React.FormEvent) {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    setSearchingExams(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'search_past_exams', query: searchQuery.trim() }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao buscar provas.');
+      const list = Array.isArray(json.data?.exams) ? json.data.exams : [];
+      setSearchedExams(list);
+      if (list.length === 0) notify('Nenhuma prova encontrada para essa busca.', 'info');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro na busca de provas.', 'error');
+    } finally {
+      setSearchingExams(false);
+    }
   }
 
   function startExamRunner(sim: GeneratedSimulado, restartFresh = false) {
@@ -989,6 +1089,14 @@ export default function SimuladosPage() {
   }
 
   const currentExamQ = activeSim ? activeSim.questions[examIdx] : undefined;
+
+  useEffect(() => {
+    if (currentExamQ) {
+      setExamDraftChoice(examAnswers[currentExamQ.id] || '');
+    } else {
+      setExamDraftChoice('');
+    }
+  }, [currentExamQ, examAnswers]);
   const examAnsweredCount = useMemo(() => {
     if (!activeSim) return 0;
     return activeSim.questions.filter((q) => Boolean(examAnswers[q.id])).length;
@@ -1006,6 +1114,17 @@ export default function SimuladosPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              if (!searchQuery && profile?.name) setSearchQuery(`${profile.name} ${profile.role_title || ''}`.trim());
+              setShowSearchModal(true);
+            }}
+            className="px-4 py-3 rounded-2xl subtle-surface border border-theme hover:border-teal-500 text-sm font-bold inline-flex items-center gap-2 shadow-sm"
+          >
+            <Search className="w-4 h-4 text-teal-600" />
+            Buscar Provas
+          </button>
           <button
             type="button"
             onClick={() => setShowPdfModal(true)}
@@ -1051,89 +1170,149 @@ export default function SimuladosPage() {
         </div>
       )}
 
-      {/* Provas Geradas com IA prontas para resolver */}
-      {generatedList.length > 0 && (
-        <div className="space-y-3">
-          <h2 className="text-xs font-extrabold uppercase tracking-wider text-muted-theme">
-            Simulados Interativos Gerados ({generatedList.length})
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {generatedList.map((gs) => (
-              <div
-                key={gs.id}
-                className="card-surface rounded-3xl p-5 border border-violet-500/25 space-y-3"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-violet-500/15 text-violet-700 dark:text-violet-300">
-                        {gs.board}
-                      </span>
-                      <span className="text-[10px] font-semibold text-muted-theme">
-                        {gs.questions.length} questões ·{' '}
-                        {gs.style === 'certo_errado' ? 'Certo/Errado' : 'Múltipla escolha'}
-                      </span>
-                    </div>
-                    <h3 className="font-bold text-base mt-1 truncate">{gs.title}</h3>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      saveGeneratedList(generatedList.filter((x) => x.id !== gs.id))
-                    }
-                    className="p-2 rounded-xl hover:bg-rose-500/15 text-muted-theme hover:text-rose-500 shrink-0"
-                    title="Excluir simulado"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+      {/* Seção 1: Provas Reais & Provas Anteriores (PDF) */}
+      {(() => {
+        const realExams = generatedList.filter(
+          (g) =>
+            g.kind === 'prova_real' ||
+            g.kind === 'prova_anterior' ||
+            g.id.startsWith('gensim-pdf-') ||
+            g.questions.length >= 40
+        );
+        const quickSims = generatedList.filter((g) => !realExams.includes(g));
 
-                {gs.last_score && (
-                  <p className="text-xs text-muted-theme">
-                    Último resultado:{' '}
-                    <strong className="text-teal-600">
-                      {gs.last_score.correct}/{gs.last_score.total} (
-                      {calcAccuracy(gs.last_score.correct, gs.last_score.total)}%)
-                    </strong>{' '}
-                    · {formatDurationHMS(gs.last_score.duration_sec)}
-                  </p>
-                )}
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => startExamRunner(gs)}
-                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5"
-                  >
-                    {gs.saved_progress ? (
-                      <Play className="w-3.5 h-3.5" />
-                    ) : gs.last_score ? (
-                      <RotateCw className="w-3.5 h-3.5" />
-                    ) : (
-                      <Play className="w-3.5 h-3.5" />
-                    )}
-                    {gs.saved_progress
-                      ? `Continuar (${Object.keys(gs.saved_progress.answers || {}).length}/${gs.questions.length})`
-                      : gs.last_score
-                      ? 'Refazer Simulado'
-                      : 'Iniciar Simulado Agora'}
-                  </button>
-                  {gs.saved_progress && (
-                    <button
-                      type="button"
-                      onClick={() => startExamRunner(gs, true)}
-                      className="px-3 py-2.5 rounded-xl subtle-surface border border-theme text-xs font-semibold"
-                      title="Recomeçar do zero"
+        const renderExamCard = (gs: GeneratedSimulado, isReal: boolean) => {
+          const isPdf = gs.kind === 'prova_anterior' || gs.id.startsWith('gensim-pdf-');
+          return (
+            <div
+              key={gs.id}
+              className={`card-surface rounded-3xl p-5 border space-y-3 ${
+                isPdf
+                  ? 'border-indigo-500/35'
+                  : isReal
+                  ? 'border-emerald-500/35'
+                  : 'border-violet-500/25'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span
+                      className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-wide ${
+                        isPdf
+                          ? 'bg-indigo-600 text-white'
+                          : isReal
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-violet-500/15 text-violet-700 dark:text-violet-300'
+                      }`}
                     >
-                      Zerar
-                    </button>
+                      {isPdf ? 'Prova Anterior (PDF)' : isReal ? 'Prova Real' : 'Simulado'}
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full subtle-surface border border-theme">
+                      {gs.board}
+                    </span>
+                    <span className="text-[10px] font-semibold text-muted-theme">
+                      {gs.questions.length} questões ·{' '}
+                      {gs.style === 'certo_errado' ? 'Certo/Errado' : 'Múltipla escolha'}
+                    </span>
+                  </div>
+                  <h3 className="font-bold text-base mt-1.5 truncate">{gs.title}</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    saveGeneratedList(generatedList.filter((x) => x.id !== gs.id))
+                  }
+                  className="p-2 rounded-xl hover:bg-rose-500/15 text-muted-theme hover:text-rose-500 shrink-0"
+                  title="Excluir"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+
+              {gs.last_score && (
+                <p className="text-xs text-muted-theme">
+                  Último resultado:{' '}
+                  <strong className="text-teal-600">
+                    {gs.last_score.correct}/{gs.last_score.total} (
+                    {calcAccuracy(gs.last_score.correct, gs.last_score.total)}%)
+                  </strong>{' '}
+                  · {formatDurationHMS(gs.last_score.duration_sec)}
+                </p>
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => startExamRunner(gs)}
+                  className={`flex-1 py-2.5 rounded-xl text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 ${
+                    isPdf
+                      ? 'bg-indigo-600 hover:bg-indigo-500'
+                      : isReal
+                      ? 'bg-emerald-600 hover:bg-emerald-500'
+                      : 'bg-violet-600 hover:bg-violet-500'
+                  }`}
+                >
+                  {gs.saved_progress ? (
+                    <Play className="w-3.5 h-3.5" />
+                  ) : gs.last_score ? (
+                    <RotateCw className="w-3.5 h-3.5" />
+                  ) : (
+                    <Play className="w-3.5 h-3.5" />
                   )}
+                  {gs.saved_progress
+                    ? `Continuar (${Object.keys(gs.saved_progress.answers || {}).length}/${gs.questions.length})`
+                    : gs.last_score
+                    ? isReal
+                      ? 'Refazer Prova'
+                      : 'Refazer Simulado'
+                    : isReal
+                    ? 'Iniciar Prova Agora'
+                    : 'Iniciar Simulado Agora'}
+                </button>
+                {gs.saved_progress && (
+                  <button
+                    type="button"
+                    onClick={() => startExamRunner(gs, true)}
+                    className="px-3 py-2.5 rounded-xl subtle-surface border border-theme text-xs font-semibold"
+                    title="Recomeçar do zero"
+                  >
+                    Zerar
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <>
+            {realExams.length > 0 && (
+              <div className="space-y-3">
+                <h2 className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  Provas Reais & Provas Anteriores ({realExams.length})
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {realExams.map((gs) => renderExamCard(gs, true))}
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+            )}
+
+            {quickSims.length > 0 && (
+              <div className="space-y-3">
+                <h2 className="text-xs font-extrabold uppercase tracking-wider text-violet-700 dark:text-violet-300 flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-violet-500" />
+                  Simulados Rápidos ({quickSims.length})
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {quickSims.map((gs) => renderExamCard(gs, false))}
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Histórico de Resultados Oficiais */}
       {simulados.length === 0 && generatedList.length === 0 ? (
@@ -1218,6 +1397,114 @@ export default function SimuladosPage() {
           </div>
         </div>
       ) : null}
+
+      {/* MODAL MOTOR DE BUSCA DE PROVAS ANTERIORES */}
+      {showSearchModal && (
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-surface w-full max-w-2xl rounded-3xl p-6 space-y-4 my-8 max-h-[90vh] overflow-y-auto animate-pop-in">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-lg flex items-center gap-2">
+                <Search className="w-5 h-5 text-teal-600" />
+                Buscar Provas Anteriores na Web
+              </h2>
+              <button
+                type="button"
+                onClick={() => setShowSearchModal(false)}
+                className="p-2 rounded-xl subtle-surface"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSearchPastExams} className="flex gap-2">
+              <input
+                required
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Ex: TRT-MG Técnico Judiciário FCC 2022 ou Banco do Brasil Cesgranrio"
+                className="flex-1 rounded-2xl subtle-surface border border-theme px-4 py-2.5 text-xs"
+              />
+              <button
+                type="submit"
+                disabled={searchingExams}
+                className="px-4 py-2.5 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+              >
+                {searchingExams ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Search className="w-4 h-4" />
+                )}
+                {searchingExams ? 'Buscando...' : 'Buscar'}
+              </button>
+            </form>
+
+            {searchedExams.length > 0 && (
+              <div className="space-y-2.5 max-h-[55vh] overflow-y-auto pr-1">
+                {searchedExams.map((ex, idx) => (
+                  <div
+                    key={idx}
+                    className="rounded-2xl subtle-surface border border-theme p-4 space-y-2"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="font-bold text-sm">{ex.title}</p>
+                        <p className="text-[11px] text-muted-theme">
+                          {[ex.board, ex.organ, ex.year].filter(Boolean).join(' · ')}
+                        </p>
+                      </div>
+                      {ex.url && (
+                        <a
+                          href={ex.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-[11px] font-bold inline-flex items-center gap-1 shrink-0"
+                        >
+                          Abrir Prova/PDF
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
+                    {ex.snippet && (
+                      <p className="text-xs text-muted-theme line-clamp-2">{ex.snippet}</p>
+                    )}
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSearchModal(false);
+                          setGenTitle(`Simulado estilo ${ex.title}`);
+                          if (ex.board && PRESET_BOARDS.some((b) => b.toLowerCase().includes(ex.board!.toLowerCase()))) {
+                            const matchedB = PRESET_BOARDS.find((b) =>
+                              b.toLowerCase().includes(ex.board!.toLowerCase())
+                            );
+                            if (matchedB) setGenBoard(matchedB);
+                          }
+                          setShowGenModal(true);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-bold inline-flex items-center gap-1"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        Gerar Simulado no Estilo desta Prova
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSearchModal(false);
+                          setShowPdfModal(true);
+                        }}
+                        className="px-3 py-1.5 rounded-xl card-surface border border-theme text-[11px] font-semibold inline-flex items-center gap-1"
+                      >
+                        <FileUp className="w-3 h-3" />
+                        Já baixei o PDF → Importar aqui
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* MODAL IMPORTAR PROVA EM PDF */}
       {showPdfModal && (
@@ -1585,9 +1872,26 @@ export default function SimuladosPage() {
           <div className="card-surface w-full max-w-3xl max-h-[94vh] flex flex-col rounded-3xl p-4 sm:p-6 shadow-2xl animate-pop-in">
             <div className="flex items-center justify-between gap-3 border-b border-theme pb-3 shrink-0">
               <div className="min-w-0">
-                <p className="text-xs font-bold text-violet-600 truncate">
-                  {activeSim.title} · {activeSim.board}
-                </p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase ${
+                      activeSim.kind === 'prova_anterior' || activeSim.id.startsWith('gensim-pdf-')
+                        ? 'bg-indigo-600 text-white'
+                        : activeSim.kind === 'prova_real' || activeSim.questions.length >= 40
+                        ? 'bg-emerald-600 text-white'
+                        : 'bg-violet-600 text-white'
+                    }`}
+                  >
+                    {activeSim.kind === 'prova_anterior' || activeSim.id.startsWith('gensim-pdf-')
+                      ? 'Prova Anterior'
+                      : activeSim.kind === 'prova_real' || activeSim.questions.length >= 40
+                      ? 'Prova Real'
+                      : 'Simulado'}
+                  </span>
+                  <p className="text-xs font-bold text-violet-600 truncate">
+                    {activeSim.title} · {activeSim.board}
+                  </p>
+                </div>
                 <p className="text-xs text-muted-theme mt-0.5 inline-flex items-center gap-2">
                   <span className="inline-flex items-center gap-1 font-mono font-bold text-[var(--text-main)]">
                     <Clock className="w-3.5 h-3.5 text-teal-600" />
@@ -1751,22 +2055,37 @@ export default function SimuladosPage() {
                   </button>
                 </div>
 
-                <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                  <span className="font-extrabold mr-1.5">{examIdx + 1}.</span>
-                  <DictionaryText text={currentExamQ.statement} />
-                </p>
+                {(() => {
+                  const formatted = splitStatementForDisplay(currentExamQ.statement);
+                  return (
+                    <div className="space-y-3">
+                      {formatted.intro && (
+                        <p className="text-xs font-bold text-teal-700 dark:text-teal-300">
+                          {formatted.intro}
+                        </p>
+                      )}
+                      {formatted.passage && (
+                        <div className="rounded-2xl subtle-surface border-l-4 border-l-teal-500 p-4 text-[13.5px] leading-relaxed whitespace-pre-wrap">
+                          <DictionaryText text={formatted.passage} />
+                        </div>
+                      )}
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                        <span className="font-extrabold mr-1.5">{examIdx + 1}.</span>
+                        <DictionaryText text={formatted.question} />
+                      </p>
+                    </div>
+                  );
+                })()}
 
                 <div className="space-y-2">
                   {currentExamQ.options.map((opt) => {
                     const letter = opt.letter.trim().toUpperCase();
-                    const isPicked = examAnswers[currentExamQ.id] === letter;
+                    const isPicked = examDraftChoice === letter;
                     return (
                       <button
                         key={letter}
                         type="button"
-                        onClick={() =>
-                          setExamAnswers((prev) => ({ ...prev, [currentExamQ.id]: letter }))
-                        }
+                        onClick={() => setExamDraftChoice(letter)}
                         className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${
                           isPicked
                             ? 'border-2 border-violet-600 bg-violet-600/10'
@@ -1814,19 +2133,37 @@ export default function SimuladosPage() {
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    disabled={savingResult}
-                    onClick={() => void handleFinishExam()}
-                    className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
-                  >
-                    {savingResult ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={!examDraftChoice}
+                      onClick={() => {
+                        if (!examDraftChoice || !currentExamQ) return;
+                        setExamAnswers((prev) => ({ ...prev, [currentExamQ.id]: examDraftChoice }));
+                        if (examIdx < activeSim.questions.length - 1) {
+                          setExamIdx((i) => i + 1);
+                        } else {
+                          notify('Resposta confirmada! Quando terminar, clique em Finalizar.', 'info');
+                        }
+                      }}
+                      className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-45 shadow-xs"
+                    >
                       <CheckCircle2 className="w-4 h-4" />
-                    )}
-                    {savingResult ? 'Corrigindo...' : 'Finalizar & Corrigir Simulado'}
-                  </button>
+                      {examIdx < activeSim.questions.length - 1
+                        ? 'Confirmar & Próxima'
+                        : 'Confirmar Resposta'}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={savingResult}
+                      onClick={() => void handleFinishExam()}
+                      className="px-4 py-2.5 rounded-xl subtle-surface border border-theme hover:border-emerald-500 text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      {savingResult && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      {savingResult ? 'Corrigindo...' : 'Finalizar & Ver Gabarito'}
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (

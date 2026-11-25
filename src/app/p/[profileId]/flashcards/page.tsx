@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useAiProviderName } from '@/lib/useAiProvider';
-import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
+import { useProfile } from '@/components/ProfileProvider';
 import { createClient } from '@/lib/supabase/client';
 import { formatDateBR, todayISO } from '@/lib/utils';
 import { DictionaryText } from '@/components/DictionaryText';
@@ -86,7 +86,7 @@ export default function FlashcardsPage() {
   } = useProfile();
   const aiName = useAiProviderName();
 
-  const { aiJobs, runAiJob } = useGlobal();
+  const { aiJobs, runAiJob, notify } = useGlobal();
   const today = todayISO();
 
   // Passo 1: Seleção limpa de baralho (Curso todo | Matéria | Tópico)
@@ -110,6 +110,7 @@ export default function FlashcardsPage() {
   const [back, setBack] = useState('');
   const [saving, setSaving] = useState(false);
   const [confirmDupManual, setConfirmDupManual] = useState(false);
+  const [completingManual, setCompletingManual] = useState(false);
 
   // Form Importar Lista
   const [bulkText, setBulkText] = useState('');
@@ -242,26 +243,85 @@ export default function FlashcardsPage() {
     setAddingTopicForSubject(null);
   }
 
+  async function fetchCompleteFlashcard(
+    targetFront: string,
+    targetBack = ''
+  ): Promise<{ corrected_front: string; corrected_back: string } | null> {
+    if (!targetFront.trim()) return null;
+    setCompletingManual(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'complete_flashcard',
+          front: targetFront.trim(),
+          back: targetBack.trim(),
+          subjectName: effectiveSubject?.name || '',
+          topicTitle: effectiveTopic?.title || '',
+          profileName: profile?.name || '',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !json.data?.corrected_back) {
+        throw new Error(json.error || 'Não foi possível completar com a IA.');
+      }
+      return {
+        corrected_front: String(json.data.corrected_front || targetFront).trim(),
+        corrected_back: String(json.data.corrected_back).trim(),
+      };
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao consultar a IA.', 'error');
+      return null;
+    } finally {
+      setCompletingManual(false);
+    }
+  }
+
+  async function handleCompleteManualClick() {
+    if (!front.trim()) return;
+    const data = await fetchCompleteFlashcard(front, back);
+    if (data) {
+      setFront(data.corrected_front);
+      setBack(data.corrected_back);
+      notify(`Pergunta corrigida e verso preenchido com ${aiName}!`, 'success');
+    }
+  }
+
   async function saveManualCardConfirmed() {
-    if (!effectiveSubjectId || !front.trim() || !back.trim()) return;
+    if (!effectiveSubjectId || !front.trim()) return;
     setSaving(true);
+    let finalFront = front.trim();
+    let finalBack = back.trim();
+
+    if (!finalBack) {
+      const data = await fetchCompleteFlashcard(finalFront, '');
+      if (!data) {
+        setSaving(false);
+        return;
+      }
+      finalFront = data.corrected_front;
+      finalBack = data.corrected_back;
+    }
+
     await addFlashcards([
       {
         subject_id: effectiveSubjectId,
         topic_id: targetTopicId || null,
-        front,
-        back,
+        front: finalFront,
+        back: finalBack,
       },
     ]);
     setFront('');
     setBack('');
     setConfirmDupManual(false);
     setSaving(false);
+    notify('Flashcard salvo!', 'success');
   }
 
   async function handleAddCard(e: React.FormEvent) {
     e.preventDefault();
-    if (!effectiveSubjectId || !front.trim() || !back.trim()) return;
+    if (!effectiveSubjectId || !front.trim()) return;
     if (manualCardMatches.length > 0 && !confirmDupManual) {
       setConfirmDupManual(true);
       return;
@@ -811,24 +871,47 @@ export default function FlashcardsPage() {
                     />
                   )}
                   <div>
-                    <label className="block text-xs font-semibold mb-1">Verso (Resposta)</label>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="block text-xs font-semibold">
+                        Verso{' '}
+                        <span className="font-normal text-muted-theme">
+                          (opcional — deixe vazio p/ {aiName} corrigir a pergunta e completar)
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        disabled={completingManual || !front.trim()}
+                        onClick={() => void handleCompleteManualClick()}
+                        className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-45 shrink-0"
+                      >
+                        {completingManual ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3 h-3" />
+                        )}
+                        {completingManual ? 'Completando...' : `Corrigir & Completar c/ ${aiName}`}
+                      </button>
+                    </div>
                     <textarea
-                      required
                       rows={3}
                       value={back}
                       onChange={(e) => setBack(e.target.value)}
-                      placeholder="Digite a resposta..."
+                      placeholder="Digite a resposta ou deixe em branco para a IA corrigir sua pergunta e preencher automaticamente..."
                       className={inputClass}
                     />
                   </div>
                   <div className="flex justify-end">
                     <button
                       type="submit"
-                      disabled={saving}
+                      disabled={saving || completingManual}
                       className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
                     >
                       <Plus className="w-4 h-4" />
-                      {saving ? 'Salvando...' : 'Salvar Flashcard'}
+                      {saving || completingManual
+                        ? 'Salvando...'
+                        : !back.trim() && front.trim()
+                        ? `Corrigir, Completar c/ ${aiName} e Salvar`
+                        : 'Salvar Flashcard'}
                     </button>
                   </div>
                 </form>
