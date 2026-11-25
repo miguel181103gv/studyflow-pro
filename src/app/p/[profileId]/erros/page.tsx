@@ -1,7 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { DictionaryText } from '@/components/DictionaryText';
+import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
+import { findSimilarItems } from '@/lib/similarity';
 import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
 import { todayISO } from '@/lib/utils';
@@ -96,6 +99,8 @@ export default function CadernoErrosPage() {
 
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [filterSubject, setFilterSubject] = useState('');
+  const [filterTopic, setFilterTopic] = useState('');
+  const [filterSearch, setFilterSearch] = useState('');
   const [zoomUrl, setZoomUrl] = useState<string | null>(null);
 
   const [selectedByCard, setSelectedByCard] = useState<Record<string, string>>({});
@@ -121,6 +126,7 @@ export default function CadernoErrosPage() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmDupError, setConfirmDupError] = useState(false);
 
   const [drillOpen, setDrillOpen] = useState(false);
   const [drillTitle, setDrillTitle] = useState('');
@@ -210,8 +216,22 @@ export default function CadernoErrosPage() {
     }
   }
 
-  async function handleSaveError(e: React.FormEvent) {
-    e.preventDefault();
+  const errorMatches = useMemo(() => {
+    const candidate = digitizedDraft ? digitizedDraft.statement : questionText;
+    if (!candidate.trim()) return [];
+    return findSimilarItems(
+      candidate,
+      errors,
+      (e) => {
+        const parsed = parseDigitizedQuestion(e.question_text);
+        return parsed ? parsed.statement : e.question_text;
+      },
+      'long',
+      3
+    );
+  }, [digitizedDraft, questionText, errors]);
+
+  async function saveErrorConfirmed() {
     const sId = subjectId || subjects[0]?.id;
     if (!sId || !userId || !profile) return;
     setSaving(true);
@@ -255,11 +275,21 @@ export default function CadernoErrosPage() {
       setGoldenRule('');
       setImageFile(null);
       setPreviewUrl(null);
+      setConfirmDupError(false);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Erro ao salvar questão.');
     } finally {
       setSaving(false);
     }
+  }
+
+  async function handleSaveError(e: React.FormEvent) {
+    e.preventDefault();
+    if (errorMatches.length > 0 && !confirmDupError) {
+      setConfirmDupError(true);
+      return;
+    }
+    await saveErrorConfirmed();
   }
 
   function digitizeExistingEntry(entry: ErrorEntry) {
@@ -393,9 +423,22 @@ export default function CadernoErrosPage() {
     setDrillOpen(true);
   }
 
-  const visibleErrors = filterSubject
-    ? errors.filter((e) => e.subject_id === filterSubject)
-    : errors;
+  const visibleErrors = errors.filter((e) => {
+    if (filterSubject && e.subject_id !== filterSubject) return false;
+    if (filterTopic) {
+      if (filterTopic === 'NONE') {
+        if (e.topic_id) return false;
+      } else if (e.topic_id !== filterTopic) {
+        return false;
+      }
+    }
+    const q = filterSearch.trim().toLowerCase();
+    if (q) {
+      const hay = `${e.question_text} ${e.explanation} ${e.golden_rule} ${e.error_cause}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
   const activeFilterSubjectObj = subjects.find((s) => s.id === filterSubject);
 
   const currentDrillItem = drillQueue[drillIdx];
@@ -452,7 +495,7 @@ export default function CadernoErrosPage() {
 
       <div className="flex items-center gap-2 flex-wrap">
         <button
-          onClick={() => setFilterSubject('')}
+          onClick={() => { setFilterSubject(''); setFilterTopic(''); }}
           className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold ${
             !filterSubject ? 'bg-teal-600 text-white shadow-sm' : 'card-surface'
           }`}
@@ -465,7 +508,7 @@ export default function CadernoErrosPage() {
           return (
             <button
               key={s.id}
-              onClick={() => setFilterSubject(s.id)}
+              onClick={() => { setFilterSubject(s.id); setFilterTopic(''); }}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold ${
                 filterSubject === s.id ? 'bg-teal-600 text-white shadow-sm' : 'card-surface'
               }`}
@@ -497,6 +540,50 @@ export default function CadernoErrosPage() {
           </div>
         )}
       </div>
+
+      {/* Filtros de Tópico e Busca no Caderno de Erros */}
+      {errors.length > 0 && (
+        <div className="card-surface rounded-2xl p-3 flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
+          <input
+            value={filterSearch}
+            onChange={(e) => setFilterSearch(e.target.value)}
+            placeholder="Buscar questão, assunto, regra de ouro ou causa..."
+            className="flex-1 rounded-xl subtle-surface border border-theme px-3.5 py-2 text-xs"
+          />
+          <select
+            value={filterTopic}
+            onChange={(e) => setFilterTopic(e.target.value)}
+            className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold sm:w-72"
+          >
+            <option value="">Todos os tópicos ({visibleErrors.length})</option>
+            {topics
+              .filter((t) => (!filterSubject ? true : t.subject_id === filterSubject))
+              .filter((t) => errors.some((e) => e.topic_id === t.id && (!filterSubject || e.subject_id === filterSubject)))
+              .map((t) => {
+                const cnt = errors.filter(
+                  (e) => e.topic_id === t.id && (!filterSubject || e.subject_id === filterSubject)
+                ).length;
+                return (
+                  <option key={t.id} value={t.id}>
+                    {t.title} ({cnt})
+                  </option>
+                );
+              })}
+            {errors.some((e) => !e.topic_id && (!filterSubject || e.subject_id === filterSubject)) && (
+              <option value="NONE">Sem tópico específico</option>
+            )}
+          </select>
+          {(filterTopic || filterSearch) && visibleErrors.length > 0 && (
+            <button
+              type="button"
+              onClick={() => startDrill(visibleErrors, 'Caderno de Erros — Filtro atual')}
+              className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold shrink-0"
+            >
+              Resolver Filtradas ({visibleErrors.length})
+            </button>
+          )}
+        </div>
+      )}
 
       {visibleErrors.length === 0 ? (
         <div className="card-surface rounded-2xl p-10 text-center space-y-3">
@@ -706,7 +793,7 @@ export default function CadernoErrosPage() {
                 {dq ? (
                   <div className="space-y-4">
                     <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                      {dq.statement}
+                      <DictionaryText text={dq.statement} />
                     </p>
 
                     <div className="space-y-2">
@@ -751,7 +838,7 @@ export default function CadernoErrosPage() {
                               {letter}
                             </span>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm leading-relaxed">{opt.text}</p>
+                              <p className="text-sm leading-relaxed"><DictionaryText text={opt.text} /></p>
                               {isPrevWrongHighlight && (
                                 <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
                                   Você marcou esta errado anteriormente
@@ -837,7 +924,7 @@ export default function CadernoErrosPage() {
                 ) : (
                   entry.question_text && (
                     <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                      {entry.question_text}
+                      <DictionaryText text={entry.question_text} />
                     </p>
                   )
                 )}
@@ -849,7 +936,7 @@ export default function CadernoErrosPage() {
                         <strong className="text-amber-700 dark:text-amber-300">
                           Regra de Ouro:
                         </strong>{' '}
-                        {entry.golden_rule}
+                        <DictionaryText text={entry.golden_rule} />
                       </div>
                     )}
 
@@ -871,7 +958,7 @@ export default function CadernoErrosPage() {
                           </button>
                         </div>
                         <p className="text-xs text-muted-theme leading-relaxed">
-                          {entry.explanation}
+                          <DictionaryText text={entry.explanation} />
                         </p>
                       </div>
                     )}
@@ -1036,9 +1123,30 @@ export default function CadernoErrosPage() {
                 <textarea
                   rows={3}
                   value={questionText}
-                  onChange={(e) => setQuestionText(e.target.value)}
+                  onChange={(e) => {
+                    setQuestionText(e.target.value);
+                    setConfirmDupError(false);
+                  }}
                   placeholder="Texto da questão (ou cole uma foto acima para extrair automaticamente)..."
                   className="w-full rounded-xl subtle-surface border border-theme p-3 text-xs"
+                />
+              )}
+
+              {errorMatches.length > 0 && (
+                <DuplicateWarningBanner
+                  title="Atenção: já existe questão igual ou parecida no Caderno de Erros"
+                  items={errorMatches.map((m) => {
+                    const p = parseDigitizedQuestion(m.item.question_text);
+                    return {
+                      id: m.item.id,
+                      label: (p ? p.statement : m.item.question_text).slice(0, 80),
+                      detail: m.item.golden_rule ? `Regra: ${m.item.golden_rule.slice(0, 50)}` : undefined,
+                      kind: m.kind,
+                    };
+                  })}
+                  pendingConfirm={confirmDupError}
+                  onConfirmAnyway={() => void saveErrorConfirmed()}
+                  onCancelConfirm={() => setConfirmDupError(false)}
                 />
               )}
 
@@ -1194,7 +1302,7 @@ export default function CadernoErrosPage() {
                               {letter}
                             </span>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm leading-relaxed">{opt.text}</p>
+                              <p className="text-sm leading-relaxed"><DictionaryText text={opt.text} /></p>
                               {drillShowPrevWrong && prevWrong === letter && (
                                 <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
                                   Resposta que você marcou errado antes

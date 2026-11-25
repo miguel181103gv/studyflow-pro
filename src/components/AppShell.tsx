@@ -8,6 +8,9 @@ import { useGlobal } from './GlobalProvider';
 import { formatDurationHMS, todayISO } from '@/lib/utils';
 import type { ThemeId } from '@/lib/types';
 import { getStudyMode } from '@/lib/studyModes';
+import { dispatchDictionaryUpdated, type DictEntryLite } from './DictionaryText';
+import { findSimilarItems } from '@/lib/similarity';
+import { DuplicateWarningBanner } from './DuplicateWarningBanner';
 import {
   Home,
   RefreshCw,
@@ -143,6 +146,8 @@ export function AppShell({
   const [quickDictExample, setQuickDictExample] = useState('');
   const [quickDictSubjectId, setQuickDictSubjectId] = useState('');
   const [quickDictAiBusy, setQuickDictAiBusy] = useState(false);
+  const [quickDictConfirmDup, setQuickDictConfirmDup] = useState(false);
+  const [quickDictExisting, setQuickDictExisting] = useState<DictEntryLite[]>([]);
 
   const basePath = `/p/${profileId}`;
   const studyMode = getStudyMode(profile);
@@ -247,8 +252,22 @@ export function AppShell({
     setQuickDictMeaning('');
     setQuickDictExample('');
     setQuickDictSubjectId('');
+    setQuickDictConfirmDup(false);
+    try {
+      const dictKey = `sf_dictionary_${profile?.id || 'default'}`;
+      const raw = localStorage.getItem(dictKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setQuickDictExisting(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setQuickDictExisting([]);
+    }
     setQuickDictOpen(true);
   }
+
+  const quickDictMatches = useMemo(() => {
+    if (!quickDictOpen || !quickDictWord.trim()) return [];
+    return findSimilarItems(quickDictWord, quickDictExisting, (e) => e.word, 'short', 3);
+  }, [quickDictOpen, quickDictWord, quickDictExisting]);
 
   async function generateQuickDictMeaning(targetWord: string): Promise<{ meaning: string; example?: string } | null> {
     if (!targetWord.trim()) return null;
@@ -280,8 +299,7 @@ export function AppShell({
     }
   }
 
-  async function handleSaveQuickDict(e: React.FormEvent) {
-    e.preventDefault();
+  async function saveQuickDictConfirmed() {
     if (!quickDictWord.trim() || !profile?.id) return;
     let finalMeaning = quickDictMeaning.trim();
     let finalExample = quickDictExample.trim();
@@ -310,11 +328,23 @@ export function AppShell({
         },
       ].sort((a, b) => a.word.localeCompare(b.word, 'pt-BR', { sensitivity: 'base' }));
       localStorage.setItem(dictKey, JSON.stringify(next));
+      dispatchDictionaryUpdated();
+      setQuickDictConfirmDup(false);
       setQuickDictOpen(false);
       notify(`"${quickDictWord.trim()}" adicionado ao Dicionário!`, 'success');
     } catch {
       notify('Não foi possível salvar no Dicionário.', 'error');
     }
+  }
+
+  async function handleSaveQuickDict(e: React.FormEvent) {
+    e.preventDefault();
+    if (!quickDictWord.trim() || !profile?.id) return;
+    if (quickDictMatches.length > 0 && !quickDictConfirmDup) {
+      setQuickDictConfirmDup(true);
+      return;
+    }
+    await saveQuickDictConfirmed();
   }
 
   const searchResults = useMemo(() => {
@@ -323,7 +353,7 @@ export function AppShell({
 
     const out: {
       id: string;
-      type: 'Matéria' | 'Tópico' | 'PDF' | 'Grifo' | 'Flashcard' | 'Erro';
+      type: 'Matéria' | 'Tópico' | 'PDF' | 'Grifo' | 'Flashcard' | 'Erro' | 'Dicionário';
       title: string;
       subtitle: string;
       href: string;
@@ -376,6 +406,28 @@ export function AppShell({
       }
     });
 
+    try {
+      const rawDict = localStorage.getItem(`sf_dictionary_${profile?.id || 'default'}`);
+      const dictEntries = rawDict ? JSON.parse(rawDict) : [];
+      if (Array.isArray(dictEntries)) {
+        dictEntries.forEach((d: DictEntryLite) => {
+          const hay = `${d.word || ''} ${d.meaning || ''} ${d.example || ''}`.toLowerCase();
+          if (hay.includes(q)) {
+            const sub = subjects.find((s) => s.id === d.subject_id);
+            out.push({
+              id: `dict-${d.id}`,
+              type: 'Dicionário',
+              title: d.word,
+              subtitle: `${sub?.name ? sub.name + ' · ' : ''}${(d.meaning || '').slice(0, 80)}`,
+              href: `${basePath}/dicionario?q=${encodeURIComponent(d.word)}`,
+            });
+          }
+        });
+      }
+    } catch {
+      // ignore
+    }
+
     flashcards.forEach((c) => {
       if (c.front.toLowerCase().includes(q) || c.back.toLowerCase().includes(q)) {
         const sub = subjects.find((s) => s.id === c.subject_id);
@@ -407,7 +459,7 @@ export function AppShell({
     });
 
     return out.slice(0, 20);
-  }, [searchQuery, subjects, topics, highlights, flashcards, errors, basePath]);
+  }, [searchQuery, subjects, topics, highlights, flashcards, errors, basePath, profile?.id]);
 
   if (loading) {
     return (
@@ -824,6 +876,7 @@ export function AppShell({
                     <span className="text-[11px] font-bold px-2.5 py-1 rounded-full card-surface shrink-0 inline-flex items-center gap-1">
                       {res.type === 'PDF' && <FileText className="w-3 h-3 text-blue-600" />}
                       {res.type === 'Grifo' && <Highlighter className="w-3 h-3 text-amber-500" />}
+                      {res.type === 'Dicionário' && <BookA className="w-3 h-3 text-teal-600" />}
                       {res.type}
                     </span>
                   </button>
@@ -948,10 +1001,28 @@ export function AppShell({
                 <input
                   required
                   value={quickDictWord}
-                  onChange={(e) => setQuickDictWord(e.target.value)}
+                  onChange={(e) => {
+                    setQuickDictWord(e.target.value);
+                    setQuickDictConfirmDup(false);
+                  }}
                   className="w-full rounded-xl subtle-surface border border-theme px-3.5 py-2.5 text-sm font-bold"
                 />
               </div>
+
+              {quickDictMatches.length > 0 && (
+                <DuplicateWarningBanner
+                  title="Atenção: já existe palavra igual ou parecida no Dicionário"
+                  items={quickDictMatches.map((m) => ({
+                    id: m.item.id,
+                    label: m.item.word,
+                    detail: m.item.meaning?.slice(0, 70),
+                    kind: m.kind,
+                  }))}
+                  pendingConfirm={quickDictConfirmDup}
+                  onConfirmAnyway={() => void saveQuickDictConfirmed()}
+                  onCancelConfirm={() => setQuickDictConfirmDup(false)}
+                />
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-muted-theme mb-1">

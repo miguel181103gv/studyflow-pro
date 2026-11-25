@@ -21,6 +21,7 @@ import {
   Clock,
   Check,
   CheckSquare,
+  Lock,
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 
@@ -506,6 +507,8 @@ export default function CicloPage() {
 
             const isDragging = draggedId === s.id;
             const isOver = dragOverId === s.id && draggedId !== s.id;
+            const isStudyingThis = stopwatch.subjectId === s.id;
+            const isLockedOther = Boolean(stopwatch.subjectId) && !isStudyingThis;
 
             return (
               <div
@@ -533,7 +536,13 @@ export default function CicloPage() {
                 }}
                 className={`subtle-surface rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-grab active:cursor-grabbing transition-all ${
                   isDragging ? 'opacity-40 scale-[0.98]' : ''
-                } ${isOver ? 'ring-2 ring-teal-500 bg-teal-500/10' : ''}`}
+                } ${isOver ? 'ring-2 ring-teal-500 bg-teal-500/10' : ''} ${
+                  isStudyingThis
+                    ? 'ring-2 ring-teal-500 bg-teal-500/10'
+                    : isLockedOther
+                    ? 'opacity-65'
+                    : ''
+                }`}
               >
                 <div className="flex items-center gap-3.5 min-w-0 flex-1">
                   {selectSubjectsMode ? (
@@ -563,7 +572,15 @@ export default function CicloPage() {
                     {idx + 1}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="font-bold text-base truncate">{s.name}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-bold text-base truncate">{s.name}</p>
+                      {isStudyingThis && (
+                        <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full bg-teal-600 text-white inline-flex items-center gap-1 shrink-0">
+                          <span className={`w-1.5 h-1.5 rounded-full bg-white ${stopwatch.running ? 'animate-pulse' : ''}`} />
+                          {stopwatch.running ? 'Estudando agora' : 'Em pausa'}
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-3 mt-1.5">
                       <div className="w-36 h-2 rounded-full bg-black/10 dark:bg-white/10 overflow-hidden">
                         <div
@@ -624,13 +641,47 @@ export default function CicloPage() {
                     </button>
                   </div>
 
-                  <button
-                    onClick={() => startStopwatch(s.id)}
-                    className="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
-                  >
-                    <Play className="w-4 h-4 fill-current" />
-                    Estudar
-                  </button>
+                  {isStudyingThis ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        stopwatch.running ? pauseStopwatch() : startStopwatch(s.id)
+                      }
+                      className="px-4 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs sm:text-sm font-bold inline-flex items-center gap-2 shadow-sm"
+                      title={stopwatch.running ? 'Pausar estudo atual' : 'Retomar estudo atual'}
+                    >
+                      {stopwatch.running ? (
+                        <>
+                          <Pause className="w-4 h-4" />
+                          Estudando...
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-4 h-4 fill-current" />
+                          Retomar
+                        </>
+                      )}
+                    </button>
+                  ) : isLockedOther ? (
+                    <button
+                      type="button"
+                      disabled
+                      title="Finalize ou pare o cronômetro atual para estudar outra matéria"
+                      className="px-4 py-3 rounded-2xl card-surface border border-theme text-muted-theme text-xs sm:text-sm font-bold inline-flex items-center gap-1.5 opacity-60 cursor-not-allowed"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      Bloqueada
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => startStopwatch(s.id)}
+                      className="px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
+                    >
+                      <Play className="w-4 h-4 fill-current" />
+                      Estudar
+                    </button>
+                  )}
                 </div>
               </div>
             );

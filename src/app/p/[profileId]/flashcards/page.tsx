@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
 import { formatDateBR, todayISO } from '@/lib/utils';
+import { DictionaryText } from '@/components/DictionaryText';
+import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
+import { compareLongTexts, findSimilarItems } from '@/lib/similarity';
 import {
   Layers,
   Plus,
@@ -104,6 +107,7 @@ export default function FlashcardsPage() {
   const [front, setFront] = useState('');
   const [back, setBack] = useState('');
   const [saving, setSaving] = useState(false);
+  const [confirmDupManual, setConfirmDupManual] = useState(false);
 
   // Form Importar Lista
   const [bulkText, setBulkText] = useState('');
@@ -182,7 +186,34 @@ export default function FlashcardsPage() {
     ? 'Todos os tópicos desta matéria'
     : activeSubject?.name || '';
 
-  const parsedBulk = parseBulkFlashcards(bulkText);
+  const parsedBulk = useMemo(() => parseBulkFlashcards(bulkText), [bulkText]);
+
+  const manualCardMatches = useMemo(() => {
+    if (!front.trim()) return [];
+    return findSimilarItems(front, flashcards, (c) => c.front, 'long', 3);
+  }, [front, flashcards]);
+
+  const bulkCardDuplicates = useMemo(() => {
+    const dupIdx = new Set<number>();
+    const matches: { front: string; existing: string; kind: 'exact' | 'similar' }[] = [];
+    parsedBulk.forEach((item, idx) => {
+      const m = findSimilarItems(item.front, flashcards, (c) => c.front, 'long', 1);
+      if (m.length > 0) {
+        dupIdx.add(idx);
+        matches.push({ front: item.front, existing: m[0].item.front, kind: m[0].kind });
+      } else {
+        for (let j = 0; j < idx; j++) {
+          const selfM = compareLongTexts(item.front, parsedBulk[j].front);
+          if (selfM) {
+            dupIdx.add(idx);
+            matches.push({ front: item.front, existing: parsedBulk[j].front, kind: selfM.kind });
+            break;
+          }
+        }
+      }
+    });
+    return { dupIdx, matches };
+  }, [parsedBulk, flashcards]);
 
   const effectiveSubjectId = targetSubjectId || subjects[0]?.id || '';
   const effectiveSubject = subjects.find((s) => s.id === effectiveSubjectId);
@@ -209,8 +240,7 @@ export default function FlashcardsPage() {
     setAddingTopicForSubject(null);
   }
 
-  async function handleAddCard(e: React.FormEvent) {
-    e.preventDefault();
+  async function saveManualCardConfirmed() {
     if (!effectiveSubjectId || !front.trim() || !back.trim()) return;
     setSaving(true);
     await addFlashcards([
@@ -223,14 +253,29 @@ export default function FlashcardsPage() {
     ]);
     setFront('');
     setBack('');
+    setConfirmDupManual(false);
     setSaving(false);
   }
 
-  async function handleBulkImport() {
+  async function handleAddCard(e: React.FormEvent) {
+    e.preventDefault();
+    if (!effectiveSubjectId || !front.trim() || !back.trim()) return;
+    if (manualCardMatches.length > 0 && !confirmDupManual) {
+      setConfirmDupManual(true);
+      return;
+    }
+    await saveManualCardConfirmed();
+  }
+
+  async function handleBulkImport(skipDuplicates = false) {
     if (!effectiveSubjectId || parsedBulk.length === 0) return;
+    const list = skipDuplicates
+      ? parsedBulk.filter((_, idx) => !bulkCardDuplicates.dupIdx.has(idx))
+      : parsedBulk;
+    if (list.length === 0) return;
     setImportingBulk(true);
     await addFlashcards(
-      parsedBulk.map((c) => ({
+      list.map((c) => ({
         subject_id: effectiveSubjectId,
         topic_id: targetTopicId || null,
         front: c.front,
@@ -741,11 +786,28 @@ export default function FlashcardsPage() {
                     <input
                       required
                       value={front}
-                      onChange={(e) => setFront(e.target.value)}
+                      onChange={(e) => {
+                        setFront(e.target.value);
+                        setConfirmDupManual(false);
+                      }}
                       placeholder="Digite a pergunta..."
                       className={inputClass}
                     />
                   </div>
+                  {manualCardMatches.length > 0 && (
+                    <DuplicateWarningBanner
+                      title="Atenção: já existe flashcard igual ou parecido"
+                      items={manualCardMatches.map((m) => ({
+                        id: m.item.id,
+                        label: m.item.front.slice(0, 80),
+                        detail: m.item.back.slice(0, 60),
+                        kind: m.kind,
+                      }))}
+                      pendingConfirm={confirmDupManual}
+                      onConfirmAnyway={() => void saveManualCardConfirmed()}
+                      onCancelConfirm={() => setConfirmDupManual(false)}
+                    />
+                  )}
                   <div>
                     <label className="block text-xs font-semibold mb-1">Verso (Resposta)</label>
                     <textarea
@@ -825,22 +887,45 @@ export default function FlashcardsPage() {
                     }
                     className={`${inputClass} font-mono text-xs`}
                   />
+                  {bulkCardDuplicates.matches.length > 0 && (
+                    <DuplicateWarningBanner
+                      title={`${bulkCardDuplicates.matches.length} flashcard(s) da lista já existem ou são parecidos`}
+                      items={bulkCardDuplicates.matches.slice(0, 4).map((m, i) => ({
+                        id: `bc-${i}`,
+                        label: m.front.slice(0, 70),
+                        detail: `parecido com "${m.existing.slice(0, 60)}"`,
+                        kind: m.kind,
+                      }))}
+                    />
+                  )}
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-muted-theme">
                       {parsedBulk.length > 0
                         ? `${plural(parsedBulk.length, 'card identificado', 'cards identificados')} automaticamente`
                         : 'Use "Frente:" / "Verso:" ou separe por "|"'}
                     </span>
-                    <button
-                      type="button"
-                      disabled={parsedBulk.length === 0 || importingBulk}
-                      onClick={handleBulkImport}
-                      className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50"
-                    >
-                      {importingBulk
-                        ? 'Importando...'
-                        : `Importar ${plural(parsedBulk.length, 'card', 'cards')}`}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {bulkCardDuplicates.matches.length > 0 && parsedBulk.length > bulkCardDuplicates.dupIdx.size && (
+                        <button
+                          type="button"
+                          disabled={importingBulk}
+                          onClick={() => void handleBulkImport(true)}
+                          className="px-3 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold disabled:opacity-50"
+                        >
+                          Ignorar parecidos ({parsedBulk.length - bulkCardDuplicates.dupIdx.size} novos)
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={parsedBulk.length === 0 || importingBulk}
+                        onClick={() => void handleBulkImport(false)}
+                        className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-semibold disabled:opacity-50"
+                      >
+                        {importingBulk
+                          ? 'Importando...'
+                          : `Importar ${plural(parsedBulk.length, 'card', 'cards')}`}
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -900,9 +985,9 @@ export default function FlashcardsPage() {
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                    <p className="text-sm font-semibold">{card.front}</p>
+                    <p className="text-sm font-semibold"><DictionaryText text={card.front} /></p>
                     <p className="text-xs text-muted-theme border-t border-theme pt-2">
-                      {card.back}
+                      <DictionaryText text={card.back} />
                     </p>
                   </div>
                 );
@@ -959,7 +1044,7 @@ export default function FlashcardsPage() {
                   <p className="text-[11px] uppercase tracking-wider text-muted-theme font-bold">
                     Pergunta (toque ou aperte Espaço)
                   </p>
-                  <p className="text-base sm:text-lg font-bold">{activeStudyCard.front}</p>
+                  <p className="text-base sm:text-lg font-bold"><DictionaryText text={activeStudyCard.front} /></p>
                 </div>
 
                 {revealed ? (
@@ -968,7 +1053,7 @@ export default function FlashcardsPage() {
                       <p className="text-[11px] uppercase tracking-wider text-emerald-700 dark:text-emerald-300 font-bold">
                         Resposta
                       </p>
-                      <p className="text-sm leading-relaxed">{activeStudyCard.back}</p>
+                      <p className="text-sm leading-relaxed"><DictionaryText text={activeStudyCard.back} /></p>
                     </div>
 
                     <div className="grid grid-cols-4 gap-2 pt-1">

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { addDaysISO, formatDateBR, todayISO } from '@/lib/utils';
 import { CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X, Trash2, RefreshCw, ArrowLeft, ArrowRight, XCircle } from 'lucide-react';
@@ -42,6 +43,8 @@ export default function RevisoesPage() {
   const today = todayISO();
   const next7 = addDaysISO(today, 7);
   const [filter, setFilter] = useState<'overdue' | 'today' | 'upcoming' | 'completed'>('today');
+  const [subjectFilter, setSubjectFilter] = useState('');
+  const [searchTopic, setSearchTopic] = useState('');
 
   // Active Quiz modal + histórico persistido por revisão (mantém o quiz salvo e permite gerar outro)
   interface SavedReviewQuiz {
@@ -92,11 +95,23 @@ export default function RevisoesPage() {
   const [highlightsTopicId, setHighlightsTopicId] = useState<string | null>(null);
 
   const filtered = reviews.filter((r) => {
-    if (filter === 'completed') return r.completed;
-    if (r.completed) return false;
-    if (filter === 'overdue') return r.due_date < today;
-    if (filter === 'today') return r.due_date <= today;
-    return r.due_date > today && r.due_date <= next7;
+    if (filter === 'completed') {
+      if (!r.completed) return false;
+    } else {
+      if (r.completed) return false;
+      if (filter === 'overdue' && !(r.due_date < today)) return false;
+      if (filter === 'today' && !(r.due_date <= today)) return false;
+      if (filter === 'upcoming' && !(r.due_date > today && r.due_date <= next7)) return false;
+    }
+    if (subjectFilter && r.subject_id !== subjectFilter) return false;
+    const sq = searchTopic.trim().toLowerCase();
+    if (sq) {
+      const tp = topics.find((t) => t.id === r.topic_id);
+      const sb = subjects.find((s) => s.id === r.subject_id);
+      const hay = `${tp?.title || ''} ${sb?.name || ''}`.toLowerCase();
+      if (!hay.includes(sq)) return false;
+    }
+    return true;
   });
 
   function saveQuizQuestionsToBank(subjectId: string, topicId: string, subjectName: string, list: QuizQuestion[]) {
@@ -361,6 +376,29 @@ ${q.statement}`;
           </button>
         ))}
       </div>
+
+      {reviews.length > 0 && (
+        <div className="card-surface rounded-2xl p-3 flex flex-col sm:flex-row gap-2.5">
+          <input
+            value={searchTopic}
+            onChange={(e) => setSearchTopic(e.target.value)}
+            placeholder="Buscar revisão por tópico ou matéria..."
+            className="flex-1 rounded-xl subtle-surface border border-theme px-3.5 py-2 text-xs"
+          />
+          <select
+            value={subjectFilter}
+            onChange={(e) => setSubjectFilter(e.target.value)}
+            className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold sm:w-64"
+          >
+            <option value="">Todas as matérias</option>
+            {subjects.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {filtered.length === 0 ? (
         <div className="card-surface rounded-2xl p-8 text-center text-sm text-muted-theme">
@@ -647,7 +685,7 @@ ${q.statement}`;
 
                   {/* Enunciado */}
                   <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                    {q.statement}
+                    <DictionaryText text={q.statement} />
                   </p>
 
                   {/* Alternativas no estilo Banco de Questões */}
@@ -686,7 +724,7 @@ ${q.statement}`;
                           >
                             {letter}
                           </span>
-                          <span className="flex-1 text-sm leading-relaxed">{cleanOpt}</span>
+                          <span className="flex-1 text-sm leading-relaxed"><DictionaryText text={cleanOpt} /></span>
                           {isRight && (
                             <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                           )}
@@ -725,7 +763,7 @@ ${q.statement}`;
 
                       {q.explanation && (
                         <div className="rounded-2xl subtle-surface p-4 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap">
-                          <strong>Comentário:</strong> {q.explanation}
+                          <strong>Comentário:</strong> <DictionaryText text={q.explanation} />
                         </div>
                       )}
                     </div>

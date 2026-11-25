@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
+import { dispatchDictionaryUpdated } from '@/components/DictionaryText';
+import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
+import { compareShortTerms, findSimilarItems } from '@/lib/similarity';
 import {
   BookA,
   Plus,
@@ -85,6 +88,7 @@ export default function DicionarioPage() {
   const [subjectId, setSubjectId] = useState('');
   const [bulkText, setBulkText] = useState('');
   const [definingAi, setDefiningAi] = useState(false);
+  const [confirmDupManual, setConfirmDupManual] = useState(false);
 
   // Editar inline
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -108,6 +112,16 @@ export default function DicionarioPage() {
 
   useEffect(() => {
     try {
+      const params = new URLSearchParams(window.location.search);
+      const qParam = params.get('q');
+      if (qParam) setSearch(qParam);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
       const raw = localStorage.getItem(storageKey);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -125,12 +139,41 @@ export default function DicionarioPage() {
     setEntries(sorted);
     try {
       localStorage.setItem(storageKey, JSON.stringify(sorted));
+      dispatchDictionaryUpdated();
     } catch {
       // ignore
     }
   }
 
   const parsedBulk = useMemo(() => parseBulkDictionary(bulkText), [bulkText]);
+
+  const manualWordMatches = useMemo(
+    () => (word.trim() ? findSimilarItems(word, entries, (e) => e.word, 'short', 3) : []),
+    [word, entries]
+  );
+
+  const bulkDuplicates = useMemo(() => {
+    const dupIdx = new Set<number>();
+    const matches: { word: string; existing: string; kind: 'exact' | 'similar' }[] = [];
+    parsedBulk.forEach((item, idx) => {
+      const m = findSimilarItems(item.word, entries, (e) => e.word, 'short', 1);
+      if (m.length > 0) {
+        dupIdx.add(idx);
+        matches.push({ word: item.word, existing: m[0].item.word, kind: m[0].kind });
+      } else {
+        // Também checa duplicidade dentro do próprio lote
+        for (let j = 0; j < idx; j++) {
+          const selfM = compareShortTerms(item.word, parsedBulk[j].word);
+          if (selfM) {
+            dupIdx.add(idx);
+            matches.push({ word: item.word, existing: parsedBulk[j].word, kind: selfM.kind });
+            break;
+          }
+        }
+      }
+    });
+    return { dupIdx, matches };
+  }, [parsedBulk, entries]);
 
   async function fetchGeminiMeaning(targetWord: string): Promise<{ meaning: string; example?: string } | null> {
     if (!targetWord.trim()) return null;
@@ -171,8 +214,7 @@ export default function DicionarioPage() {
     }
   }
 
-  async function handleAddManual(e: React.FormEvent) {
-    e.preventDefault();
+  async function saveManualConfirmed() {
     if (!word.trim()) return;
 
     let finalMeaning = meaning.trim();
@@ -197,13 +239,30 @@ export default function DicionarioPage() {
     setWord('');
     setMeaning('');
     setExample('');
+    setConfirmDupManual(false);
     notify(`"${item.word}" adicionado ao Dicionário!`, 'success');
   }
 
-  function handleBulkImport() {
-    if (parsedBulk.length === 0) return;
+  async function handleAddManual(e: React.FormEvent) {
+    e.preventDefault();
+    if (!word.trim()) return;
+    if (manualWordMatches.length > 0 && !confirmDupManual) {
+      setConfirmDupManual(true);
+      return;
+    }
+    await saveManualConfirmed();
+  }
+
+  function handleBulkImport(skipDuplicates = false) {
+    const list = skipDuplicates
+      ? parsedBulk.filter((_, idx) => !bulkDuplicates.dupIdx.has(idx))
+      : parsedBulk;
+    if (list.length === 0) {
+      notify('Todos os termos da lista já existem ou são parecidos.', 'info');
+      return;
+    }
     const now = Date.now();
-    const created: DictEntry[] = parsedBulk.map((item, idx) => ({
+    const created: DictEntry[] = list.map((item, idx) => ({
       id: `dict-${now}-${idx}`,
       word: item.word,
       meaning: item.meaning,
@@ -464,11 +523,28 @@ export default function DicionarioPage() {
                 <input
                   required
                   value={word}
-                  onChange={(e) => setWord(e.target.value)}
+                  onChange={(e) => {
+                    setWord(e.target.value);
+                    setConfirmDupManual(false);
+                  }}
                   placeholder="Ex: Erga omnes, Prescrição, Hedge, Metonímia..."
                   className={inputClass}
                 />
               </div>
+              {manualWordMatches.length > 0 && (
+                <DuplicateWarningBanner
+                  title="Atenção: já existe palavra igual ou parecida no Dicionário"
+                  items={manualWordMatches.map((m) => ({
+                    id: m.item.id,
+                    label: m.item.word,
+                    detail: m.item.meaning?.slice(0, 70),
+                    kind: m.kind,
+                  }))}
+                  pendingConfirm={confirmDupManual}
+                  onConfirmAnyway={() => void saveManualConfirmed()}
+                  onCancelConfirm={() => setConfirmDupManual(false)}
+                />
+              )}
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <label className="block text-xs font-semibold">
@@ -540,20 +616,42 @@ export default function DicionarioPage() {
                 }
                 className={`${inputClass} font-mono text-xs`}
               />
-              <div className="flex items-center justify-between gap-2">
+              {bulkDuplicates.matches.length > 0 && (
+                <DuplicateWarningBanner
+                  title={`${bulkDuplicates.matches.length} termo(s) da lista já existem ou são parecidos`}
+                  items={bulkDuplicates.matches.slice(0, 4).map((m, i) => ({
+                    id: `b-${i}`,
+                    label: m.word,
+                    detail: `já existe como "${m.existing}"`,
+                    kind: m.kind,
+                  }))}
+                />
+              )}
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-muted-theme">
                   {parsedBulk.length > 0
                     ? `${parsedBulk.length} termo(s) identificado(s)`
                     : 'Separe palavra e significado com ":" ou " - "'}
                 </span>
-                <button
-                  type="button"
-                  disabled={parsedBulk.length === 0}
-                  onClick={handleBulkImport}
-                  className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
-                >
-                  Importar {parsedBulk.length} termo(s)
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {bulkDuplicates.matches.length > 0 && parsedBulk.length > bulkDuplicates.dupIdx.size && (
+                    <button
+                      type="button"
+                      onClick={() => handleBulkImport(true)}
+                      className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold"
+                    >
+                      Ignorar parecidos ({parsedBulk.length - bulkDuplicates.dupIdx.size} novos)
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={parsedBulk.length === 0}
+                    onClick={() => handleBulkImport(false)}
+                    className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold disabled:opacity-50"
+                  >
+                    Importar {parsedBulk.length} termo(s)
+                  </button>
+                </div>
               </div>
             </div>
           )}

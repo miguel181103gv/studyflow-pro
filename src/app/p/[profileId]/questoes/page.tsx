@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { todayISO } from '@/lib/utils';
+import { DictionaryText } from '@/components/DictionaryText';
+import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
+import { compareLongTexts, findSimilarItems } from '@/lib/similarity';
 import {
   ListChecks,
   Plus,
@@ -401,7 +404,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 }
 
 export default function QuestoesPage() {
-  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry } = useProfile();
+  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog } = useProfile();
   const { notify } = useGlobal();
 
   const storageKey = `sf_question_bank_${profile?.id || 'default'}`;
@@ -412,6 +415,10 @@ export default function QuestoesPage() {
   const solvedStorageKey = `sf_solved_questions_${profile?.id || 'default'}`;
   const [solvedMap, setSolvedMap] = useState<Record<string, { hit: boolean; answeredAt: string }>>({});
   const [solvedFilter, setSolvedFilter] = useState<'all' | 'unsolved' | 'solved'>('all');
+  const [scopeSearch, setScopeSearch] = useState('');
+  const [scopeTopicFilter, setScopeTopicFilter] = useState('');
+  const [quizSessionResults, setQuizSessionResults] = useState<{ subject_id: string; topic_id: string | null; hit: boolean }[]>([]);
+  const [quizLoggedToStats, setQuizLoggedToStats] = useState(false);
 
   // Adicionar questões (Gerar com IA por Tópico, Texto ou Imagem -> Quiz)
   const [showAddPanel, setShowAddPanel] = useState(false);
@@ -488,6 +495,8 @@ export default function QuestoesPage() {
   }
 
   useEffect(() => {
+    setScopeSearch('');
+    setScopeTopicFilter('');
     if (!selectedScope) {
       setShowAddPanel(false);
       return;
@@ -532,12 +541,23 @@ export default function QuestoesPage() {
         (q) => q.subject_id === selectedScope.subjectId && q.topic_id === selectedScope.topicId
       );
 
-  const visibleScopeQuestions =
-    solvedFilter === 'all'
-      ? scopeQuestions
-      : solvedFilter === 'unsolved'
-      ? scopeQuestions.filter((q) => !solvedMap[q.id])
-      : scopeQuestions.filter((q) => Boolean(solvedMap[q.id]));
+  const visibleScopeQuestions = scopeQuestions.filter((q) => {
+    if (solvedFilter === 'unsolved' && solvedMap[q.id]) return false;
+    if (solvedFilter === 'solved' && !solvedMap[q.id]) return false;
+    if (scopeTopicFilter) {
+      if (scopeTopicFilter === 'NONE') {
+        if (q.topic_id) return false;
+      } else if (q.topic_id !== scopeTopicFilter) {
+        return false;
+      }
+    }
+    const sq = scopeSearch.trim().toLowerCase();
+    if (sq) {
+      const hay = `${q.statement} ${q.header || ''} ${q.explanation || ''}`.toLowerCase();
+      if (!hay.includes(sq)) return false;
+    }
+    return true;
+  });
   const scopeSolvedCount = scopeQuestions.filter((q) => Boolean(solvedMap[q.id])).length;
 
   const effectiveSubjectId = targetSubjectId || subjects[0]?.id || '';
@@ -605,12 +625,38 @@ export default function QuestoesPage() {
     }
   }
 
-  const parsedPreviewQuestions = rawTextInput.trim()
-    ? parseLocalTextQuestions(rawTextInput)
-    : [];
+  const parsedPreviewQuestions = useMemo(
+    () => (rawTextInput.trim() ? parseLocalTextQuestions(rawTextInput) : []),
+    [rawTextInput]
+  );
 
-  function handleConvertTextToQuiz(e: React.FormEvent) {
-    e.preventDefault();
+  const textImportDuplicates = useMemo(() => {
+    const dupIdx = new Set<number>();
+    const matches: { statement: string; existing: string; kind: 'exact' | 'similar' }[] = [];
+    parsedPreviewQuestions.forEach((pq, idx) => {
+      const m = findSimilarItems(pq.statement, questions, (q) => q.statement, 'long', 1);
+      if (m.length > 0) {
+        dupIdx.add(idx);
+        matches.push({ statement: pq.statement, existing: m[0].item.statement, kind: m[0].kind });
+      } else {
+        for (let j = 0; j < idx; j++) {
+          const selfM = compareLongTexts(pq.statement, parsedPreviewQuestions[j].statement);
+          if (selfM) {
+            dupIdx.add(idx);
+            matches.push({
+              statement: pq.statement,
+              existing: parsedPreviewQuestions[j].statement,
+              kind: selfM.kind,
+            });
+            break;
+          }
+        }
+      }
+    });
+    return { dupIdx, matches };
+  }, [parsedPreviewQuestions, questions]);
+
+  function saveTextQuestions(skipDuplicates: boolean) {
     if (!rawTextInput.trim() || !effectiveSubjectId) return;
     const list = parseLocalTextQuestions(rawTextInput);
     if (list.length === 0) {
@@ -618,8 +664,17 @@ export default function QuestoesPage() {
       return;
     }
 
-    const created: BankQuestion[] = list.map((q, i) => ({
-      id: `q-${Date.now()}-${i}`,
+    const filtered = skipDuplicates
+      ? list.map((q, i) => ({ q, i })).filter(({ i }) => !textImportDuplicates.dupIdx.has(i))
+      : list.map((q, i) => ({ q, i }));
+
+    if (filtered.length === 0) {
+      notify('Todas as questões coladas já existem ou são parecidas no seu banco.', 'info');
+      return;
+    }
+
+    const created: BankQuestion[] = filtered.map(({ q, i }, idx) => ({
+      id: `q-${Date.now()}-${idx}`,
       subject_id: effectiveSubjectId,
       topic_id: targetTopicId || null,
       header: q.header || '',
@@ -640,6 +695,11 @@ export default function QuestoesPage() {
     );
   }
 
+  function handleConvertTextToQuiz(e: React.FormEvent) {
+    e.preventDefault();
+    saveTextQuestions(false);
+  }
+
   async function handleImportJsonQuestions(file: File) {
     if (!effectiveSubjectId) return;
     try {
@@ -650,7 +710,22 @@ export default function QuestoesPage() {
         notify('Nenhuma questão válida encontrada nesse arquivo JSON.', 'error');
         return;
       }
-      const created: BankQuestion[] = list.map((q, i) => ({
+      const nonDupList = list.filter(
+        (q) => findSimilarItems(q.statement, questions, (ex) => ex.statement, 'long', 1).length === 0
+      );
+      const dupCount = list.length - nonDupList.length;
+      let finalList = list;
+      if (dupCount > 0) {
+        const keepAll = window.confirm(
+          `Atenção: ${dupCount} questão(ões) do arquivo JSON já existem ou são parecidas no seu banco.\n\nClique em OK para importar TODAS mesmo assim, ou Cancelar para importar apenas as ${nonDupList.length} novas.`
+        );
+        if (!keepAll) finalList = nonDupList;
+      }
+      if (finalList.length === 0) {
+        notify('Todas as questões do JSON já existiam no banco.', 'info');
+        return;
+      }
+      const created: BankQuestion[] = finalList.map((q, i) => ({
         id: `q-json-${Date.now()}-${i}`,
         subject_id: effectiveSubjectId,
         topic_id: targetTopicId || null,
@@ -712,6 +787,16 @@ export default function QuestoesPage() {
         created_at: new Date().toISOString(),
       };
 
+      const sim = findSimilarItems(created.statement, questions, (ex) => ex.statement, 'long', 1);
+      if (sim.length > 0) {
+        const proceed = window.confirm(
+          `Atenção: já existe questão parecida ou igual no seu banco:\n"${sim[0].item.statement.slice(0, 110)}..."\n\nDeseja salvar esta questão mesmo assim?`
+        );
+        if (!proceed) {
+          notify('Importação cancelada para evitar duplicidade.', 'info');
+          return;
+        }
+      }
       saveBank([created, ...questions]);
       setShowAddPanel(false);
       notify('Foto transformada em questão interativa!', 'success');
@@ -745,8 +830,39 @@ export default function QuestoesPage() {
     setQuizShowPrevWrong(false);
     setQuizHits(0);
     setQuizMisses(0);
+    setQuizSessionResults([]);
+    setQuizLoggedToStats(false);
     setQuizDone(false);
     setQuizOpen(true);
+  }
+
+  async function flushQuizResultsToStats(results: { subject_id: string; topic_id: string | null; hit: boolean }[]) {
+    if (quizLoggedToStats || results.length === 0) return;
+    setQuizLoggedToStats(true);
+    const grouped = new Map<string, { subject_id: string; topic_id: string | null; total: number; correct: number }>();
+    for (const r of results) {
+      const key = `${r.subject_id}__${r.topic_id || ''}`;
+      const cur = grouped.get(key) || { subject_id: r.subject_id, topic_id: r.topic_id, total: 0, correct: 0 };
+      cur.total += 1;
+      if (r.hit) cur.correct += 1;
+      grouped.set(key, cur);
+    }
+    const today = todayISO();
+    for (const g of Array.from(grouped.values())) {
+      await addStudyLog({
+        subject_id: g.subject_id,
+        topic_id: g.topic_id,
+        duration_seconds: 0,
+        study_date: today,
+        period: 'Quiz',
+        method: 'Banco de Questões (Quiz)',
+        questions_total: g.total,
+        questions_correct: g.correct,
+        stop_point: '',
+        notes: quizTitle,
+      });
+    }
+    notify('Desempenho salvo em Evolução & Mapa de Acertos!', 'success');
   }
 
   const currentQ = quizQueue[quizIdx];
@@ -828,6 +944,10 @@ ${q.statement}`;
     if (quizPicked) {
       const hit = quizPicked === clean;
       markQuestionSolved(currentQ.id, hit);
+      setQuizSessionResults((prev) => [
+        ...prev,
+        { subject_id: currentQ.subject_id, topic_id: currentQ.topic_id, hit },
+      ]);
       if (hit) {
         setQuizHits((h) => h + 1);
       } else {
@@ -1351,18 +1471,42 @@ ${q.statement}`;
                     </div>
                   )}
 
+                  {textImportDuplicates.matches.length > 0 && (
+                    <DuplicateWarningBanner
+                      title={`Atenção: ${textImportDuplicates.matches.length} questão(ões) colada(s) parecem repetidas ou iguais`}
+                      items={textImportDuplicates.matches.slice(0, 4).map((m, i) => ({
+                        id: `qt-${i}`,
+                        label: m.statement.slice(0, 75),
+                        detail: `já existe: "${m.existing.slice(0, 60)}"`,
+                        kind: m.kind,
+                      }))}
+                    />
+                  )}
+
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <p className="text-[11px] text-muted-theme">
                       Formatação 100% local e instantânea — não usa cota do Gemini.
                     </p>
-                    <button
-                      type="submit"
-                      disabled={parsedPreviewQuestions.length === 0}
-                      className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
-                    >
-                      <CheckCircle2 className="w-4 h-4" />
-                      Salvar {parsedPreviewQuestions.length > 0 ? parsedPreviewQuestions.length : ''} no Quiz (Instantâneo)
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {textImportDuplicates.matches.length > 0 &&
+                        parsedPreviewQuestions.length > textImportDuplicates.dupIdx.size && (
+                          <button
+                            type="button"
+                            onClick={() => saveTextQuestions(true)}
+                            className="px-3 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold"
+                          >
+                            Ignorar parecidas ({parsedPreviewQuestions.length - textImportDuplicates.dupIdx.size} novas)
+                          </button>
+                        )}
+                      <button
+                        type="submit"
+                        disabled={parsedPreviewQuestions.length === 0}
+                        className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        Salvar {parsedPreviewQuestions.length > 0 ? parsedPreviewQuestions.length : ''} no Quiz (Instantâneo)
+                      </button>
+                    </div>
                   </div>
                 </form>
               ) : (
@@ -1418,6 +1562,36 @@ ${q.statement}`;
             </div>
           ) : (
             <div className="space-y-3">
+              <div className="card-surface rounded-2xl p-3 flex flex-col sm:flex-row gap-2.5">
+                <input
+                  value={scopeSearch}
+                  onChange={(e) => setScopeSearch(e.target.value)}
+                  placeholder="Buscar por palavra no enunciado, banca ou comentário..."
+                  className="flex-1 rounded-xl subtle-surface border border-theme px-3.5 py-2 text-xs"
+                />
+                {selectedScope && selectedScope.type !== 'topic' && (
+                  <select
+                    value={scopeTopicFilter}
+                    onChange={(e) => setScopeTopicFilter(e.target.value)}
+                    className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold sm:w-64"
+                  >
+                    <option value="">Todos os tópicos</option>
+                    {topics
+                      .filter((t) =>
+                        selectedScope.type === 'subject'
+                          ? t.subject_id === selectedScope.subjectId
+                          : true
+                      )
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title}
+                        </option>
+                      ))}
+                    <option value="NONE">Geral da matéria (sem tópico)</option>
+                  </select>
+                )}
+              </div>
+
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {(
@@ -1550,7 +1724,7 @@ ${q.statement}`;
                       </p>
                     ) : (
                       <div className="space-y-1.5">
-                        <p className="text-sm font-medium whitespace-pre-wrap">{q.statement}</p>
+                        <p className="text-sm font-medium whitespace-pre-wrap"><DictionaryText text={q.statement} /></p>
                         <div className="pt-1 flex justify-end">
                           <button
                             type="button"
@@ -1586,7 +1760,12 @@ ${q.statement}`;
                 )}
               </div>
               <button
-                onClick={() => setQuizOpen(false)}
+                onClick={() => {
+                  if (quizSessionResults.length > 0 && !quizLoggedToStats) {
+                    void flushQuizResultsToStats(quizSessionResults);
+                  }
+                  setQuizOpen(false);
+                }}
                 className="p-2 rounded-xl subtle-surface shrink-0"
               >
                 <X className="w-4 h-4" />
@@ -1630,7 +1809,7 @@ ${q.statement}`;
                 </div>
 
                 <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
-                  {currentQ.statement}
+                  <DictionaryText text={currentQ.statement} />
                 </p>
 
                 <div className="space-y-2">
@@ -1672,7 +1851,7 @@ ${q.statement}`;
                           {letter}
                         </span>
                         <div className="flex-1 min-w-0">
-                          <p className="text-sm leading-relaxed">{opt.text}</p>
+                          <p className="text-sm leading-relaxed"><DictionaryText text={opt.text} /></p>
                           {quizShowPrevWrong && currentQ.prev_wrong_answer === letter && (
                             <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
                               Alternativa que você marcou errado antes
@@ -1736,7 +1915,7 @@ ${q.statement}`;
 
                 {quizAnswered && currentQ.explanation && (
                   <div className="rounded-2xl subtle-surface p-4 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap animate-fade-in-up">
-                    {currentQ.explanation}
+                    <DictionaryText text={currentQ.explanation} />
                   </div>
                 )}
 
@@ -1769,6 +1948,14 @@ ${q.statement}`;
                         if (!currentQCorrect) return;
                         const hit = quizPicked === currentQCorrect;
                         markQuestionSolved(currentQ.id, hit);
+                        const nextRes = [
+                          ...quizSessionResults,
+                          { subject_id: currentQ.subject_id, topic_id: currentQ.topic_id, hit },
+                        ];
+                        setQuizSessionResults(nextRes);
+                        if (quizIdx + 1 >= quizQueue.length) {
+                          void flushQuizResultsToStats(nextRes);
+                        }
                         if (hit) {
                           setQuizHits((h) => h + 1);
                         } else {
@@ -1785,6 +1972,7 @@ ${q.statement}`;
                       type="button"
                       onClick={() => {
                         if (quizIdx + 1 >= quizQueue.length) {
+                          void flushQuizResultsToStats(quizSessionResults);
                           setQuizDone(true);
                         } else {
                           setQuizIdx((i) => i + 1);

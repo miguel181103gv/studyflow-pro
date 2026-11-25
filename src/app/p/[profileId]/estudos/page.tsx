@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
 import { getStudyMode } from '@/lib/studyModes';
@@ -2513,8 +2514,8 @@ export default function ProgressoEditalPage() {
                         >
                           Prioridade {st.label}
                         </span>
-                        <p className="font-semibold pr-5 leading-relaxed">{h.text}</p>
-                        <p className="mt-1 text-[10px] font-bold opacity-80">
+                        <p className="font-semibold pr-5 leading-relaxed whitespace-pre-wrap"><DictionaryText text={h.text} /></p>
+                        <p className="mt-1 text-[10px] font-bold opacity-80 whitespace-pre-wrap">
                           Pág. {h.page_number || 1}
                           {h.note ? ` · ${h.note}` : ''}
                         </p>

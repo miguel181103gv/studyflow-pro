@@ -1,11 +1,22 @@
 'use client';
 
+import { useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { calcAccuracy } from '@/lib/utils';
 
 export default function MapaAcertosPage() {
   const { profile, subjects, topics, studyLogs } = useProfile();
   const target = profile?.target_accuracy || 80;
+
+  const [subjectFilter, setSubjectFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'with_q' | 'below' | 'above'>('all');
+  const [searchTopic, setSearchTopic] = useState('');
+
+  const visibleSubjects = subjectFilter
+    ? subjects.filter((s) => s.id === subjectFilter)
+    : subjects;
+
+  const q = searchTopic.trim().toLowerCase();
 
   return (
     <div className="space-y-6">
@@ -16,13 +27,61 @@ export default function MapaAcertosPage() {
         </p>
       </div>
 
+      {/* Filtros do Mapa de Acertos */}
+      <div className="card-surface rounded-2xl p-3 flex flex-col sm:flex-row gap-2.5">
+        <input
+          value={searchTopic}
+          onChange={(e) => setSearchTopic(e.target.value)}
+          placeholder="Buscar tópico ou matéria..."
+          className="flex-1 rounded-xl subtle-surface border border-theme px-3.5 py-2 text-xs"
+        />
+        <select
+          value={subjectFilter}
+          onChange={(e) => setSubjectFilter(e.target.value)}
+          className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold sm:w-56"
+        >
+          <option value="">Todas as matérias</option>
+          {subjects.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+          className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold sm:w-48"
+        >
+          <option value="all">Todos os tópicos</option>
+          <option value="with_q">Só com questões</option>
+          <option value="below">Abaixo da meta (&lt; {target}%)</option>
+          <option value="above">Na meta (&ge; {target}%)</option>
+        </select>
+      </div>
+
       <div className="space-y-4">
-        {subjects.map((sub) => {
+        {visibleSubjects.map((sub) => {
           const sLogs = studyLogs.filter((l) => l.subject_id === sub.id);
           const sQ = sLogs.reduce((a, b) => a + b.questions_total, 0);
           const sC = sLogs.reduce((a, b) => a + b.questions_correct, 0);
           const sAcc = calcAccuracy(sC, sQ);
-          const subTopics = topics.filter((t) => t.subject_id === sub.id);
+          const subTopics = topics
+            .filter((t) => t.subject_id === sub.id)
+            .filter((t) => {
+              if (q && !t.title.toLowerCase().includes(q) && !sub.name.toLowerCase().includes(q)) {
+                return false;
+              }
+              if (statusFilter === 'all') return true;
+              const tLogs = studyLogs.filter((l) => l.topic_id === t.id);
+              const tQ = tLogs.reduce((a, b) => a + b.questions_total, 0);
+              const tC = tLogs.reduce((a, b) => a + b.questions_correct, 0);
+              const tAcc = calcAccuracy(tC, tQ);
+              if (statusFilter === 'with_q') return tQ > 0;
+              if (statusFilter === 'below') return tQ > 0 && tAcc < target;
+              return tQ > 0 && tAcc >= target;
+            });
+
+          if ((q || statusFilter !== 'all') && subTopics.length === 0) return null;
 
           return (
             <div key={sub.id} className="card-surface rounded-2xl p-5 shadow-sm space-y-3">
@@ -64,7 +123,7 @@ export default function MapaAcertosPage() {
                     >
                       <span className="truncate">{t.title}</span>
                       <span className="font-bold shrink-0">
-                        {tQ > 0 ? `${tAcc}%` : '—'}
+                        {tQ > 0 ? `${tAcc}% (${tC}/${tQ})` : '—'}
                       </span>
                     </div>
                   );

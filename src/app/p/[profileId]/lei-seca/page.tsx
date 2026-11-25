@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { DictionaryText } from '@/components/DictionaryText';
 import {
   BookOpen,
   CheckCircle2,
@@ -225,7 +226,7 @@ function LegalBlocksView({
                   <span className="inline-flex items-center px-2 py-0.5 mr-2 rounded-lg bg-teal-600 text-white text-xs font-extrabold tracking-wide">
                     {b.marker}
                   </span>
-                  <span className="font-medium">{b.body}</span>
+                  <span className="font-medium"><DictionaryText text={b.body} /></span>
                 </p>
                 {interactive && onToggleHighlight && (
                   <button
@@ -271,7 +272,7 @@ function LegalBlocksView({
                   {b.marker}
                 </span>
                 <div className="min-w-0 space-y-1">
-                  <p className="text-[13.5px] leading-relaxed">{b.body}</p>
+                  <p className="text-[13.5px] leading-relaxed"><DictionaryText text={b.body} /></p>
                   {b.annotations.length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {b.annotations.map((ann, i) => (
@@ -317,7 +318,7 @@ function LegalBlocksView({
                   <span className="inline-flex items-center px-2 py-0.5 mr-2 rounded-lg bg-indigo-600/15 text-indigo-700 dark:text-indigo-300 text-xs font-extrabold">
                     {b.marker}
                   </span>
-                  <span>{b.body}</span>
+                  <span><DictionaryText text={b.body} /></span>
                 </p>
                 {b.annotations.length > 0 && (
                   <div className="flex flex-wrap gap-1">
@@ -365,7 +366,7 @@ function LegalBlocksView({
                   {b.marker}
                 </span>
                 <div className="min-w-0 space-y-1">
-                  <p className="text-[13px] leading-relaxed">{b.body}</p>
+                  <p className="text-[13px] leading-relaxed"><DictionaryText text={b.body} /></p>
                   {b.annotations.length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {b.annotations.map((ann, i) => (
@@ -405,7 +406,7 @@ function LegalBlocksView({
               tone !== 'none' ? `${style.bg} ${style.border}` : 'subtle-surface'
             }`}
           >
-            <p className="text-[13.5px] leading-relaxed">{b.body}</p>
+            <p className="text-[13.5px] leading-relaxed"><DictionaryText text={b.body} /></p>
             {interactive && onToggleHighlight && (
               <button
                 type="button"
