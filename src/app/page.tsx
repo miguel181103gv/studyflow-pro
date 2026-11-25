@@ -240,7 +240,7 @@ export default function ProfileSelectorPage() {
       setPciResults(list);
       if (list.length === 0) {
         setPciMessage(
-          json.data?.message || 'Nenhum concurso aberto encontrado com esse termo no momento.'
+          json.data?.message || 'Nenhum concurso ou edital encontrado na internet com esse termo.'
         );
       }
     } catch (err) {
@@ -260,7 +260,7 @@ export default function ProfileSelectorPage() {
         ? `Inscrições abertas até ${c.datas.fim || 'breve'}`
         : c.datas?.em_breve
         ? `Inscrições abrem em ${c.datas.inicio || 'breve'}`
-        : 'Encontrado via PCI Concursos'
+        : 'Edital encontrado na web'
     );
     setPciResults([]);
 
@@ -1212,7 +1212,7 @@ export default function ProfileSelectorPage() {
                         handlePciSearch();
                       }
                     }}
-                    placeholder="Ex: INSS, Câmara, Polícia Civil, TRT..."
+                    placeholder="Ex: TRT-MG 2022, INSS, Banco do Brasil 2023, Polícia Civil..."
                     className="flex-1 rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3.5 py-2.5 text-sm"
                   />
                   <input

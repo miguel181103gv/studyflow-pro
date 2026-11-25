@@ -925,14 +925,7 @@ export default function CadernoErrosPage() {
                         {isExplaining ? 'Analisando...' : `Explicar com ${aiName}`}
                       </button>
                     </div>
-                    {dq?.statement && (
-                      <ExplainForChildButton
-                        mode="statement"
-                        content={dq.statement}
-                        context={sub?.name || ''}
-                        compact
-                      />
-                    )}
+
                   </div>
                 ) : (
                   entry.question_text && (

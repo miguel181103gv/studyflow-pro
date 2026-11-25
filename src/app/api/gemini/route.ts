@@ -301,15 +301,50 @@ function extractJsonObject(raw: string) {
   const cleaned = raw.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  const candidate = start !== -1 && end !== -1 && end > start ? cleaned.slice(start, end + 1) : cleaned;
+  const candidate = start !== -1 && end > start ? cleaned.slice(start, end + 1) : start !== -1 ? cleaned.slice(start) : cleaned;
   try {
     return JSON.parse(candidate);
   } catch {
-    // Fallback: remove trailing commas and raw control chars
-    const repaired = candidate
+    const basic = candidate
       .replace(/,\s*([}\]])/g, '$1')
       .replace(/[\u0000-\u0019]+/g, ' ');
-    return JSON.parse(repaired);
+    try {
+      return JSON.parse(basic);
+    } catch {
+      // Recupera JSON truncado fechando string aberta e colchetes/chaves pendentes
+      let inStr = false;
+      let esc = false;
+      const stack: string[] = [];
+      for (let i = 0; i < basic.length; i++) {
+        const ch = basic[i];
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === '\\' && inStr) {
+          esc = true;
+          continue;
+        }
+        if (ch === '"') {
+          inStr = !inStr;
+          continue;
+        }
+        if (!inStr) {
+          if (ch === '{') stack.push('}');
+          else if (ch === '[') stack.push(']');
+          else if ((ch === '}' || ch === ']') && stack.length > 0 && stack[stack.length - 1] === ch) {
+            stack.pop();
+          }
+        }
+      }
+      let fixed = basic;
+      if (inStr) fixed += '"';
+      fixed = fixed.replace(/,\s*$/, '').replace(/:\s*$/, ': null');
+      while (stack.length > 0) {
+        fixed = fixed.replace(/,\s*$/, '') + stack.pop();
+      }
+      return JSON.parse(fixed);
+    }
   }
 }
 
@@ -328,7 +363,8 @@ REGRAS RÍGIDAS:
 - Liste CADA cargo individualmente pelo nome exato que aparece no edital (ex: "Agente Legislativo", "Analista Administrativo", "Técnico em Informática").
 - Se o edital for de apenas 1 cargo, retorne um array com esse 1 cargo.
 - REGRA CRÍTICA SOBRE MATÉRIAS vs CATEGORIAS: "Conhecimentos Básicos", "Conhecimentos Gerais" e "Conhecimentos Específicos" são APENAS o campo "category" — JAMAIS crie uma matéria com name = "Conhecimentos Específicos", "Conhecimentos Básicos" ou "Conhecimentos Gerais"! Dentro da seção de Conhecimentos Específicos, separe CADA disciplina real como uma matéria própria (ex: "Direito do Trabalho", "Direito Processual do Trabalho", "Conhecimentos Bancários") com category: "Conhecimentos Específicos", e coloque os itens numerados de cada disciplina em "topics".
-- Em "roles_details", inclua para CADA cargo: salário base, vale-alimentação/auxílios, carga horária, data da prova e TODAS as matérias com TODOS os seus TÓPICOS do conteúdo programático (Conhecimentos Básicos/Gerais + Específicos). Nunca omita os tópicos de uma matéria! Se o edital informar o peso (ex: peso 1 para Gerais, peso 2 para Específicos) ou a quantidade de questões de cada disciplina/bloco, preencha "weight" (número) e "exam_questions" (número ou null).
+- Se o edital tiver ATÉ 3 cargos, preencha "roles_details" completo para cada um (salário, vale-alimentação, carga horária, data da prova, weight, exam_questions e TODAS as matérias com seus TÓPICOS).
+- Se o edital tiver 4 OU MAIS cargos, liste TODOS os cargos em "roles" e retorne "roles_details": [] para evitar truncamento (os detalhes do cargo escolhido serão extraídos na etapa seguinte).
 - Não invente valores que não estejam no PDF — deixe "" se não encontrar.
 
 Retorne SOMENTE um JSON válido neste formato:
@@ -1033,17 +1069,18 @@ Seja objetivo, use números reais dos dados enviados e evite floreios.`,
         return NextResponse.json({ error: 'Texto da prova vazio.' }, { status: 400 });
       }
 
-      const idPrompt = `Analise o início desta prova de concurso brasileiro e identifique os dados da prova.
+      const idPrompt = `Analise o início desta prova de concurso brasileiro e identifique os dados da prova, INCLUSIVE o Tipo, Cor ou Número do Caderno (ex: Tipo 1, Tipo 2, Prova Branca, Prova Amarela, Prova Azul, Prova Verde, Caderno A, Caderno B, Gabarito 1) se aparecer no cabeçalho.
 TEXTO INICIAL DA PROVA:
-${String(sampleText).slice(0, 4500)}
+${String(sampleText).slice(0, 5000)}
 
 Retorne SOMENTE JSON válido:
 {
-  "exam_title": "Título curto (ex: TRT-MG · Técnico Judiciário · 2022)",
+  "exam_title": "Título curto (ex: TRT-MG · Técnico Judiciário · 2022 · Tipo 1)",
   "board": "Nome da banca (ex: FCC, FGV, Cebraspe, Cesgranrio, Vunesp ou outra)",
   "organ": "Órgão (ex: TRT-MG)",
   "role": "Cargo (ex: Técnico Judiciário - Área Administrativa)",
   "year": "Ano (ex: 2022 ou vazio)",
+  "booklet_type": "Tipo/Cor/Caderno se houver (ex: Tipo 1, Amarela, Caderno A) ou vazio",
   "style": "multipla ou certo_errado"
 }`;
 
@@ -1054,15 +1091,20 @@ Retorne SOMENTE JSON válido:
         organ?: string;
         role?: string;
         year?: string;
+        booklet_type?: string;
         style?: string;
       };
 
       let gabaritoMap: Record<string, string> = {};
       let gabaritoSourceUrl = '';
       let gabaritoFound = false;
+      const bookletInfo = (meta.booklet_type || '').trim();
 
       if (gabaritoText && String(gabaritoText).trim()) {
         const gabPrompt = `Extraia o gabarito oficial (número da questão -> letra correta A, B, C, D, E, C, E ou ANULADA) do texto abaixo.
+ATENÇÃO CRÍTICA AO TIPO/COR DO CADERNO: Esta prova foi identificada como "${bookletInfo || 'não especificado'}".
+Se o PDF/texto de gabarito tiver múltiplas tabelas ou colunas para diferentes tipos/cores (ex: Tipo 1, Tipo 2, Tipo 3, Branca, Verde, Amarela, Azul, Caderno A/B), extraia EXCLUSIVAMENTE o gabarito correspondente a "${bookletInfo || 'Tipo 1 / Branca / Caderno único'}". NUNCA misture gabaritos de tipos/cores diferentes!
+
 TEXTO DO GABARITO:
 ${String(gabaritoText).slice(0, 12000)}
 
@@ -1079,13 +1121,16 @@ Retorne SOMENTE JSON:
           // ignore
         }
       } else {
-        const qStr = [meta.board, meta.organ, meta.role, meta.year, 'gabarito oficial definitivo']
+        const qStr = [meta.board, meta.organ, meta.role, meta.year, bookletInfo, 'gabarito oficial definitivo']
           .filter(Boolean)
           .join(' ');
-        const webHits = await searchDeepSeekWeb(qStr, true, 4);
+        const webHits = await searchDeepSeekWeb(qStr, true, 5);
         if (webHits) {
           const webGabPrompt = `Procure nos resultados de busca abaixo o gabarito oficial desta prova (${meta.exam_title || qStr}).
-Se encontrar o gabarito (mesmo parcial) com números de questões e letras, extraia em "gabarito" e coloque a URL da fonte em "source_url". Se NÃO encontrar a tabela de gabarito nos textos, retorne "gabarito": {} e "source_url" do melhor link oficial encontrado.
+ATENÇÃO CRÍTICA AO TIPO/COR DO CADERNO: Esta prova é "${bookletInfo || 'tipo não identificado'}".
+- Se a página/tabela de gabarito tiver vários tipos (Tipo 1, 2, 3, 4...) ou cores (Branca, Verde, Amarela, Azul...), extraia EXCLUSIVAMENTE o gabarito correspondente a "${bookletInfo || 'Tipo 1 / Branca'}".
+- Se você só encontrar gabarito de OUTRO tipo/cor incompatível com "${bookletInfo}", NÃO use o errado — retorne "gabarito": {}.
+- Coloque a melhor URL encontrada em "source_url".
 
 RESULTADOS:
 ${webHits}
@@ -1166,19 +1211,24 @@ Retorne SOMENTE JSON válido:
       if (!qClean) {
         return NextResponse.json({ error: 'Digite o concurso, cargo ou banca para buscar.' }, { status: 400 });
       }
-      const [pciHits, pdfHits] = await Promise.all([
-        searchDeepSeekWeb(`site:pciconcursos.com.br/provas ${qClean}`, false, 8),
-        searchDeepSeekWeb(`${qClean} prova anterior concurso filetype:pdf gabarito`, false, 6),
+      const [pdfHits1, pdfHits2] = await Promise.all([
+        searchDeepSeekWeb(`${qClean} prova filetype:pdf`, false, 10),
+        searchDeepSeekWeb(`${qClean} caderno de prova gabarito pdf`, false, 8),
       ]);
-      const combined = [pciHits ? `PCI CONCURSOS PROVAS:\n${pciHits}` : '', pdfHits ? `PDFs ENCONTRADOS:\n${pdfHits}` : '']
+      const combined = [
+        pdfHits1 ? `BUSCA DIRETA DE PDFs:\n${pdfHits1}` : '',
+        pdfHits2 ? `PROVAS E GABARITOS:\n${pdfHits2}` : '',
+      ]
         .filter(Boolean)
         .join('\n\n');
 
       if (!combined) {
         return NextResponse.json({ ok: true, data: { exams: [] } });
       }
-      const prompt = `Com base nos resultados abaixo, liste até 10 PROVAS ANTERIORES REAIS (evite notícias ou editais previstos; priorize páginas de prova/download de PDF, ordenadas das mais recentes para as mais antigas) para "${qClean}".
-Se a URL já terminar em .pdf, coloque-a em "pdf_url" (senão deixe "").
+      const prompt = `Com base nos resultados abaixo, liste até 10 PROVAS ANTERIORES REAIS para "${qClean}", ordenadas das mais recentes para as mais antigas.
+REGRAS:
+- Priorize resultados que tenham link direto para o arquivo .pdf da prova (coloque em "pdf_url" sempre que a URL terminar em .pdf ou contiver .pdf).
+- Evite notícias, blogs genéricos ou páginas só de divulgação de edital; foque em cadernos de prova e arquivos PDF reais.
 
 RESULTADOS:
 ${combined.slice(0, 12000)}

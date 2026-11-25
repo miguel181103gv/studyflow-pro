@@ -2138,12 +2138,6 @@ export default function SimuladosPage() {
                         <span className="font-extrabold mr-1.5">{examIdx + 1}.</span>
                         <DictionaryText text={formatted.question} />
                       </p>
-                      <ExplainForChildButton
-                        mode="statement"
-                        content={currentExamQ.statement}
-                        context={currentExamQ.subject_name || ''}
-                        compact
-                      />
                     </div>
                   );
                 })()}
@@ -2306,19 +2300,29 @@ export default function SimuladosPage() {
                         <p className="font-medium leading-relaxed">
                           <DictionaryText text={q.statement} />
                         </p>
-                        {q.explanation && (
-                          <div className="space-y-2 border-t border-theme pt-2">
+                        <div className="space-y-2 border-t border-theme pt-2">
+                          {q.explanation && (
                             <p className="text-muted-theme leading-relaxed">
                               <DictionaryText text={q.explanation} />
                             </p>
+                          )}
+                          <div className="flex flex-wrap gap-2">
                             <ExplainForChildButton
-                              title={q.topic_title || q.subject_name || 'Questão do Simulado'}
-                              content={`Enunciado: ${q.statement}\n\nExplicação: ${q.explanation}`}
+                              mode="statement"
+                              content={q.statement}
                               context={q.subject_name || ''}
                               compact
                             />
+                            {q.explanation && (
+                              <ExplainForChildButton
+                                title={q.topic_title || q.subject_name || 'Questão do Simulado'}
+                                content={`Enunciado: ${q.statement}\n\nExplicação: ${q.explanation}`}
+                                context={q.subject_name || ''}
+                                compact
+                              />
+                            )}
                           </div>
-                        )}
+                        </div>
                       </div>
                     );
                   })}

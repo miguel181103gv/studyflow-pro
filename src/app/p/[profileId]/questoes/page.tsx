@@ -2087,12 +2087,6 @@ ${q.statement}`;
                 <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
                   <DictionaryText text={currentQ.statement} />
                 </p>
-                <ExplainForChildButton
-                  mode="statement"
-                  content={currentQ.statement}
-                  context={`${currentQSub?.name || ''} ${currentQ.header || ''}`.trim()}
-                  compact
-                />
 
                 <div className="space-y-2">
                   {currentQ.options.map((opt) => {
@@ -2195,15 +2189,25 @@ ${q.statement}`;
                   )
                 )}
 
-                {quizAnswered && currentQ.explanation && (
+                {quizAnswered && (
                   <div className="rounded-2xl subtle-surface p-4 space-y-2.5 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap animate-fade-in-up">
-                    <DictionaryText text={currentQ.explanation} />
-                    <ExplainForChildButton
-                      title={currentQTopic?.title || currentQSub?.name || 'Questão'}
-                      content={`Enunciado: ${currentQ.statement}\n\nExplicação: ${currentQ.explanation}`}
-                      context={currentQSub?.name || ''}
-                      compact
-                    />
+                    {currentQ.explanation && <DictionaryText text={currentQ.explanation} />}
+                    <div className="flex flex-wrap gap-2">
+                      <ExplainForChildButton
+                        mode="statement"
+                        content={currentQ.statement}
+                        context={`${currentQSub?.name || ''} ${currentQ.header || ''}`.trim()}
+                        compact
+                      />
+                      {currentQ.explanation && (
+                        <ExplainForChildButton
+                          title={currentQTopic?.title || currentQSub?.name || 'Questão'}
+                          content={`Enunciado: ${currentQ.statement}\n\nExplicação: ${currentQ.explanation}`}
+                          context={currentQSub?.name || ''}
+                          compact
+                        />
+                      )}
+                    </div>
                   </div>
                 )}
 
