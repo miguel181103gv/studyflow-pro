@@ -62,11 +62,8 @@ const PRESET_BOARDS = [
   'FCC',
   'FGV',
   'Cebraspe (Cespe)',
-  'Vunesp',
   'Cesgranrio',
-  'Instituto AOCP',
-  'IBFC',
-  'Selecon',
+  'Vunesp',
 ];
 
 export default function SimuladosPage() {
@@ -105,7 +102,9 @@ export default function SimuladosPage() {
   const [genTitle, setGenTitle] = useState('');
   const [genBoard, setGenBoard] = useState('FCC');
   const [genStyle, setGenStyle] = useState<'multipla' | 'certo_errado'>('multipla');
+  const [genMode, setGenMode] = useState<'rapido' | 'prova_real'>('rapido');
   const [genTotalCount, setGenTotalCount] = useState<number>(15);
+  const [genSubjectCounts, setGenSubjectCounts] = useState<Record<string, number>>({});
   const [genSubjectIds, setGenSubjectIds] = useState<string[]>([]);
   const simJobId = `simulados:${profile?.id || 'default'}`;
   const simJob = aiJobs[simJobId];
@@ -212,6 +211,48 @@ export default function SimuladosPage() {
     setShowAdd(false);
   }
 
+  function computeRealisticExamCounts(targetTotal: number, activeSubs: typeof subjects): Record<string, number> {
+    if (activeSubs.length === 0) return {};
+    const weights = activeSubs.map((s) => {
+      const cat = (s.category || '').toLowerCase();
+      const isSpec = cat.includes('espec');
+      const baseW = Math.max(1, Math.max(1, (Number(s.cycle_minutes) || Number(s.cycle_hours) * 60 || 60) / 60));
+      return isSpec ? baseW * 1.8 : baseW;
+    });
+    const sumW = weights.reduce((a, b) => a + b, 0) || 1;
+    const raw = weights.map((w) => Math.max(1, Math.round((w / sumW) * targetTotal)));
+    let diff = targetTotal - raw.reduce((a, b) => a + b, 0);
+    let idx = 0;
+    while (diff !== 0 && activeSubs.length > 0) {
+      const pos = idx % activeSubs.length;
+      if (diff > 0) {
+        raw[pos] += 1;
+        diff--;
+      } else if (raw[pos] > 1) {
+        raw[pos] -= 1;
+        diff++;
+      }
+      idx++;
+      if (idx > 500) break;
+    }
+    const map: Record<string, number> = {};
+    activeSubs.forEach((s, i) => {
+      map[s.id] = raw[i];
+    });
+    return map;
+  }
+
+  function applyProvaRealPreset(boardName: string) {
+    const isCebraspe = boardName.toLowerCase().includes('cebraspe') || boardName.toLowerCase().includes('cespe');
+    const target = isCebraspe ? 120 : 60;
+    const allIds = subjects.map((s) => s.id);
+    setGenMode('prova_real');
+    setGenStyle(isCebraspe ? 'certo_errado' : 'multipla');
+    setGenTotalCount(target);
+    setGenSubjectIds(allIds);
+    setGenSubjectCounts(computeRealisticExamCounts(target, subjects));
+  }
+
   function handleGenerateSimulado(e: React.FormEvent) {
     e.preventDefault();
     if (!profile?.id) return;
@@ -221,22 +262,41 @@ export default function SimuladosPage() {
       return;
     }
 
-    const totalSnap = genTotalCount;
     const boardSnap = genBoard.trim() || 'Padrão Concurso';
     const styleSnap = genStyle;
-    const titleSnap =
-      genTitle.trim() || `Simulado ${boardSnap} · ${profile.name || 'Concurso'}`;
     const storageKeySnap = genStorageKey;
     const topicsSnap = topics;
 
-    const basePerSub = Math.floor(totalSnap / chosenSubs.length);
-    const remainder = totalSnap % chosenSubs.length;
-    const plan = chosenSubs
-      .map((sub, idx) => ({
-        subject: sub,
-        count: basePerSub + (idx < remainder ? 1 : 0),
-      }))
-      .filter((p) => p.count > 0);
+    const plan =
+      genMode === 'prova_real'
+        ? chosenSubs
+            .map((sub) => ({
+              subject: sub,
+              count: Math.max(0, Number(genSubjectCounts[sub.id] ?? 0)),
+            }))
+            .filter((p) => p.count > 0)
+        : (() => {
+            const basePerSub = Math.floor(genTotalCount / chosenSubs.length);
+            const remainder = genTotalCount % chosenSubs.length;
+            return chosenSubs
+              .map((sub, idx) => ({
+                subject: sub,
+                count: basePerSub + (idx < remainder ? 1 : 0),
+              }))
+              .filter((p) => p.count > 0);
+          })();
+
+    const totalSnap = plan.reduce((acc, p) => acc + p.count, 0);
+    if (totalSnap === 0) {
+      notify('Defina pelo menos 1 questão para gerar o simulado.', 'error');
+      return;
+    }
+
+    const titleSnap =
+      genTitle.trim() ||
+      `${genMode === 'prova_real' ? 'Prova Real' : 'Simulado'} ${boardSnap} · ${
+        profile.name || 'Concurso'
+      }`;
 
     setShowGenModal(false);
     setGenTitle('');
@@ -257,6 +317,7 @@ export default function SimuladosPage() {
           count: qty,
           style: styleSnap,
           board: boardSnap,
+          profileName: profile?.name || '',
         }),
       });
       const rawResp = await res.text();
@@ -313,28 +374,38 @@ export default function SimuladosPage() {
           }
           const tasks: SimTask[] = [];
           for (const item of plan) {
-            const subTopics = topicsSnap.filter((t) => t.subject_id === item.subject.id);
+            // Embaralha todos os tópicos da matéria sem repetição até esgotar
+            const shuffled = [...topicsSnap.filter((t) => t.subject_id === item.subject.id)];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
             let rem = item.count;
-            let partIdx = 0;
+            let topicCursor = 0;
             while (rem > 0) {
               const batchCount = Math.min(2, rem);
-              const chosenTopic =
-                subTopics.length > 0
-                  ? subTopics[(partIdx + Math.floor(Math.random() * subTopics.length)) % subTopics.length]
+              const t1 = shuffled.length > 0 ? shuffled[topicCursor % shuffled.length] : null;
+              const t2 =
+                batchCount === 2 && shuffled.length > 1
+                  ? shuffled[(topicCursor + 1) % shuffled.length]
                   : null;
+              const combinedTopicTitle =
+                t1 && t2 && t1.id !== t2.id
+                  ? `${t1.title} (questão 1) e ${t2.title} (questão 2)`
+                  : t1?.title || '';
               tasks.push({
                 subject: item.subject,
-                topicTitle: chosenTopic?.title || '',
-                topicId: chosenTopic?.id || null,
+                topicTitle: combinedTopicTitle,
+                topicId: t1?.id || null,
                 qty: batchCount,
               });
+              topicCursor += batchCount;
               rem -= batchCount;
-              partIdx++;
             }
           }
 
           let cursor = 0;
-          const workerCount = Math.min(3, tasks.length);
+          const workerCount = Math.min(4, tasks.length);
           const workers = Array.from({ length: workerCount }, async () => {
             while (cursor < tasks.length) {
               const t = tasks[cursor++];
@@ -795,23 +866,61 @@ export default function SimuladosPage() {
                 />
               </div>
 
+              {/* Seletor de Modo: Simulado Rápido vs Prova Real */}
+              <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl subtle-surface border border-theme">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGenMode('rapido');
+                    setGenTotalCount(15);
+                  }}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
+                    genMode === 'rapido'
+                      ? 'bg-violet-600 text-white shadow-xs'
+                      : 'text-muted-theme hover:text-[var(--text-main)]'
+                  }`}
+                >
+                  Simulado Rápido
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyProvaRealPreset(genBoard)}
+                  className={`py-2 px-3 rounded-xl text-xs font-bold transition ${
+                    genMode === 'prova_real'
+                      ? 'bg-teal-600 text-white shadow-xs'
+                      : 'text-muted-theme hover:text-[var(--text-main)]'
+                  }`}
+                >
+                  Prova Real (Edital Completo)
+                </button>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-semibold text-muted-theme mb-1">
                     Banca
                   </label>
-                  <input
+                  <select
                     value={genBoard}
-                    onChange={(e) => setGenBoard(e.target.value)}
-                    list="sf-boards-list"
-                    placeholder="Ex: FCC, FGV, Cebraspe..."
+                    onChange={(e) => {
+                      const nextBoard = e.target.value;
+                      setGenBoard(nextBoard);
+                      if (genMode === 'prova_real') {
+                        applyProvaRealPreset(nextBoard);
+                      } else if (nextBoard.toLowerCase().includes('cebraspe')) {
+                        setGenStyle('certo_errado');
+                      } else {
+                        setGenStyle('multipla');
+                      }
+                    }}
                     className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
-                  />
-                  <datalist id="sf-boards-list">
+                  >
                     {PRESET_BOARDS.map((b) => (
-                      <option key={b} value={b} />
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
                     ))}
-                  </datalist>
+                  </select>
                 </div>
 
                 <div>
@@ -836,10 +945,17 @@ export default function SimuladosPage() {
                   </label>
                   <select
                     value={genTotalCount}
-                    onChange={(e) => setGenTotalCount(Number(e.target.value))}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setGenTotalCount(val);
+                      if (genMode === 'prova_real') {
+                        const activeSubs = subjects.filter((s) => genSubjectIds.includes(s.id));
+                        setGenSubjectCounts(computeRealisticExamCounts(val, activeSubs));
+                      }
+                    }}
                     className="w-full rounded-2xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
                   >
-                    {[10, 15, 20, 30, 40, 50].map((n) => (
+                    {(genMode === 'prova_real' ? [40, 50, 60, 70, 80, 100, 120] : [10, 15, 20, 30]).map((n) => (
                       <option key={n} value={n}>
                         {n} questões
                       </option>
@@ -851,12 +967,22 @@ export default function SimuladosPage() {
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-semibold text-muted-theme">
-                    Matérias do Simulado ({genSubjectIds.length}/{subjects.length})
+                    {genMode === 'prova_real'
+                      ? `Divisão real por matéria (Total: ${subjects
+                          .filter((s) => genSubjectIds.includes(s.id))
+                          .reduce((acc, s) => acc + (genSubjectCounts[s.id] ?? 0), 0)} questões)`
+                      : `Matérias do Simulado (${genSubjectIds.length}/${subjects.length})`}
                   </label>
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setGenSubjectIds(subjects.map((s) => s.id))}
+                      onClick={() => {
+                        const all = subjects.map((s) => s.id);
+                        setGenSubjectIds(all);
+                        if (genMode === 'prova_real') {
+                          setGenSubjectCounts(computeRealisticExamCounts(genTotalCount, subjects));
+                        }
+                      }}
                       className="text-[11px] font-bold text-teal-600 hover:underline"
                     >
                       Todas
@@ -870,13 +996,14 @@ export default function SimuladosPage() {
                     </button>
                   </div>
                 </div>
-                <div className="max-h-44 overflow-y-auto rounded-2xl subtle-surface border border-theme p-2.5 space-y-1.5">
+                <div className="max-h-48 overflow-y-auto rounded-2xl subtle-surface border border-theme p-2.5 space-y-1.5">
                   {subjects.map((s) => {
                     const checked = genSubjectIds.includes(s.id);
+                    const subQty = genSubjectCounts[s.id] ?? 0;
                     return (
-                      <label
+                      <div
                         key={s.id}
-                        className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-[var(--bg-card)] cursor-pointer text-xs"
+                        className="flex items-center gap-2.5 px-2 py-1.5 rounded-xl hover:bg-[var(--bg-card)] text-xs"
                       >
                         <input
                           type="checkbox"
@@ -886,19 +1013,37 @@ export default function SimuladosPage() {
                               checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
                             )
                           }
-                          className="accent-violet-600"
+                          className="accent-violet-600 cursor-pointer"
                         />
                         <span
                           className="w-2.5 h-2.5 rounded-full shrink-0"
                           style={{ backgroundColor: s.color }}
                         />
                         <span className="font-medium truncate flex-1">{s.name}</span>
-                      </label>
+                        {genMode === 'prova_real' && checked && (
+                          <input
+                            type="number"
+                            min={1}
+                            max={60}
+                            value={subQty}
+                            onChange={(e) =>
+                              setGenSubjectCounts((prev) => ({
+                                ...prev,
+                                [s.id]: Math.max(0, Number(e.target.value) || 0),
+                              }))
+                            }
+                            className="w-16 rounded-lg bg-[var(--bg-card)] border border-theme px-2 py-1 text-center font-bold text-xs"
+                            title="Questões desta matéria"
+                          />
+                        )}
+                      </div>
                     );
                   })}
                 </div>
                 <p className="text-[11px] text-muted-theme">
-                  As questões são geradas em pequenos lotes (3 por vez) usando os tópicos reais do seu edital para não dar erro de tempo na Vercel.
+                  {genMode === 'prova_real'
+                    ? 'Divisão automática dando maior peso às matérias específicas (você pode ajustar o número de cada matéria acima). Cada questão sorteia um tópico diferente sem repetir.'
+                    : 'As questões são geradas em paralelo usando tópicos diferentes do seu edital sem repetir assunto.'}
                 </p>
               </div>
 
@@ -946,7 +1091,12 @@ export default function SimuladosPage() {
                       className="px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
                     >
                       <Sparkles className="w-4 h-4" />
-                      Gerar {genTotalCount} Questões
+                      Gerar {genMode === 'prova_real'
+                        ? subjects
+                            .filter((s) => genSubjectIds.includes(s.id))
+                            .reduce((acc, s) => acc + (genSubjectCounts[s.id] ?? 0), 0)
+                        : genTotalCount}{' '}
+                      Questões
                     </button>
                   </>
                 )}

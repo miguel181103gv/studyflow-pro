@@ -91,8 +91,8 @@ async function callDeepSeek(
             {
               role: 'system',
               content: jsonMode
-                ? 'Você é um especialista em concursos públicos e estudos no Brasil. Responda exclusivamente em português do Brasil e retorne apenas JSON válido.'
-                : 'Você é um especialista em concursos públicos e estudos no Brasil. Responda sempre em português do Brasil.',
+                ? 'Especialista em concursos BR. Responda em PT-BR e retorne apenas JSON válido.'
+                : 'Especialista em concursos BR. Responda em PT-BR.',
             },
             { role: 'user', content: userContent },
           ],
@@ -738,34 +738,30 @@ Seja objetivo, use números reais dos dados enviados e evite floreios.`,
         count = 5,
         style = 'Múltipla escolha (A-E)',
         board = '',
+        profileName = '',
       } = body;
       const safeCount = Math.min(10, Math.max(1, Number(count) || 5));
       const isCE = String(style).toLowerCase().includes('certo');
-      const boardText = board ? ` no estilo da banca ${board}` : ' em estilo de concurso público brasileiro';
+      const boardLabel = board || 'Concurso';
+      const organHint = profileName ? ` (${profileName})` : '';
       const topicContext = topicTitle
-        ? `sobre o tópico "${topicTitle}" da matéria "${subjectName}"`
-        : `sobre a matéria "${subjectName}"`;
+        ? `tópico(s): "${topicTitle}" | matéria: "${subjectName}"`
+        : `matéria: "${subjectName}"`;
 
-      const prompt = `Crie exatamente ${safeCount} questões inéditas e fiéis à legislação/doutrina/jurisprudência atual ${topicContext}${boardText}.
-Formato obrigatório: ${isCE ? 'Certo ou Errado (apenas opções C = Certo e E = Errado)' : 'Múltipla escolha com 5 alternativas (A, B, C, D, E)'}.
-Cada questão deve ter um comentário curto e objetivo (1 a 2 frases) explicando por que o gabarito está certo. IMPORTANTE: não use aspas duplas dentro dos textos (use aspas simples '' em citações).
+      const prompt = `Gere ${safeCount} questões nível REAL de prova da banca ${boardLabel}${organHint}, inspiradas no estilo de cobrança de provas anteriores dessa banca/órgão. ${topicContext}.
+Regras:
+1. PROIBIDO questão escolar/infantil, conta solta ou definição seca.
+2. Use sempre SITUAÇÃO-PROBLEMA, CASO PRÁTICO ou análise aplicada, cobrando exceções legais, súmulas e distratores plausíveis da banca ${boardLabel}.
+3. Se houver 2 tópicos citados, faça 1 questão de cada tópico (sem repetir).
+4. Formato: ${isCE ? 'Certo/Errado (C e E)' : 'Múltipla escolha (A-E)'}.
+5. Comentário direto (1-2 frases citando artigo/súmula/regra) sem repetir o enunciado. Não use aspas duplas nos textos (use aspas simples '').
 
-Retorne SOMENTE um JSON válido neste formato exato:
-{
-  "questions": [
-    {
-      "header": "${board ? board + ' · ' : 'Questão IA · '}${subjectName}",
-      "statement": "Enunciado completo e claro da questão.",
-      "options": ${
+JSON:
+{"questions":[{"header":"${boardLabel} · ${subjectName}","statement":"...","options":${
         isCE
           ? '[{"letter":"C","text":"Certo"},{"letter":"E","text":"Errado"}]'
           : '[{"letter":"A","text":"..."},{"letter":"B","text":"..."},{"letter":"C","text":"..."},{"letter":"D","text":"..."},{"letter":"E","text":"..."}]'
-      },
-      "correct_answer": "${isCE ? 'C' : 'A'}",
-      "explanation": "Explicação objetiva do gabarito."
-    }
-  ]
-}`;
+      },"correct_answer":"${isCE ? 'C' : 'A'}","explanation":"..."}]}`;
 
       let data: unknown = null;
       let lastParseErr: unknown = null;

@@ -613,6 +613,7 @@ export default function QuestoesPage() {
           count: qty,
           style: styleSnap,
           board: boardSnap,
+          profileName: profile?.name || '',
         }),
       });
       const rawResp = await res.text();
