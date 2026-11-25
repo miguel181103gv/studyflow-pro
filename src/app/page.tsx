@@ -147,7 +147,21 @@ export default function ProfileSelectorPage() {
         .eq('user_id', user.id)
         .order('sort_order', { ascending: true });
 
-      setProfiles((data as Profile[]) || []);
+      const loadedProfiles = (data as Profile[]) || [];
+      setProfiles(loadedProfiles);
+
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (!params.get('choose')) {
+          const lastId = localStorage.getItem('sf_last_profile_id');
+          if (lastId && loadedProfiles.some((p) => p.id === lastId)) {
+            router.replace(`/p/${lastId}`);
+            return;
+          }
+        }
+      } catch {
+        // ignore
+      }
 
       const { data: setRow } = await supabase
         .from('user_settings')

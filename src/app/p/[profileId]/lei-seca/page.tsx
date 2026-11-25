@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
+import { useGlobal } from '@/components/GlobalProvider';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import {
   BookOpen,
   CheckCircle2,
@@ -19,6 +21,9 @@ import {
   Scale,
   Search,
   StickyNote,
+  FileUp,
+  Loader2,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -427,8 +432,143 @@ function LegalBlocksView({
   );
 }
 
+interface PdfJsTextItem {
+  str?: string;
+  transform?: number[];
+}
+
+interface PdfJsLib {
+  GlobalWorkerOptions: { workerSrc: string };
+  getDocument: (opts: { data: ArrayBuffer }) => {
+    promise: Promise<{
+      numPages: number;
+      getPage: (n: number) => Promise<{
+        getTextContent: () => Promise<{ items: PdfJsTextItem[] }>;
+      }>;
+    }>;
+  };
+}
+
+async function loadPdfJsLib(): Promise<PdfJsLib> {
+  const win = window as unknown as { pdfjsLib?: PdfJsLib };
+  if (win.pdfjsLib) return win.pdfjsLib;
+  await new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector('script[data-sf-pdfjs="1"]') as HTMLScriptElement | null;
+    if (existing) {
+      if (win.pdfjsLib) resolve();
+      else existing.addEventListener('load', () => resolve(), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.async = true;
+    script.setAttribute('data-sf-pdfjs', '1');
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Não foi possível carregar o leitor de PDF.'));
+    document.head.appendChild(script);
+  });
+  const lib = (window as unknown as { pdfjsLib?: PdfJsLib }).pdfjsLib;
+  if (!lib) throw new Error('Leitor de PDF indisponível.');
+  lib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return lib;
+}
+
+async function extractPdfTextInBrowser(
+  file: File,
+  onProgress?: (page: number, total: number) => void
+): Promise<string> {
+  const lib = await loadPdfJsLib();
+  const buf = await file.arrayBuffer();
+  const doc = await lib.getDocument({ data: buf }).promise;
+  const pagesText: string[] = [];
+
+  for (let p = 1; p <= doc.numPages; p++) {
+    onProgress?.(p, doc.numPages);
+    const page = await doc.getPage(p);
+    const content = await page.getTextContent();
+    const lines: string[] = [];
+    let currentY: number | null = null;
+    let currentLine = '';
+
+    for (const item of content.items) {
+      const str = (item.str || '').replace(/\s+/g, ' ');
+      if (!str.trim()) continue;
+      const y = Array.isArray(item.transform) ? Math.round(item.transform[5] / 3) * 3 : null;
+      if (currentY !== null && y !== null && Math.abs(y - currentY) > 4) {
+        if (currentLine.trim()) lines.push(currentLine.trim());
+        currentLine = str;
+        currentY = y;
+      } else {
+        currentLine = currentLine ? `${currentLine} ${str}` : str;
+        if (currentY === null) currentY = y;
+      }
+    }
+    if (currentLine.trim()) lines.push(currentLine.trim());
+
+    // Remove números de página isolados e cabeçalhos repetitivos comuns
+    const cleaned = lines.filter((ln) => {
+      if (/^\d{1,4}$/.test(ln)) return false;
+      if (/^(?:Presidência da República|Casa Civil|Subchefia para Assuntos Jurídicos)$/i.test(ln)) {
+        return false;
+      }
+      return true;
+    });
+    pagesText.push(cleaned.join('\n'));
+  }
+
+  return pagesText.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function splitLawIntoSections(
+  rawText: string,
+  lawName: string
+): { title: string; text: string }[] {
+  const clean = rawText
+    .replace(/-\n([a-záàâãéêíóôõúç])/g, '$1')
+    .replace(/\n(?=Art\.\s*\d)/g, '\n\n')
+    .trim();
+
+  // Divide por início de cada Artigo
+  const parts = clean.split(/(?=^|\n\s*Art\.\s*\d+)/m).filter((p) => p.trim());
+  const artBlocks: string[] = [];
+  let buffer = '';
+  for (const part of parts) {
+    if (/^\s*Art\.\s*\d+/i.test(part)) {
+      if (buffer.trim()) artBlocks.push(buffer.trim());
+      buffer = part;
+    } else {
+      buffer = buffer ? `${buffer}\n${part}` : part;
+    }
+  }
+  if (buffer.trim()) artBlocks.push(buffer.trim());
+
+  if (artBlocks.length <= 15) {
+    return [{ title: '', text: clean }];
+  }
+
+  const GROUP_SIZE = 20;
+  const sections: { title: string; text: string }[] = [];
+  for (let i = 0; i < artBlocks.length; i += GROUP_SIZE) {
+    const slice = artBlocks.slice(i, i + GROUP_SIZE);
+    const firstArt = slice[0].match(/Art\.\s*\d+[º°o]?/i)?.[0] || `Parte ${sections.length + 1}`;
+    const lastArt = slice[slice.length - 1].match(/Art\.\s*\d+[º°o]?/i)?.[0] || '';
+    const rangeLabel = lastArt && lastArt !== firstArt ? `${firstArt} a ${lastArt}` : firstArt;
+    sections.push({
+      title: lawName ? `${lawName} · ${rangeLabel}` : rangeLabel,
+      text: slice.join('\n\n'),
+    });
+  }
+  return sections;
+}
+
 export default function LeiSecaPage() {
   const { profile, subjects } = useProfile();
+  const { notify } = useGlobal();
+  const aiName = useAiProviderName();
+  const [pdfProgress, setPdfProgress] = useState<string>('');
+  const [aiFormatting, setAiFormatting] = useState(false);
+  const [formattingCardId, setFormattingCardId] = useState<string | null>(null);
   const storageKey = `sf_lei_seca_${profile?.id || 'default'}`;
 
   const [articles, setArticles] = useState<LeiSecaArticle[]>([]);
@@ -591,6 +731,143 @@ export default function LeiSecaPage() {
     setEditingId(null);
   }
 
+  async function runAiFormatText(rawText: string, lawName: string): Promise<string> {
+    const clean = rawText.trim();
+    if (!clean) return clean;
+    // Divide textos longos em blocos de ~3500 chars em paralelo para responder rápido na Vercel
+    const chunks: string[] = [];
+    const paras = clean.split(/\n\n+/);
+    let cur = '';
+    for (const p of paras) {
+      if ((cur + '\n\n' + p).length > 3500 && cur) {
+        chunks.push(cur);
+        cur = p;
+      } else {
+        cur = cur ? `${cur}\n\n${p}` : p;
+      }
+    }
+    if (cur) chunks.push(cur);
+
+    const results = await Promise.all(
+      chunks.map(async (chunk) => {
+        const res = await fetch('/api/gemini', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'format_lei_seca',
+            rawText: chunk,
+            lawName,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || !json.ok || !json.data?.formattedText) {
+          throw new Error(json.error || 'Erro ao formatar texto legal com IA.');
+        }
+        return String(json.data.formattedText).trim();
+      })
+    );
+    return results.join('\n\n');
+  }
+
+  async function handleFormatModalWithAi() {
+    if (!formRawText.trim()) return;
+    setAiFormatting(true);
+    try {
+      const formatted = await runAiFormatText(formRawText, formLawName);
+      setFormRawText(formatted);
+      setShowPreview(true);
+      notify(`Texto formatado com ${aiName}!`, 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao formatar.', 'error');
+    } finally {
+      setAiFormatting(false);
+    }
+  }
+
+  async function handleFormatCardWithAi(art: LeiSecaArticle) {
+    setFormattingCardId(art.id);
+    try {
+      const formatted = await runAiFormatText(art.rawText, art.lawName);
+      persist(
+        articles.map((a) =>
+          a.id === art.id
+            ? { ...a, rawText: formatted, updatedAt: new Date().toISOString() }
+            : a
+        )
+      );
+      notify(`Artigo formatado com ${aiName}!`, 'success');
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao formatar artigo.', 'error');
+    } finally {
+      setFormattingCardId(null);
+    }
+  }
+
+  async function handleImportLawPdf(file: File) {
+    try {
+      setPdfProgress('Abrindo PDF...');
+      const extracted = await extractPdfTextInBrowser(file, (p, total) => {
+        setPdfProgress(`Lendo página ${p} de ${total}...`);
+      });
+      if (!extracted.trim()) {
+        notify('Não foi possível extrair texto desse PDF (pode ser imagem escaneada).', 'error');
+        return;
+      }
+
+      const inferredLaw =
+        formLawName.trim() ||
+        (/clt|5\.452/i.test(file.name + ' ' + extracted.slice(0, 600))
+          ? 'CLT'
+          : file.name.replace(/\.pdf$/i, '').slice(0, 32));
+
+      const sections = splitLawIntoSections(extracted, inferredLaw);
+
+      if (sections.length === 1) {
+        setFormLawName(inferredLaw);
+        setFormRawText(sections[0].text);
+        setShowPreview(true);
+        if (!showForm) {
+          setEditingId(null);
+          setFormTitle('');
+          setFormNote('');
+          setFormSubjectId(selectedSubject || '');
+          setShowForm(true);
+        }
+        notify('Texto do PDF extraído! Clique em "Formatar com IA" ou salve direto.', 'success');
+      } else {
+        const now = Date.now();
+        const created: LeiSecaArticle[] = sections.map((sec, idx) => ({
+          id: `ls-pdf-${now}-${idx}`,
+          subjectId: selectedSubject || formSubjectId || '',
+          lawName: inferredLaw,
+          title: sec.title,
+          rawText: sec.text,
+          note: '',
+          studied: false,
+          readCount: 0,
+          highlights: {},
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }));
+        const nextCollapsed: Record<string, boolean> = { ...collapsedIds };
+        created.forEach((c) => {
+          nextCollapsed[c.id] = true;
+        });
+        setCollapsedIds(nextCollapsed);
+        persist([...created, ...articles]);
+        setShowForm(false);
+        notify(
+          `${inferredLaw} importada em ${created.length} blocos organizados de ~20 artigos!`,
+          'success'
+        );
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao ler o PDF.', 'error');
+    } finally {
+      setPdfProgress('');
+    }
+  }
+
   function handleDeleteArticle(id: string) {
     if (!window.confirm('Apagar este artigo da Lei Seca?')) return;
     persist(articles.filter((a) => a.id !== id));
@@ -681,14 +958,35 @@ export default function LeiSecaPage() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={openNewForm}
-          className="px-5 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          Adicionar Artigo
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="cursor-pointer px-4 py-3 rounded-2xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm">
+            {pdfProgress ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <FileUp className="w-4 h-4" />
+            )}
+            {pdfProgress || 'Importar PDF (CLT/Lei)'}
+            <input
+              type="file"
+              accept="application/pdf"
+              disabled={Boolean(pdfProgress)}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleImportLawPdf(file);
+                e.currentTarget.value = '';
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            onClick={openNewForm}
+            className="px-5 py-3 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-bold inline-flex items-center gap-2 shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Adicionar Artigo
+          </button>
+        </div>
       </div>
 
       {/* Resumo rápido */}
@@ -952,6 +1250,20 @@ export default function LeiSecaPage() {
                     </button>
                     <button
                       type="button"
+                      disabled={formattingCardId === art.id}
+                      onClick={() => void handleFormatCardWithAi(art)}
+                      title={`Formatar e limpar texto com ${aiName}`}
+                      className="px-2.5 py-1.5 rounded-xl bg-violet-500/12 hover:bg-violet-500/20 text-violet-700 dark:text-violet-300 text-xs font-bold inline-flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {formattingCardId === art.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      Formatar IA
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => openEditForm(art)}
                       title="Editar artigo"
                       className="p-2 rounded-xl subtle-surface border border-theme text-muted-theme hover:text-teal-600"
@@ -1087,14 +1399,29 @@ export default function LeiSecaPage() {
                   <label className="text-xs font-semibold text-muted-theme">
                     Texto do Artigo *
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setShowPreview((v) => !v)}
-                    className="text-[11px] font-bold text-teal-600 dark:text-teal-400 inline-flex items-center gap-1"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    {showPreview ? 'Ocultar prévia' : 'Ver prévia formatada'}
-                  </button>
+                  <div className="flex items-center gap-2.5">
+                    <button
+                      type="button"
+                      disabled={aiFormatting || !formRawText.trim()}
+                      onClick={() => void handleFormatModalWithAi()}
+                      className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-45"
+                    >
+                      {aiFormatting ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      {aiFormatting ? 'Formatando...' : `Formatar com ${aiName}`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowPreview((v) => !v)}
+                      className="text-[11px] font-bold text-teal-600 dark:text-teal-400 inline-flex items-center gap-1"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      {showPreview ? 'Ocultar prévia' : 'Ver prévia formatada'}
+                    </button>
+                  </div>
                 </div>
                 <textarea
                   required

@@ -61,6 +61,38 @@ async function discoverActiveFlashModels(apiKey: string): Promise<string[]> {
   }
 }
 
+async function searchDeepSeekWeb(query: string): Promise<string | null> {
+  const dsKey = process.env.DEEPSEEK_API_KEY?.trim();
+  if (!dsKey || !query.trim()) return null;
+  try {
+    const res = await fetch('https://api.deepseek.com/v1/tools/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${dsKey}`,
+      },
+      body: JSON.stringify({
+        query: query.trim().slice(0, 128),
+        count: 5,
+        need_content: false,
+      }),
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const results = Array.isArray(data?.results) ? data.results : [];
+    if (results.length === 0) return null;
+    return results
+      .map(
+        (r: { title?: string; url?: string; summary?: string; snippet?: string }, i: number) =>
+          `[${i + 1}] ${r.title || ''} (${r.url || ''})\n${r.summary || r.snippet || ''}`
+      )
+      .join('\n\n');
+  } catch {
+    return null;
+  }
+}
+
 async function callDeepSeek(
   userContent: string | Array<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }>,
   jsonMode = false,
@@ -419,6 +451,31 @@ Retorne SOMENTE um JSON válido neste formato:
 
     if (action === 'enrich_edital') {
       const { organName, roleTitle } = body;
+      const webResults = await searchDeepSeekWeb(
+        `${organName} ${roleTitle} concurso salario vale alimentacao edital`
+      );
+      if (webResults && process.env.DEEPSEEK_API_KEY?.trim()) {
+        const dsPrompt = `Com base nos resultados de busca abaixo sobre o concurso "${organName}" para o cargo "${roleTitle}" no Brasil, extraia remuneração inicial / salário base, vale-alimentação, jornada semanal, principais benefícios, situação atual e data de prova se houver.
+
+RESULTADOS DA WEB:
+${webResults}
+
+Responda SOMENTE com um JSON válido neste formato exato:
+{
+  "salary_base": "Ex: R$ 9.776,71 (ou '' se não encontrar)",
+  "vale_alimentacao": "Ex: R$ 1.860,51 (ou '' se não encontrar)",
+  "workload": "Ex: 40h/sem (ou '' se não encontrar)",
+  "extras": "Principais benefícios em 1 linha curta",
+  "status_text": "Situação atual resumida (ex: Edital previsto / Autorizado / Publicado)",
+  "exam_date": "YYYY-MM-DD se já houver data marcada, ou null"
+}`;
+        const dsRaw = await callDeepSeek(dsPrompt, true, false, false);
+        if (dsRaw) {
+          const parsed = extractJsonObject(dsRaw);
+          return NextResponse.json({ ok: true, data: parsed });
+        }
+      }
+
       const raw = await callGemini(
         [
           {
@@ -577,27 +634,69 @@ Retorne SOMENTE um JSON válido neste formato exato:
     }
 
     if (action === 'define_word') {
-      const { word, subjectName = '' } = body;
+      const {
+        word,
+        subjectName = '',
+        profileName = '',
+        roleTitle = '',
+        subjectsContext = '',
+        onlySpellCheck = false,
+      } = body;
       if (!word || !String(word).trim()) {
         return NextResponse.json({ error: 'Informe uma palavra ou termo.' }, { status: 400 });
       }
-      const raw = await callGemini(
-        [
-          {
-            text: `Explique o significado de "${String(word).trim()}"${
-              subjectName ? ` no contexto de ${subjectName}` : ''
-            } de forma MUITO SIMPLES, curta e direta (no máximo 1 ou 2 frases curtas, nada longo, fácil de memorizar em flashcard).
-Retorne SOMENTE um JSON válido neste formato exato:
-{
-  "meaning": "Significado curto, claro e direto em linguagem simples.",
-  "example": "Uma frase curta de exemplo (ou vazio se não precisar)."
-}`,
-          },
-        ],
-        true
-      );
+      const cleanW = String(word).trim();
+      const areaCtx = subjectName
+        ? `matéria "${subjectName}"${profileName ? ` (concurso/curso: ${profileName})` : ''}`
+        : [
+            profileName ? `concurso/curso "${profileName}"` : '',
+            roleTitle ? `cargo "${roleTitle}"` : '',
+            subjectsContext ? `matérias estudadas: ${subjectsContext}` : '',
+          ]
+            .filter(Boolean)
+            .join(' · ');
+
+      const prompt = onlySpellCheck
+        ? `Verifique a grafia e acentuação de "${cleanW}"${
+            areaCtx ? ` no contexto de ${areaCtx}` : ''
+          }. Se houver erro de digitação ou falta de acento, corrija em "corrected_word"; se já estiver certa, repita igual. JSON: {"corrected_word":"..."}`
+        : `Você está ajudando um estudante (${areaCtx || 'concursos públicos e direito/estudos'}).
+Termo: "${cleanW}".
+REGRAS:
+1. Corrija eventuais erros de digitação/acentuação em "corrected_word" (se estiver certa, repita igual).
+2. CONTEXTUALIZAÇÃO OBRIGATÓRIA: se o termo tiver outro sentido famoso fora da área do estudante (ex: 'princípio da inércia' na Física vs no Direito), IGNORE o sentido de fora e explique EXCLUSIVAMENTE o significado aplicado à área que o aluno estuda (${subjectName || subjectsContext || profileName || 'estudos'}).
+3. Seja MUITO SIMPLES, curto e direto (1 a 2 frases curtas, fácil de memorizar).
+JSON:
+{"corrected_word":"${cleanW}","meaning":"Significado curto e direto no contexto certo.","example":"Frase curta de exemplo na área ou vazio."}`;
+
+      const raw = await callGemini([{ text: prompt }], true);
       const parsed = extractJsonObject(raw);
       return NextResponse.json({ ok: true, data: parsed });
+    }
+
+    if (action === 'format_lei_seca') {
+      const { rawText, lawName = '' } = body;
+      if (!rawText || !String(rawText).trim()) {
+        return NextResponse.json({ error: 'Envie o texto da lei para formatar.' }, { status: 400 });
+      }
+      const prompt = `Você é um formatador jurídico de Lei Seca brasileira${lawName ? ` (${lawName})` : ''}.
+Limpe e organize o texto legal abaixo para ficar visualmente perfeito e agradável de estudar:
+REGRAS RÍGIDAS:
+1. NUNCA resuma, parafraseie ou apague artigos, parágrafos, incisos ou alíneas — mantenha 100% do texto legal fiel.
+2. Remova apenas lixo de PDF (números de página isolados, cabeçalhos repetidos como 'Presidência da República / Casa Civil', hifens de quebra de linha no meio de palavras e quebras de linha no meio da frase).
+3. Coloque cada elemento estrutural em sua própria linha:
+   - Títulos/Capítulos/Seções em maiúsculas ou linha própria
+   - Cada 'Art. Xº' em nova linha
+   - Cada '§ Xº' ou 'Parágrafo único.' em nova linha
+   - Cada inciso ('I -', 'II -', 'III -'...) em nova linha
+   - Cada alínea ('a)', 'b)', 'c)'...) em nova linha
+4. Retorne APENAS o texto legal formatado, sem comentários extras ou markdown.
+
+TEXTO:
+${String(rawText).slice(0, 12000)}`;
+
+      const formattedText = await callGemini([{ text: prompt }], false, false, false);
+      return NextResponse.json({ ok: true, data: { formattedText: formattedText.trim() } });
     }
 
     if (action === 'format_study_notes') {

@@ -177,7 +177,9 @@ export default function DicionarioPage() {
     return { dupIdx, matches };
   }, [parsedBulk, entries]);
 
-  async function fetchGeminiMeaning(targetWord: string): Promise<{ meaning: string; example?: string } | null> {
+  async function fetchGeminiMeaning(
+    targetWord: string
+  ): Promise<{ corrected_word?: string; meaning: string; example?: string } | null> {
     if (!targetWord.trim()) return null;
     setDefiningAi(true);
     try {
@@ -189,28 +191,54 @@ export default function DicionarioPage() {
           action: 'define_word',
           word: targetWord.trim(),
           subjectName: sub?.name || '',
+          profileName: profile?.name || '',
+          roleTitle: profile?.role_title || '',
+          subjectsContext: subjects.map((s) => s.name).slice(0, 12).join(', '),
         }),
       });
       const json = await res.json();
       if (!res.ok || !json.ok || !json.data?.meaning) {
-        throw new Error(json.error || 'Não foi possível definir com o Gemini.');
+        throw new Error(json.error || 'Não foi possível definir com a IA.');
       }
       return {
+        corrected_word: json.data.corrected_word ? String(json.data.corrected_word).trim() : undefined,
         meaning: String(json.data.meaning).trim(),
         example: json.data.example ? String(json.data.example).trim() : undefined,
       };
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Erro ao consultar o Gemini.', 'error');
+      notify(err instanceof Error ? err.message : 'Erro ao consultar a IA.', 'error');
       return null;
     } finally {
       setDefiningAi(false);
     }
   }
 
+  async function spellCheckWordSilent(targetWord: string): Promise<string> {
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'define_word',
+          word: targetWord.trim(),
+          onlySpellCheck: true,
+        }),
+      });
+      const json = await res.json();
+      if (res.ok && json.ok && json.data?.corrected_word) {
+        return String(json.data.corrected_word).trim();
+      }
+    } catch {
+      // ignore
+    }
+    return targetWord.trim();
+  }
+
   async function handleFillWithGemini() {
     if (!word.trim()) return;
     const data = await fetchGeminiMeaning(word);
     if (data) {
+      if (data.corrected_word) setWord(data.corrected_word);
       setMeaning(data.meaning);
       if (data.example && !example.trim()) setExample(data.example);
     }
@@ -219,19 +247,26 @@ export default function DicionarioPage() {
   async function saveManualConfirmed() {
     if (!word.trim()) return;
 
+    const typedWord = word.trim();
+    let finalWord = typedWord;
     let finalMeaning = meaning.trim();
     let finalExample = example.trim();
 
     if (!finalMeaning) {
-      const data = await fetchGeminiMeaning(word);
+      const data = await fetchGeminiMeaning(typedWord);
       if (!data) return;
+      if (data.corrected_word) finalWord = data.corrected_word;
       finalMeaning = data.meaning;
       if (!finalExample && data.example) finalExample = data.example;
+    } else {
+      setDefiningAi(true);
+      finalWord = await spellCheckWordSilent(typedWord);
+      setDefiningAi(false);
     }
 
     const item: DictEntry = {
       id: `dict-${Date.now()}`,
-      word: word.trim(),
+      word: finalWord,
       meaning: finalMeaning,
       example: finalExample || undefined,
       subject_id: subjectId || undefined,
@@ -242,7 +277,12 @@ export default function DicionarioPage() {
     setMeaning('');
     setExample('');
     setConfirmDupManual(false);
-    notify(`"${item.word}" adicionado ao Dicionário!`, 'success');
+    notify(
+      finalWord.toLowerCase() !== typedWord.toLowerCase()
+        ? `"${typedWord}" corrigida para "${finalWord}" e salva no Dicionário!`
+        : `"${item.word}" adicionado ao Dicionário!`,
+      'success'
+    );
   }
 
   async function handleAddManual(e: React.FormEvent) {

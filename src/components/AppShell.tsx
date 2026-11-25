@@ -57,6 +57,40 @@ interface NavItem {
   badgeKey?: 'reviews' | 'flashcards';
 }
 
+const GROUP_ACCENTS: Record<
+  string,
+  { dot: string; headerText: string; headerBg: string; iconText: string; cardBorder: string }
+> = {
+  Estudar: {
+    dot: 'bg-teal-500',
+    headerText: 'text-teal-700 dark:text-teal-300',
+    headerBg: 'bg-teal-500/10',
+    iconText: 'text-teal-600 dark:text-teal-400',
+    cardBorder: 'border-teal-500/20',
+  },
+  Revisar: {
+    dot: 'bg-amber-500',
+    headerText: 'text-amber-700 dark:text-amber-300',
+    headerBg: 'bg-amber-500/10',
+    iconText: 'text-amber-600 dark:text-amber-400',
+    cardBorder: 'border-amber-500/20',
+  },
+  Desempenho: {
+    dot: 'bg-indigo-500',
+    headerText: 'text-indigo-700 dark:text-indigo-300',
+    headerBg: 'bg-indigo-500/10',
+    iconText: 'text-indigo-600 dark:text-indigo-400',
+    cardBorder: 'border-indigo-500/20',
+  },
+  Ferramentas: {
+    dot: 'bg-violet-500',
+    headerText: 'text-violet-700 dark:text-violet-300',
+    headerBg: 'bg-violet-500/10',
+    iconText: 'text-violet-600 dark:text-violet-400',
+    cardBorder: 'border-violet-500/20',
+  },
+};
+
 const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: 'Estudar',
@@ -152,6 +186,14 @@ export function AppShell({
   const [quickDictExisting, setQuickDictExisting] = useState<DictEntryLite[]>([]);
 
   const basePath = `/p/${profileId}`;
+
+  useEffect(() => {
+    try {
+      if (profileId) localStorage.setItem('sf_last_profile_id', profileId);
+    } catch {
+      // ignore
+    }
+  }, [profileId]);
   const studyMode = getStudyMode(profile);
   const activeSubject = subjects.find((s) => s.id === stopwatch.subjectId);
   const today = todayISO();
@@ -271,7 +313,7 @@ export function AppShell({
     return findSimilarItems(quickDictWord, quickDictExisting, (e) => e.word, 'short', 3);
   }, [quickDictOpen, quickDictWord, quickDictExisting]);
 
-  async function generateQuickDictMeaning(targetWord: string): Promise<{ meaning: string; example?: string } | null> {
+  async function generateQuickDictMeaning(targetWord: string): Promise<{ corrected_word?: string; meaning: string; example?: string } | null> {
     if (!targetWord.trim()) return null;
     setQuickDictAiBusy(true);
     try {
@@ -283,6 +325,9 @@ export function AppShell({
           action: 'define_word',
           word: targetWord.trim(),
           subjectName: sub?.name || '',
+          profileName: profile?.name || '',
+          roleTitle: profile?.role_title || '',
+          subjectsContext: subjects.map((s) => s.name).slice(0, 12).join(', '),
         }),
       });
       const json = await res.json();
@@ -290,6 +335,7 @@ export function AppShell({
         throw new Error(json.error || 'Erro ao gerar significado com Gemini.');
       }
       return {
+        corrected_word: json.data.corrected_word ? String(json.data.corrected_word).trim() : undefined,
         meaning: String(json.data.meaning).trim(),
         example: json.data.example ? String(json.data.example).trim() : undefined,
       };
@@ -303,12 +349,14 @@ export function AppShell({
 
   async function saveQuickDictConfirmed() {
     if (!quickDictWord.trim() || !profile?.id) return;
+    let finalWord = quickDictWord.trim();
     let finalMeaning = quickDictMeaning.trim();
     let finalExample = quickDictExample.trim();
 
     if (!finalMeaning) {
-      const aiData = await generateQuickDictMeaning(quickDictWord);
+      const aiData = await generateQuickDictMeaning(finalWord);
       if (!aiData) return;
+      if (aiData.corrected_word) finalWord = aiData.corrected_word;
       finalMeaning = aiData.meaning;
       if (!finalExample && aiData.example) finalExample = aiData.example;
     }
@@ -322,7 +370,7 @@ export function AppShell({
         ...arr,
         {
           id: `dict-${Date.now()}`,
-          word: quickDictWord.trim(),
+          word: finalWord,
           meaning: finalMeaning,
           example: finalExample || undefined,
           subject_id: quickDictSubjectId || undefined,
@@ -333,7 +381,7 @@ export function AppShell({
       dispatchDictionaryUpdated();
       setQuickDictConfirmDup(false);
       setQuickDictOpen(false);
-      notify(`"${quickDictWord.trim()}" adicionado ao Dicionário!`, 'success');
+      notify(`"${finalWord}" adicionado ao Dicionário!`, 'success');
     } catch {
       notify('Não foi possível salvar no Dicionário.', 'error');
     }
@@ -478,7 +526,7 @@ export function AppShell({
     if (stopwatch.subjectId && (stopwatch.running || stopwatch.elapsedSeconds > 0)) {
       setShowSwitchGuard(true);
     } else {
-      router.push('/');
+      router.push('/?choose=1');
     }
   }
 
@@ -545,9 +593,10 @@ export function AppShell({
           </div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto p-3 space-y-2.5">
+        <nav className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
           {NAV_GROUPS.map((group) => {
             const isGroupOpen = compact ? true : (openGroups[group.title] ?? false);
+            const accent = GROUP_ACCENTS[group.title] || GROUP_ACCENTS.Estudar;
             const groupBadge = group.items.reduce((acc, it) => {
               if (it.badgeKey === 'reviews') return acc + dueReviewsCount;
               if (it.badgeKey === 'flashcards') return acc + dueFlashcardsCount;
@@ -555,83 +604,113 @@ export function AppShell({
             }, 0);
 
             return (
-            <div key={group.title} className="space-y-1">
-              {!compact && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOpenGroups((prev) => ({ ...prev, [group.title]: !isGroupOpen }))
-                  }
-                  className="w-full px-3 py-2 rounded-xl flex items-center justify-between text-xs font-extrabold uppercase tracking-wider text-muted-theme hover:bg-black/5 dark:hover:bg-white/5 transition"
-                >
-                  <span className="flex items-center gap-2">
-                    {isGroupOpen ? (
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    ) : (
-                      <ChevronRight className="w-3.5 h-3.5" />
-                    )}
-                    {group.title}
-                  </span>
-                  {!isGroupOpen && groupBadge > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-teal-500/15 text-teal-700 dark:text-teal-300">
-                      {groupBadge}
-                    </span>
-                  )}
-                </button>
-              )}
-              {isGroupOpen && group.items
-                .filter((item) => {
-                  if (item.href === '/simulados' && !studyMode.showSimulados) return false;
-                  if (item.href === '/mapa' && !studyMode.showMapa) return false;
-                  return true;
-                })
-                .map((item) => {
-                const fullHref = `${basePath}${item.href}`;
-                const isActive =
-                  item.href === '' ? pathname === basePath : pathname.startsWith(fullHref);
-                const Icon = item.icon;
-                const badgeCount =
-                  item.badgeKey === 'reviews'
-                    ? dueReviewsCount
-                    : item.badgeKey === 'flashcards'
-                    ? dueFlashcardsCount
-                    : 0;
-
-                return (
-                  <Link
-                    key={item.href}
-                    href={fullHref}
-                    title={item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : (item.href === '/relatorios' ? `Mentor ${aiName} AI` : item.label)}
-                    onClick={() => setMobileOpen(false)}
-                    className={`group flex items-center ${
-                      compact ? 'justify-center px-2' : 'justify-between px-3.5'
-                    } gap-3 py-2.5 rounded-2xl text-sm font-semibold ${
-                      isActive ? 'sidebar-item-active' : 'sidebar-item'
-                    }`}
+              <div
+                key={group.title}
+                className={
+                  compact
+                    ? 'space-y-1 pb-2 border-b border-theme/60 last:border-b-0'
+                    : `rounded-2xl border ${accent.cardBorder} bg-[var(--bg-subtle)]/45 p-1.5 space-y-1`
+                }
+              >
+                {!compact && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenGroups((prev) => ({ ...prev, [group.title]: !isGroupOpen }))
+                    }
+                    className={`w-full px-2.5 py-1.5 rounded-xl flex items-center justify-between text-[10.5px] font-black uppercase tracking-widest ${accent.headerText} ${accent.headerBg} hover:opacity-90 transition`}
                   >
-                    <span className="flex items-center gap-3 min-w-0">
-                      <Icon
-                        className={`w-[18px] h-[18px] shrink-0 transition-transform duration-200 ${
-                          isActive ? 'scale-110' : 'group-hover:scale-110'
-                        }`}
-                      />
-                      {!compact && <span className="truncate">{item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : (item.href === '/relatorios' ? `Mentor ${aiName} AI` : item.label)}</span>}
+                    <span className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${accent.dot}`} />
+                      {group.title}
                     </span>
-                    {!compact && badgeCount > 0 && (
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-xs font-bold shrink-0 ${
-                          isActive
-                            ? 'bg-white/25 text-white'
-                            : 'bg-teal-500/15 text-teal-700 dark:text-teal-300'
-                        }`}
-                      >
-                        {badgeCount}
-                      </span>
-                    )}
-                  </Link>
-                );
-              })}
-            </div>
+                    <span className="flex items-center gap-1.5">
+                      {!isGroupOpen && groupBadge > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-[var(--bg-card)] shadow-2xs">
+                          {groupBadge}
+                        </span>
+                      )}
+                      {isGroupOpen ? (
+                        <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+                      ) : (
+                        <ChevronRight className="w-3.5 h-3.5 opacity-80" />
+                      )}
+                    </span>
+                  </button>
+                )}
+                {isGroupOpen && (
+                  <div className={compact ? 'space-y-1' : 'space-y-0.5 pt-0.5 pl-1'}>
+                    {group.items
+                      .filter((item) => {
+                        if (item.href === '/simulados' && !studyMode.showSimulados) return false;
+                        if (item.href === '/mapa' && !studyMode.showMapa) return false;
+                        return true;
+                      })
+                      .map((item) => {
+                        const fullHref = `${basePath}${item.href}`;
+                        const isActive =
+                          item.href === '' ? pathname === basePath : pathname.startsWith(fullHref);
+                        const Icon = item.icon;
+                        const badgeCount =
+                          item.badgeKey === 'reviews'
+                            ? dueReviewsCount
+                            : item.badgeKey === 'flashcards'
+                            ? dueFlashcardsCount
+                            : 0;
+
+                        return (
+                          <Link
+                            key={item.href}
+                            href={fullHref}
+                            title={
+                              item.href === '/estudos'
+                                ? studyMode.syllabusNavLabel
+                                : item.href === '/simulados'
+                                ? studyMode.simuladosNavLabel
+                                : item.href === '/relatorios'
+                                ? `Mentor ${aiName} AI`
+                                : item.label
+                            }
+                            onClick={() => setMobileOpen(false)}
+                            className={`group flex items-center ${
+                              compact ? 'justify-center px-2' : 'justify-between px-3'
+                            } gap-2.5 py-2 rounded-xl text-[13px] font-semibold transition ${
+                              isActive ? 'sidebar-item-active shadow-xs' : 'sidebar-item'
+                            }`}
+                          >
+                            <span className="flex items-center gap-2.5 min-w-0">
+                              <Icon
+                                className={`w-4 h-4 shrink-0 ${isActive ? '' : accent.iconText}`}
+                              />
+                              {!compact && (
+                                <span className="truncate">
+                                  {item.href === '/estudos'
+                                    ? studyMode.syllabusNavLabel
+                                    : item.href === '/simulados'
+                                    ? studyMode.simuladosNavLabel
+                                    : item.href === '/relatorios'
+                                    ? `Mentor ${aiName} AI`
+                                    : item.label}
+                                </span>
+                              )}
+                            </span>
+                            {!compact && badgeCount > 0 && (
+                              <span
+                                className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                                  isActive
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-teal-500/15 text-teal-700 dark:text-teal-300'
+                                }`}
+                              >
+                                {badgeCount}
+                              </span>
+                            )}
+                          </Link>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
@@ -902,7 +981,7 @@ export function AppShell({
                 onClick={() => {
                   pauseStopwatch();
                   setShowSwitchGuard(false);
-                  router.push('/');
+                  router.push('/?choose=1');
                 }}
                 className="w-full py-3 px-4 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-sm font-semibold text-left"
               >
@@ -911,7 +990,7 @@ export function AppShell({
               <button
                 onClick={() => {
                   setShowSwitchGuard(false);
-                  router.push('/');
+                  router.push('/?choose=1');
                 }}
                 className="w-full py-3 px-4 rounded-2xl subtle-surface text-sm font-semibold text-left border border-theme"
               >
@@ -921,7 +1000,7 @@ export function AppShell({
                 onClick={() => {
                   resetStopwatch();
                   setShowSwitchGuard(false);
-                  router.push('/');
+                  router.push('/?choose=1');
                 }}
                 className="w-full py-3 px-4 rounded-2xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 text-sm font-semibold text-left"
               >

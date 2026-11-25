@@ -132,6 +132,7 @@ export default function SimuladosPage() {
   const [savingResult, setSavingResult] = useState(false);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
   const [showTopicSpoiler, setShowTopicSpoiler] = useState(false);
+  const [showExamGrid, setShowExamGrid] = useState(false);
 
   useEffect(() => {
     try {
@@ -533,6 +534,7 @@ export default function SimuladosPage() {
     setActiveSim(sim);
     setShowClosePrompt(false);
     setShowTopicSpoiler(false);
+    setShowExamGrid(false);
     setExamFinished(false);
     if (!restartFresh && sim.saved_progress) {
       setExamAnswers(sim.saved_progress.answers || {});
@@ -1317,32 +1319,60 @@ export default function SimuladosPage() {
 
             {!examFinished && currentExamQ ? (
               <div className="space-y-4">
-                {/* Grade de navegação rápida */}
-                <div className="flex flex-wrap gap-1.5">
-                  {activeSim.questions.map((q, idx) => {
-                    const isCur = idx === examIdx;
-                    const isAns = Boolean(examAnswers[q.id]);
-                    const isFlag = Boolean(examFlagged[q.id]);
-                    return (
-                      <button
-                        key={q.id}
-                        type="button"
-                        onClick={() => setExamIdx(idx)}
-                        className={`w-8 h-8 rounded-xl text-xs font-extrabold transition relative ${
-                          isCur
-                            ? 'bg-violet-600 text-white ring-2 ring-violet-400/50'
-                            : isAns
-                            ? 'bg-teal-600/20 text-teal-700 dark:text-teal-300 border border-teal-500/40'
-                            : 'subtle-surface border border-theme text-muted-theme'
-                        }`}
-                      >
-                        {idx + 1}
-                        {isFlag && (
-                          <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-amber-500" />
-                        )}
-                      </button>
-                    );
-                  })}
+                {/* Barra limpa de progresso + mapa recolhível das questões */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-muted-theme">
+                      Questão <strong className="text-[var(--text-main)]">{examIdx + 1}</strong> de{' '}
+                      {activeSim.questions.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowExamGrid((v) => !v)}
+                      className="px-2.5 py-1 rounded-xl subtle-surface border border-theme text-[11px] font-bold hover:border-violet-500/50 transition"
+                    >
+                      {showExamGrid ? 'Ocultar mapa' : `Mapa (${examIdx + 1}/${activeSim.questions.length})`}
+                    </button>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-[var(--bg-subtle)] overflow-hidden">
+                    <div
+                      className="h-full bg-violet-600 transition-all duration-300"
+                      style={{
+                        width: `${Math.round(((examIdx + 1) / Math.max(1, activeSim.questions.length)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  {showExamGrid && (
+                    <div className="flex flex-wrap gap-1 pt-1 max-h-32 overflow-y-auto animate-fade-in-up">
+                      {activeSim.questions.map((q, idx) => {
+                        const isCur = idx === examIdx;
+                        const isAns = Boolean(examAnswers[q.id]);
+                        const isFlag = Boolean(examFlagged[q.id]);
+                        return (
+                          <button
+                            key={q.id}
+                            type="button"
+                            onClick={() => {
+                              setExamIdx(idx);
+                              setShowExamGrid(false);
+                            }}
+                            className={`w-7 h-7 rounded-lg text-[11px] font-bold transition relative ${
+                              isCur
+                                ? 'bg-violet-600 text-white'
+                                : isAns
+                                ? 'bg-teal-600/20 text-teal-700 dark:text-teal-300 border border-teal-500/40'
+                                : 'subtle-surface border border-theme text-muted-theme'
+                            }`}
+                          >
+                            {idx + 1}
+                            {isFlag && (
+                              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between gap-2 flex-wrap">
