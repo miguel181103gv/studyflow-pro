@@ -1246,6 +1246,10 @@ export function ProfileProvider({
   };
 
   // Sincroniza cronômetro entre PC e Celular direto no PostgreSQL (ai_reports __SYNC_SW__)
+  const initialCloudPushDoneRef = useRef(false);
+  const swRef = useRef(stopwatch);
+  swRef.current = stopwatch;
+
   useEffect(() => {
     if (!userId || !profileId) return;
     const pullCloudStopwatch = async () => {
@@ -1262,25 +1266,39 @@ export function ProfileProvider({
         if (data?.id) {
           swSyncRowIdRef.current = data.id;
           applyCloudStopwatch(data.metrics_snapshot);
+        } else if (!initialCloudPushDoneRef.current && swRef.current.subjectId) {
+          initialCloudPushDoneRef.current = true;
+          void syncStopwatchToCloud({
+            ...swRef.current,
+            updatedAt: swRef.current.updatedAt || Date.now(),
+          });
         }
       } catch {
         // ignore
       }
     };
+    void pullCloudStopwatch();
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void pullCloudStopwatch();
+      if (document.visibilityState === 'visible') {
+        void pullCloudStopwatch();
+      } else if (swRef.current.running && swRef.current.subjectId) {
+        void syncStopwatchToCloud({
+          ...swRef.current,
+          updatedAt: swRef.current.updatedAt || Date.now(),
+        });
+      }
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', pullCloudStopwatch);
     window.addEventListener('pageshow', pullCloudStopwatch);
-    const poll = window.setInterval(pullCloudStopwatch, 10000);
+    const poll = window.setInterval(pullCloudStopwatch, 8000);
     return () => {
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', pullCloudStopwatch);
       window.removeEventListener('pageshow', pullCloudStopwatch);
       window.clearInterval(poll);
     };
-  }, [userId, profileId, applyCloudStopwatch]);
+  }, [userId, profileId, applyCloudStopwatch, syncStopwatchToCloud]);
 
   // Pontos de restauração automáticos a cada 1 hora (mantém últimos 7 dias)
   const backupDataRef = useRef({

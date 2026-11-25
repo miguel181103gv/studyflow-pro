@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useProfile } from './ProfileProvider';
+import { useGlobal } from './GlobalProvider';
 import { formatDurationHMS, todayISO } from '@/lib/utils';
 import type { ThemeId } from '@/lib/types';
 import { getStudyMode } from '@/lib/studyModes';
@@ -41,6 +42,8 @@ import {
   ListChecks,
   BookA,
   Scale,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 
 interface NavItem {
@@ -129,7 +132,17 @@ export function AppShell({
   const [showSwitchGuard, setShowSwitchGuard] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
+  const { notify } = useGlobal();
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Seleção / Botão direito -> Adicionar palavra ao Dicionário
+  const [selDictMenu, setSelDictMenu] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [quickDictOpen, setQuickDictOpen] = useState(false);
+  const [quickDictWord, setQuickDictWord] = useState('');
+  const [quickDictMeaning, setQuickDictMeaning] = useState('');
+  const [quickDictExample, setQuickDictExample] = useState('');
+  const [quickDictSubjectId, setQuickDictSubjectId] = useState('');
+  const [quickDictAiBusy, setQuickDictAiBusy] = useState(false);
 
   const basePath = `/p/${profileId}`;
   const studyMode = getStudyMode(profile);
@@ -166,6 +179,143 @@ export function AppShell({
       window.removeEventListener('offline', onOffline);
     };
   }, [stopwatch.subjectId, stopwatch.running, stopwatch.topicId, pauseStopwatch, startStopwatch]);
+
+  useEffect(() => {
+    const captureSelection = (clientX?: number, clientY?: number) => {
+      const activeEl = document.activeElement;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')
+      ) {
+        return;
+      }
+      const sel = window.getSelection();
+      const raw = sel ? sel.toString().replace(/\s+/g, ' ').trim() : '';
+      if (!raw || raw.length < 2 || raw.length > 65) {
+        setSelDictMenu(null);
+        return;
+      }
+      let x = clientX ?? window.innerWidth / 2;
+      let y = clientY ?? 120;
+      if ((clientX === undefined || clientY === undefined) && sel && sel.rangeCount > 0) {
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        if (rect.width > 0 || rect.height > 0) {
+          x = rect.left + rect.width / 2;
+          y = rect.top - 10;
+        }
+      }
+      const clampedX = Math.max(110, Math.min(window.innerWidth - 110, x));
+      const clampedY = Math.max(56, Math.min(window.innerHeight - 60, y));
+      setSelDictMenu({ text: raw, x: clampedX, y: clampedY });
+    };
+
+    const onMouseUp = (e: MouseEvent) => {
+      // Ignora clique dentro do próprio botão flutuante
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-dict-pill="true"]')) return;
+      window.setTimeout(() => captureSelection(), 20);
+    };
+    const onTouchEnd = (e: TouchEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('[data-dict-pill="true"]')) return;
+      window.setTimeout(() => captureSelection(), 120);
+    };
+    const onContextMenu = (e: MouseEvent) => {
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
+      const sel = window.getSelection();
+      const raw = sel ? sel.toString().replace(/\s+/g, ' ').trim() : '';
+      if (raw && raw.length >= 2 && raw.length <= 65) {
+        e.preventDefault();
+        captureSelection(e.clientX, e.clientY);
+      }
+    };
+
+    document.addEventListener('mouseup', onMouseUp);
+    document.addEventListener('touchend', onTouchEnd);
+    document.addEventListener('contextmenu', onContextMenu);
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp);
+      document.removeEventListener('touchend', onTouchEnd);
+      document.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, []);
+
+  function openQuickDictModal(selectedText: string) {
+    setSelDictMenu(null);
+    setQuickDictWord(selectedText);
+    setQuickDictMeaning('');
+    setQuickDictExample('');
+    setQuickDictSubjectId('');
+    setQuickDictOpen(true);
+  }
+
+  async function generateQuickDictMeaning(targetWord: string): Promise<{ meaning: string; example?: string } | null> {
+    if (!targetWord.trim()) return null;
+    setQuickDictAiBusy(true);
+    try {
+      const sub = subjects.find((s) => s.id === quickDictSubjectId);
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'define_word',
+          word: targetWord.trim(),
+          subjectName: sub?.name || '',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !json.data?.meaning) {
+        throw new Error(json.error || 'Erro ao gerar significado com Gemini.');
+      }
+      return {
+        meaning: String(json.data.meaning).trim(),
+        example: json.data.example ? String(json.data.example).trim() : undefined,
+      };
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao consultar o Gemini.', 'error');
+      return null;
+    } finally {
+      setQuickDictAiBusy(false);
+    }
+  }
+
+  async function handleSaveQuickDict(e: React.FormEvent) {
+    e.preventDefault();
+    if (!quickDictWord.trim() || !profile?.id) return;
+    let finalMeaning = quickDictMeaning.trim();
+    let finalExample = quickDictExample.trim();
+
+    if (!finalMeaning) {
+      const aiData = await generateQuickDictMeaning(quickDictWord);
+      if (!aiData) return;
+      finalMeaning = aiData.meaning;
+      if (!finalExample && aiData.example) finalExample = aiData.example;
+    }
+
+    const dictKey = `sf_dictionary_${profile.id}`;
+    try {
+      const raw = localStorage.getItem(dictKey);
+      const prev = raw ? JSON.parse(raw) : [];
+      const arr = Array.isArray(prev) ? prev : [];
+      const next = [
+        ...arr,
+        {
+          id: `dict-${Date.now()}`,
+          word: quickDictWord.trim(),
+          meaning: finalMeaning,
+          example: finalExample || undefined,
+          subject_id: quickDictSubjectId || undefined,
+          created_at: new Date().toISOString(),
+        },
+      ].sort((a, b) => a.word.localeCompare(b.word, 'pt-BR', { sensitivity: 'base' }));
+      localStorage.setItem(dictKey, JSON.stringify(next));
+      setQuickDictOpen(false);
+      notify(`"${quickDictWord.trim()}" adicionado ao Dicionário!`, 'success');
+    } catch {
+      notify('Não foi possível salvar no Dicionário.', 'error');
+    }
+  }
 
   const searchResults = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -729,6 +879,160 @@ export function AppShell({
                 Voltar e continuar aqui
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Botão flutuante ao selecionar palavra / botão direito -> Dicionário */}
+      {selDictMenu && !quickDictOpen && (
+        <div
+          data-dict-pill="true"
+          style={{
+            position: 'fixed',
+            left: `${selDictMenu.x}px`,
+            top: `${selDictMenu.y}px`,
+            transform: 'translate(-50%, -100%)',
+            zIndex: 60,
+          }}
+          className="animate-pop-in"
+        >
+          <button
+            type="button"
+            onClick={() => openQuickDictModal(selDictMenu.text)}
+            className="px-3.5 py-2 rounded-2xl bg-slate-900 dark:bg-teal-600 text-white text-xs font-bold shadow-2xl border border-white/15 inline-flex items-center gap-1.5 hover:scale-105 transition whitespace-nowrap"
+          >
+            <BookA className="w-3.5 h-3.5 text-teal-300 dark:text-white" />
+            Adicionar &ldquo;{selDictMenu.text.slice(0, 22)}
+            {selDictMenu.text.length > 22 ? '...' : ''}&rdquo; ao Dicionário
+          </button>
+        </div>
+      )}
+
+      {/* Modal Rápido: Adicionar palavra selecionada ao Dicionário */}
+      {quickDictOpen && (
+        <div
+          onClick={() => setQuickDictOpen(false)}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="card-surface w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl border border-theme animate-pop-in"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-base flex items-center gap-2">
+                <BookA className="w-5 h-5 text-teal-600" />
+                Adicionar ao Dicionário
+              </h2>
+              <button
+                type="button"
+                onClick={() => setQuickDictOpen(false)}
+                className="p-2 rounded-xl subtle-surface"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveQuickDict} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Palavra / Termo *
+                </label>
+                <input
+                  required
+                  value={quickDictWord}
+                  onChange={(e) => setQuickDictWord(e.target.value)}
+                  className="w-full rounded-xl subtle-surface border border-theme px-3.5 py-2.5 text-sm font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Matéria (opcional)
+                </label>
+                <select
+                  value={quickDictSubjectId}
+                  onChange={(e) => setQuickDictSubjectId(e.target.value)}
+                  className="w-full rounded-xl subtle-surface border border-theme px-3.5 py-2 text-xs"
+                >
+                  <option value="">Geral (sem matéria)</option>
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="text-xs font-semibold text-muted-theme">
+                    Significado (deixe vazio p/ Gemini gerar)
+                  </label>
+                  <button
+                    type="button"
+                    disabled={quickDictAiBusy || !quickDictWord.trim()}
+                    onClick={async () => {
+                      const data = await generateQuickDictMeaning(quickDictWord);
+                      if (data) {
+                        setQuickDictMeaning(data.meaning);
+                        if (data.example && !quickDictExample.trim()) {
+                          setQuickDictExample(data.example);
+                        }
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-45"
+                  >
+                    {quickDictAiBusy ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-3 h-3" />
+                    )}
+                    Gerar com Gemini
+                  </button>
+                </div>
+                <textarea
+                  rows={3}
+                  value={quickDictMeaning}
+                  onChange={(e) => setQuickDictMeaning(e.target.value)}
+                  placeholder="Digite o significado ou deixe em branco para o Gemini preencher automaticamente ao salvar..."
+                  className="w-full rounded-xl subtle-surface border border-theme p-3 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Exemplo (opcional)
+                </label>
+                <input
+                  value={quickDictExample}
+                  onChange={(e) => setQuickDictExample(e.target.value)}
+                  placeholder="Ex: Aplicação prática do termo..."
+                  className="w-full rounded-xl subtle-surface border border-theme px-3.5 py-2 text-xs"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setQuickDictOpen(false)}
+                  className="px-4 py-2 rounded-xl subtle-surface text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={quickDictAiBusy || !quickDictWord.trim()}
+                  className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {quickDictAiBusy ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <BookA className="w-3.5 h-3.5" />
+                  )}
+                  Salvar no Dicionário
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

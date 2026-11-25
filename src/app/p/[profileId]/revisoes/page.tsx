@@ -15,8 +15,13 @@ interface QuizQuestion {
 
 interface QuizResultData {
   title: string;
+  subjectId: string;
+  topicId: string;
   questions: QuizQuestion[];
 }
+
+const Q_MARKER = '<!--SF_Q_JSON:';
+const LETTERS = ['A', 'B', 'C', 'D', 'E'];
 
 export default function RevisoesPage() {
   const {
@@ -25,12 +30,14 @@ export default function RevisoesPage() {
     subjects,
     topics,
     highlights,
+    errors,
     completeReview,
     postponeReview,
     deleteReview,
     addStudyLog,
+    addErrorEntry,
   } = useProfile();
-  const { aiJobs, runAiJob, dismissAiJob } = useGlobal();
+  const { aiJobs, runAiJob, dismissAiJob, notify } = useGlobal();
 
   const today = todayISO();
   const next7 = addDaysISO(today, 7);
@@ -39,6 +46,7 @@ export default function RevisoesPage() {
   // Active Quiz modal (backed by GlobalProvider so it persists even if user leaves screen)
   const [activeQuizJobId, setActiveQuizJobId] = useState<string | null>(null);
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
+  const [savedQuizJobs, setSavedQuizJobs] = useState<Record<string, { correct: number; total: number }>>({});
 
   // Grifos modal
   const [highlightsTopicId, setHighlightsTopicId] = useState<string | null>(null);
@@ -51,7 +59,49 @@ export default function RevisoesPage() {
     return r.due_date > today && r.due_date <= next7;
   });
 
-  function openGeminiQuiz(reviewId: string, subjectName: string, topicTitle: string) {
+  function saveQuizQuestionsToBank(subjectId: string, topicId: string, subjectName: string, list: QuizQuestion[]) {
+    if (!profile?.id || list.length === 0) return;
+    const bankKey = `sf_question_bank_${profile.id}`;
+    try {
+      const raw = localStorage.getItem(bankKey);
+      const existing = raw ? JSON.parse(raw) : [];
+      const arr = Array.isArray(existing) ? existing : [];
+      const existingStmts = new Set(
+        arr.map((q: { statement?: string }) => String(q.statement || '').trim().slice(0, 80).toLowerCase())
+      );
+
+      const newItems = list
+        .filter((q) => !existingStmts.has(q.statement.trim().slice(0, 80).toLowerCase()))
+        .map((q, idx) => ({
+          id: `q-rev-${Date.now()}-${idx}`,
+          subject_id: subjectId,
+          topic_id: topicId || null,
+          header: `Quiz Gemini · ${subjectName}`,
+          statement: q.statement,
+          options: q.options.map((optText, oIdx) => ({
+            letter: LETTERS[oIdx] || String(oIdx + 1),
+            text: String(optText).replace(/^\(?[A-Ea-e]\)?[).:\-–—]\s+/, '').trim(),
+          })),
+          correct_answer: LETTERS[q.correctIndex] || 'A',
+          explanation: q.explanation || '',
+          created_at: new Date().toISOString(),
+        }));
+
+      if (newItems.length > 0) {
+        localStorage.setItem(bankKey, JSON.stringify([...newItems, ...arr]));
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  function openGeminiQuiz(
+    reviewId: string,
+    subjectId: string,
+    topicId: string,
+    subjectName: string,
+    topicTitle: string
+  ) {
     const jobId = `quiz:${profile?.id || 'default'}:${reviewId}`;
     setQuizAnswers({});
     setActiveQuizJobId(jobId);
@@ -67,7 +117,7 @@ export default function RevisoesPage() {
       kind: 'quiz',
       label: `Quiz Gemini: ${topicTitle}`,
       route: profile ? `/p/${profile.id}/revisoes` : undefined,
-      successMsg: `Quiz de "${topicTitle}" pronto na aba Revisões!`,
+      successMsg: `Quiz de "${topicTitle}" pronto e salvo no Banco de Questões!`,
       keepResult: true,
       task: async () => {
         const res = await fetch('/api/gemini', {
@@ -84,10 +134,91 @@ export default function RevisoesPage() {
         if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar quiz.');
         return {
           title,
+          subjectId,
+          topicId,
           questions: (json.data.questions || []) as QuizQuestion[],
         };
       },
+      onDone: async (resData) => {
+        saveQuizQuestionsToBank(resData.subjectId, resData.topicId, subjectName, resData.questions);
+      },
     });
+  }
+
+  async function saveQuizStatsToEvolution(jobId: string, data: QuizResultData, answersMap: Record<number, number>) {
+    if (savedQuizJobs[jobId]) return;
+    const answeredEntries = Object.entries(answersMap);
+    if (answeredEntries.length === 0) return;
+
+    const total = answeredEntries.length;
+    const correct = answeredEntries.reduce((acc, [qIdxStr, chosenIdx]) => {
+      const q = data.questions[Number(qIdxStr)];
+      return acc + (q && q.correctIndex === chosenIdx ? 1 : 0);
+    }, 0);
+
+    setSavedQuizJobs((prev) => ({ ...prev, [jobId]: { correct, total } }));
+    await addStudyLog({
+      subject_id: data.subjectId,
+      topic_id: data.topicId || null,
+      duration_seconds: 0,
+      study_date: today,
+      period: 'Revisão',
+      method: 'Quiz Gemini (Revisão)',
+      questions_total: total,
+      questions_correct: correct,
+      stop_point: '',
+      notes: `Quiz Gemini: ${data.title}`,
+    });
+    notify(`Resultado (${correct}/${total}) salvo em Evolução & Mapa de Acertos!`, 'success');
+  }
+
+  async function handleAnswerQuizQuestion(
+    jobId: string,
+    data: QuizResultData,
+    qIdx: number,
+    oIdx: number
+  ) {
+    if (quizAnswers[qIdx] !== undefined) return;
+    const nextAnswers = { ...quizAnswers, [qIdx]: oIdx };
+    setQuizAnswers(nextAnswers);
+
+    const q = data.questions[qIdx];
+    if (q && oIdx !== q.correctIndex) {
+      const normStmt = q.statement.trim().slice(0, 80).toLowerCase();
+      const alreadyInErrors = errors.some((e) =>
+        (e.question_text || '').toLowerCase().includes(normStmt)
+      );
+      if (!alreadyInErrors) {
+        const formattedOptions = q.options.map((optText, idx) => ({
+          letter: LETTERS[idx] || String(idx + 1),
+          text: String(optText).replace(/^\(?[A-Ea-e]\)?[).:\-–—]\s+/, '').trim(),
+        }));
+        const encoded = `${Q_MARKER}${JSON.stringify({
+          header: `Quiz Gemini · ${data.title}`,
+          statement: q.statement,
+          options: formattedOptions,
+        })}-->
+${q.statement}`;
+        void addErrorEntry({
+          subject_id: data.subjectId,
+          topic_id: data.topicId || null,
+          question_text: encoded,
+          image_path: null,
+          user_answer: LETTERS[oIdx] || '',
+          correct_answer: LETTERS[q.correctIndex] || '',
+          error_cause: 'Erro no Quiz de Revisão',
+          explanation: q.explanation || '',
+          golden_rule: '',
+          review_count: 0,
+          last_reviewed_at: null,
+          next_review_date: today,
+        });
+      }
+    }
+
+    if (Object.keys(nextAnswers).length === data.questions.length && !savedQuizJobs[jobId]) {
+      await saveQuizStatsToEvolution(jobId, data, nextAnswers);
+    }
   }
 
   const activeQuizJob = activeQuizJobId ? aiJobs[activeQuizJobId] : undefined;
@@ -198,7 +329,13 @@ export default function RevisoesPage() {
                   </button>
                   <button
                     onClick={() =>
-                      openGeminiQuiz(rev.id, sub?.name || 'Matéria', topic?.title || 'Tópico')
+                      openGeminiQuiz(
+                        rev.id,
+                        rev.subject_id,
+                        rev.topic_id,
+                        sub?.name || 'Matéria',
+                        topic?.title || 'Tópico'
+                      )
                     }
                     className={`px-3 py-1.5 rounded-xl text-white text-xs font-semibold inline-flex items-center gap-1 ${
                       isQuizReady
@@ -367,7 +504,7 @@ export default function RevisoesPage() {
                               key={oIdx}
                               disabled={chosen !== undefined}
                               onClick={() =>
-                                setQuizAnswers((prev) => ({ ...prev, [qIdx]: oIdx }))
+                                void handleAnswerQuizQuestion(activeQuizJobId, activeQuizData, qIdx, oIdx)
                               }
                               className={`w-full text-left px-3 py-2 rounded-xl text-xs transition ${style}`}
                             >
@@ -384,6 +521,41 @@ export default function RevisoesPage() {
                     </div>
                   );
                 })}
+
+                <div className="rounded-2xl border border-theme subtle-surface p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="text-xs space-y-0.5">
+                    {savedQuizJobs[activeQuizJobId] ? (
+                      <>
+                        <p className="font-bold text-emerald-700 dark:text-emerald-300">
+                          ✓ Resultado ({savedQuizJobs[activeQuizJobId].correct}/{savedQuizJobs[activeQuizJobId].total}) registrado em Evolução & Mapa de Acertos!
+                        </p>
+                        <p className="text-muted-theme">
+                          As questões já foram salvas no Banco de Questões e seus erros foram enviados para o Caderno de Erros.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-bold">
+                          Questões salvas automaticamente no Banco · Erros vão para o Caderno de Erros
+                        </p>
+                        <p className="text-muted-theme">
+                          Ao responder todas as {activeQuizData.questions.length} questões, o resultado entra em Evolução e Mapa de Acertos.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  {!savedQuizJobs[activeQuizJobId] && Object.keys(quizAnswers).length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void saveQuizStatsToEvolution(activeQuizJobId, activeQuizData, quizAnswers)
+                      }
+                      className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold shrink-0"
+                    >
+                      Registrar resultado ({Object.keys(quizAnswers).length}/{activeQuizData.questions.length})
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
