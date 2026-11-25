@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { DictionaryText } from '@/components/DictionaryText';
+import { ExplainForChildButton } from '@/components/ExplainForChildButton';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { extractPdfTextInBrowser } from '@/lib/pdfBrowser';
 import { getStudyMode } from '@/lib/studyModes';
@@ -2137,6 +2138,12 @@ export default function SimuladosPage() {
                         <span className="font-extrabold mr-1.5">{examIdx + 1}.</span>
                         <DictionaryText text={formatted.question} />
                       </p>
+                      <ExplainForChildButton
+                        mode="statement"
+                        content={currentExamQ.statement}
+                        context={currentExamQ.subject_name || ''}
+                        compact
+                      />
                     </div>
                   );
                 })()}
@@ -2300,9 +2307,17 @@ export default function SimuladosPage() {
                           <DictionaryText text={q.statement} />
                         </p>
                         {q.explanation && (
-                          <p className="text-muted-theme leading-relaxed border-t border-theme pt-2">
-                            <DictionaryText text={q.explanation} />
-                          </p>
+                          <div className="space-y-2 border-t border-theme pt-2">
+                            <p className="text-muted-theme leading-relaxed">
+                              <DictionaryText text={q.explanation} />
+                            </p>
+                            <ExplainForChildButton
+                              title={q.topic_title || q.subject_name || 'Questão do Simulado'}
+                              content={`Enunciado: ${q.statement}\n\nExplicação: ${q.explanation}`}
+                              context={q.subject_name || ''}
+                              compact
+                            />
+                          </div>
                         )}
                       </div>
                     );

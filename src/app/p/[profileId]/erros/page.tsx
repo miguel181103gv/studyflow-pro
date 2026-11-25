@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
+import { ExplainForChildButton } from '@/components/ExplainForChildButton';
 import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
 import { findSimilarItems } from '@/lib/similarity';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -922,6 +923,14 @@ export default function CadernoErrosPage() {
                         {isExplaining ? 'Analisando...' : `Explicar com ${aiName}`}
                       </button>
                     </div>
+                    {dq?.statement && (
+                      <ExplainForChildButton
+                        mode="statement"
+                        content={dq.statement}
+                        context={sub?.name || ''}
+                        compact
+                      />
+                    )}
                   </div>
                 ) : (
                   entry.question_text && (
@@ -962,6 +971,22 @@ export default function CadernoErrosPage() {
                         <p className="text-xs text-muted-theme leading-relaxed">
                           <DictionaryText text={entry.explanation} />
                         </p>
+                        <div className="pt-2 flex flex-wrap gap-2">
+                          <ExplainForChildButton
+                            title={entry.golden_rule || 'Explicação do erro'}
+                            content={`${entry.golden_rule ? `Regra de ouro: ${entry.golden_rule}\n\n` : ''}${entry.explanation}`}
+                            context={sub?.name || ''}
+                            compact
+                          />
+                          {(dq?.statement || entry.question_text) && (
+                            <ExplainForChildButton
+                              mode="statement"
+                              content={dq?.statement || entry.question_text}
+                              context={sub?.name || ''}
+                              compact
+                            />
+                          )}
+                        </div>
                       </div>
                     )}
 

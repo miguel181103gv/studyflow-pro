@@ -6,6 +6,7 @@ import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { todayISO } from '@/lib/utils';
 import { DictionaryText } from '@/components/DictionaryText';
+import { ExplainForChildButton } from '@/components/ExplainForChildButton';
 import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
 import { compareLongTexts, findSimilarItems } from '@/lib/similarity';
 import {
@@ -1961,6 +1962,12 @@ ${q.statement}`;
                 <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
                   <DictionaryText text={currentQ.statement} />
                 </p>
+                <ExplainForChildButton
+                  mode="statement"
+                  content={currentQ.statement}
+                  context={`${currentQSub?.name || ''} ${currentQ.header || ''}`.trim()}
+                  compact
+                />
 
                 <div className="space-y-2">
                   {currentQ.options.map((opt) => {
@@ -2064,8 +2071,14 @@ ${q.statement}`;
                 )}
 
                 {quizAnswered && currentQ.explanation && (
-                  <div className="rounded-2xl subtle-surface p-4 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap animate-fade-in-up">
+                  <div className="rounded-2xl subtle-surface p-4 space-y-2.5 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap animate-fade-in-up">
                     <DictionaryText text={currentQ.explanation} />
+                    <ExplainForChildButton
+                      title={currentQTopic?.title || currentQSub?.name || 'Questão'}
+                      content={`Enunciado: ${currentQ.statement}\n\nExplicação: ${currentQ.explanation}`}
+                      context={currentQSub?.name || ''}
+                      compact
+                    />
                   </div>
                 )}
 

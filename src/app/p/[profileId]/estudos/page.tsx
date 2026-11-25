@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
+import { ExplainForChildButton } from '@/components/ExplainForChildButton';
 import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
 import { getStudyMode } from '@/lib/studyModes';
@@ -2452,6 +2453,17 @@ export default function ProgressoEditalPage() {
                               </button>
                             </div>
                           </div>
+                          <ExplainForChildButton
+                            title={activeTopic.title}
+                            content={
+                              rec.formatted
+                                ? `${rec.formatted.title}\n${rec.formatted.summary || ''}\n${(rec.formatted.sections || [])
+                                    .map((sec) => `${sec.heading}: ${(sec.points || []).join(' ')}`)
+                                    .join('\n')}`
+                                : rec.rawText.trim() || activeTopic.title
+                            }
+                            context={activeTopicSub?.name || ''}
+                          />
 
                           {showFormatted && rec.formatted ? (
                             <div className="space-y-4 animate-fade-in-up">
