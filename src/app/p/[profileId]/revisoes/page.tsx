@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { addDaysISO, formatDateBR, todayISO } from '@/lib/utils';
-import { CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X, Trash2 } from 'lucide-react';
+import { CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X, Trash2, RefreshCw, ArrowLeft, ArrowRight, XCircle } from 'lucide-react';
 
 interface QuizQuestion {
   statement: string;
@@ -43,10 +43,50 @@ export default function RevisoesPage() {
   const next7 = addDaysISO(today, 7);
   const [filter, setFilter] = useState<'overdue' | 'today' | 'upcoming' | 'completed'>('today');
 
-  // Active Quiz modal (backed by GlobalProvider so it persists even if user leaves screen)
+  // Active Quiz modal + histórico persistido por revisão (mantém o quiz salvo e permite gerar outro)
+  interface SavedReviewQuiz {
+    title: string;
+    subjectId: string;
+    topicId: string;
+    subjectName: string;
+    topicTitle: string;
+    questions: QuizQuestion[];
+    answers: Record<number, number>;
+    savedStats?: { correct: number; total: number };
+  }
+  const reviewQuizStorageKey = `sf_review_quizzes_${profile?.id || 'default'}`;
+  const [savedQuizzesByRev, setSavedQuizzesByRev] = useState<Record<string, SavedReviewQuiz>>({});
+  const [activeQuizRevId, setActiveQuizRevId] = useState<string | null>(null);
   const [activeQuizJobId, setActiveQuizJobId] = useState<string | null>(null);
   const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
+  const [quizIdx, setQuizIdx] = useState(0);
   const [savedQuizJobs, setSavedQuizJobs] = useState<Record<string, { correct: number; total: number }>>({});
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(reviewQuizStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') setSavedQuizzesByRev(parsed);
+      } else {
+        setSavedQuizzesByRev({});
+      }
+    } catch {
+      setSavedQuizzesByRev({});
+    }
+  }, [reviewQuizStorageKey]);
+
+  function persistSavedQuiz(revId: string, record: SavedReviewQuiz) {
+    setSavedQuizzesByRev((prev) => {
+      const next = { ...prev, [revId]: record };
+      try {
+        localStorage.setItem(reviewQuizStorageKey, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }
 
   // Grifos modal
   const [highlightsTopicId, setHighlightsTopicId] = useState<string | null>(null);
@@ -100,13 +140,27 @@ export default function RevisoesPage() {
     subjectId: string,
     topicId: string,
     subjectName: string,
-    topicTitle: string
+    topicTitle: string,
+    forceNew = false
   ) {
     const jobId = `quiz:${profile?.id || 'default'}:${reviewId}`;
-    setQuizAnswers({});
+    setActiveQuizRevId(reviewId);
     setActiveQuizJobId(jobId);
+    setQuizIdx(0);
 
-    const existing = aiJobs[jobId];
+    const saved = savedQuizzesByRev[reviewId];
+    if (!forceNew && saved && saved.questions.length > 0) {
+      setQuizAnswers(saved.answers || {});
+      return;
+    }
+
+    if (forceNew) {
+      dismissAiJob(jobId);
+    }
+
+    setQuizAnswers({});
+
+    const existing = !forceNew ? aiJobs[jobId] : undefined;
     if (existing?.status === 'running' || (existing?.status === 'done' && existing.result)) {
       return;
     }
@@ -141,6 +195,15 @@ export default function RevisoesPage() {
       },
       onDone: async (resData) => {
         saveQuizQuestionsToBank(resData.subjectId, resData.topicId, subjectName, resData.questions);
+        persistSavedQuiz(reviewId, {
+          title: resData.title,
+          subjectId: resData.subjectId,
+          topicId: resData.topicId,
+          subjectName,
+          topicTitle,
+          questions: resData.questions,
+          answers: {},
+        });
       },
     });
   }
@@ -157,6 +220,13 @@ export default function RevisoesPage() {
     }, 0);
 
     setSavedQuizJobs((prev) => ({ ...prev, [jobId]: { correct, total } }));
+    if (activeQuizRevId && savedQuizzesByRev[activeQuizRevId]) {
+      persistSavedQuiz(activeQuizRevId, {
+        ...savedQuizzesByRev[activeQuizRevId],
+        answers: answersMap,
+        savedStats: { correct, total },
+      });
+    }
     await addStudyLog({
       subject_id: data.subjectId,
       topic_id: data.topicId || null,
@@ -181,6 +251,12 @@ export default function RevisoesPage() {
     if (quizAnswers[qIdx] !== undefined) return;
     const nextAnswers = { ...quizAnswers, [qIdx]: oIdx };
     setQuizAnswers(nextAnswers);
+    if (activeQuizRevId && savedQuizzesByRev[activeQuizRevId]) {
+      persistSavedQuiz(activeQuizRevId, {
+        ...savedQuizzesByRev[activeQuizRevId],
+        answers: nextAnswers,
+      });
+    }
 
     const q = data.questions[qIdx];
     if (q && oIdx !== q.correctIndex) {
@@ -221,8 +297,20 @@ ${q.statement}`;
     }
   }
 
+  const activeSavedQuiz = activeQuizRevId ? savedQuizzesByRev[activeQuizRevId] : undefined;
   const activeQuizJob = activeQuizJobId ? aiJobs[activeQuizJobId] : undefined;
-  const activeQuizData = activeQuizJob?.result as QuizResultData | undefined;
+  const activeQuizData: QuizResultData | undefined =
+    activeQuizJob?.status === 'running'
+      ? undefined
+      : (activeQuizJob?.result as QuizResultData | undefined) ||
+        (activeSavedQuiz
+          ? {
+              title: activeSavedQuiz.title,
+              subjectId: activeSavedQuiz.subjectId,
+              topicId: activeSavedQuiz.topicId,
+              questions: activeSavedQuiz.questions,
+            }
+          : undefined);
 
   async function quickAddQuestions(subjectId: string, topicId: string) {
     const total = Number(prompt('Quantas questões você fez nesta revisão?', '10') || '0');
@@ -287,7 +375,8 @@ ${q.statement}`;
             const jobId = `quiz:${profile?.id || 'default'}:${rev.id}`;
             const job = aiJobs[jobId];
             const isQuizRunning = job?.status === 'running';
-            const isQuizReady = job?.status === 'done' && Boolean(job.result);
+            const savedQuiz = savedQuizzesByRev[rev.id];
+            const isQuizReady = (job?.status === 'done' && Boolean(job.result)) || Boolean(savedQuiz);
 
             return (
               <div
@@ -350,8 +439,10 @@ ${q.statement}`;
                     )}
                     {isQuizRunning
                       ? 'Gerando Quiz...'
+                      : savedQuiz?.savedStats
+                      ? `Ver Quiz (${savedQuiz.savedStats.correct}/${savedQuiz.savedStats.total})`
                       : isQuizReady
-                      ? 'Abrir Quiz Pronto'
+                      ? 'Abrir Quiz Salvo'
                       : 'Quiz Gemini'}
                   </button>
                   {!rev.completed && (
@@ -437,35 +528,61 @@ ${q.statement}`;
       )}
 
       {/* Quiz Gemini Modal */}
-      {activeQuizJobId && activeQuizJob && (
+      {activeQuizJobId && (activeQuizJob || activeQuizData) && (
         <div className="fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4 overflow-y-auto">
           <div className="card-surface w-full max-w-2xl rounded-3xl p-6 my-8 max-h-[88vh] overflow-y-auto animate-pop-in">
             <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-violet-600" />
-                <h2 className="font-bold text-base">
-                  {activeQuizData?.title || activeQuizJob.label}
+              <div className="flex items-center gap-2 min-w-0">
+                <Sparkles className="w-5 h-5 text-violet-600 shrink-0" />
+                <h2 className="font-bold text-base truncate">
+                  {activeQuizData?.title || activeQuizJob?.label || 'Quiz Gemini'}
                 </h2>
               </div>
-              <button
-                onClick={() => {
-                  if (activeQuizJob.status === 'done' || activeQuizJob.status === 'error') {
-                    dismissAiJob(activeQuizJobId);
+              <div className="flex items-center gap-2 shrink-0">
+                {activeQuizData && activeQuizRevId && activeQuizJob?.status !== 'running' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const rev = reviews.find((r) => r.id === activeQuizRevId);
+                      const sub = subjects.find((s) => s.id === (rev?.subject_id || activeQuizData.subjectId));
+                      const tp = topics.find((t) => t.id === (rev?.topic_id || activeQuizData.topicId));
+                      openGeminiQuiz(
+                        activeQuizRevId,
+                        activeQuizData.subjectId,
+                        activeQuizData.topicId,
+                        sub?.name || activeSavedQuiz?.subjectName || 'Matéria',
+                        tp?.title || activeSavedQuiz?.topicTitle || 'Tópico',
+                        true
+                      );
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                    title="Mantém seu histórico anterior salvo nas estatísticas e gera 5 questões inéditas"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Gerar Novo Quiz
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    if (activeQuizJob?.status === 'error') {
+                      dismissAiJob(activeQuizJobId);
+                    }
+                    setActiveQuizJobId(null);
+                    setActiveQuizRevId(null);
+                  }}
+                  className="p-2 rounded-xl subtle-surface"
+                  title={
+                    activeQuizJob?.status === 'running'
+                      ? 'Fechar janela (o Gemini continuará gerando em segundo plano)'
+                      : 'Fechar (o quiz continuará salvo)'
                   }
-                  setActiveQuizJobId(null);
-                }}
-                className="p-2 rounded-xl subtle-surface"
-                title={
-                  activeQuizJob.status === 'running'
-                    ? 'Fechar janela (o Gemini continuará gerando em segundo plano)'
-                    : 'Fechar'
-                }
-              >
-                <X className="w-4 h-4" />
-              </button>
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            {activeQuizJob.status === 'running' && (
+            {activeQuizJob?.status === 'running' && (
               <div className="py-12 flex flex-col items-center gap-3 text-sm text-muted-theme text-center">
                 <Loader2 className="w-7 h-7 animate-spin text-violet-600" />
                 <span>Gemini está elaborando 5 questões inéditas...</span>
@@ -475,89 +592,198 @@ ${q.statement}`;
               </div>
             )}
 
-            {activeQuizJob.status === 'error' && (
+            {activeQuizJob?.status === 'error' && (
               <div className="p-4 rounded-xl bg-rose-500/15 text-rose-600 text-sm">
                 {activeQuizJob.error}
               </div>
             )}
 
-            {activeQuizData && (
-              <div className="space-y-5">
-                {activeQuizData.questions.map((q, qIdx) => {
-                  const chosen = quizAnswers[qIdx];
-                  return (
-                    <div key={qIdx} className="subtle-surface rounded-2xl p-4 space-y-3">
-                      <p className="text-sm font-semibold">
-                        {qIdx + 1}. {q.statement}
-                      </p>
-                      <div className="space-y-1.5">
-                        {q.options.map((opt, oIdx) => {
-                          const isChosen = chosen === oIdx;
-                          const isRight = q.correctIndex === oIdx;
-                          let style = 'card-surface hover:opacity-85';
-                          if (chosen !== undefined) {
-                            if (isRight) style = 'bg-emerald-600 text-white';
-                            else if (isChosen) style = 'bg-rose-600 text-white';
+            {activeQuizData && activeQuizData.questions.length > 0 && (() => {
+              const totalQ = activeQuizData.questions.length;
+              const safeIdx = Math.min(quizIdx, totalQ - 1);
+              const q = activeQuizData.questions[safeIdx];
+              const chosen = quizAnswers[safeIdx];
+              const answeredCount = Object.keys(quizAnswers).length;
+              const hitsCount = Object.entries(quizAnswers).reduce((acc, [i, ans]) => {
+                const item = activeQuizData.questions[Number(i)];
+                return acc + (item && item.correctIndex === ans ? 1 : 0);
+              }, 0);
+              const savedStats = savedQuizJobs[activeQuizJobId] || activeSavedQuiz?.savedStats;
+
+              return (
+                <div className="space-y-4">
+                  {/* Barra de progresso e navegação rápida entre questões */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-theme">
+                    <span className="text-xs font-bold text-muted-theme">
+                      Questão {safeIdx + 1} de {totalQ} ·{' '}
+                      <span className="text-emerald-600">{hitsCount} acerto(s)</span>
+                    </span>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {activeQuizData.questions.map((item, idx) => {
+                        const ans = quizAnswers[idx];
+                        const isCur = idx === safeIdx;
+                        let pillCls = 'subtle-surface border border-theme text-muted-theme';
+                        if (ans !== undefined) {
+                          pillCls =
+                            ans === item.correctIndex
+                              ? 'bg-emerald-600 text-white border-emerald-600'
+                              : 'bg-rose-600 text-white border-rose-600';
+                        }
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => setQuizIdx(idx)}
+                            className={`w-7 h-7 rounded-lg text-xs font-extrabold transition ${pillCls} ${
+                              isCur ? 'ring-2 ring-teal-500 ring-offset-1' : 'opacity-85 hover:opacity-100'
+                            }`}
+                          >
+                            {idx + 1}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Enunciado */}
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap font-medium">
+                    {q.statement}
+                  </p>
+
+                  {/* Alternativas no estilo Banco de Questões */}
+                  <div className="space-y-2">
+                    {q.options.map((opt, oIdx) => {
+                      const letter = LETTERS[oIdx] || String(oIdx + 1);
+                      const cleanOpt = String(opt)
+                        .replace(/^\(?[A-Ea-e]\)?[).:\-–—]\s+/, '')
+                        .trim();
+                      const isChosen = chosen === oIdx;
+                      const isRight = chosen !== undefined && q.correctIndex === oIdx;
+                      const isWrong = chosen !== undefined && isChosen && q.correctIndex !== oIdx;
+
+                      let cls = 'border-theme bg-[var(--bg-card)] hover:border-teal-500/60';
+                      let bdg = 'subtle-surface border border-theme';
+                      if (isRight) {
+                        cls = 'border-2 border-emerald-500 bg-emerald-500/15 shadow-xs';
+                        bdg = 'bg-emerald-600 text-white border-emerald-600';
+                      } else if (isWrong) {
+                        cls = 'border-2 border-rose-500 bg-rose-500/15 shadow-xs';
+                        bdg = 'bg-rose-600 text-white border-rose-600';
+                      }
+
+                      return (
+                        <button
+                          key={oIdx}
+                          type="button"
+                          disabled={chosen !== undefined}
+                          onClick={() =>
+                            void handleAnswerQuizQuestion(activeQuizJobId, activeQuizData, safeIdx, oIdx)
                           }
-                          return (
-                            <button
-                              key={oIdx}
-                              disabled={chosen !== undefined}
-                              onClick={() =>
-                                void handleAnswerQuizQuestion(activeQuizJobId, activeQuizData, qIdx, oIdx)
-                              }
-                              className={`w-full text-left px-3 py-2 rounded-xl text-xs transition ${style}`}
-                            >
-                              {opt}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      {chosen !== undefined && (
-                        <p className="text-xs text-muted-theme pt-2 border-t border-theme">
+                          className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${cls}`}
+                        >
+                          <span
+                            className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${bdg}`}
+                          >
+                            {letter}
+                          </span>
+                          <span className="flex-1 text-sm leading-relaxed">{cleanOpt}</span>
+                          {isRight && (
+                            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                          )}
+                          {isWrong && (
+                            <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Feedback imediato + Explicação */}
+                  {chosen !== undefined && (
+                    <div className="space-y-2.5 animate-fade-in-up">
+                      {chosen === q.correctIndex ? (
+                        <div className="rounded-2xl border-2 border-emerald-500 bg-emerald-500/15 px-4 py-3 flex items-center gap-2.5 text-emerald-800 dark:text-emerald-200">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <div className="text-xs">
+                            <p className="font-extrabold text-sm">Você acertou!</p>
+                            <p>Gabarito: alternativa <strong>{LETTERS[q.correctIndex]}</strong>.</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-2xl border-2 border-rose-500 bg-rose-500/15 px-4 py-3 flex items-center gap-2.5 text-rose-800 dark:text-rose-200">
+                          <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />
+                          <div className="text-xs">
+                            <p className="font-extrabold text-sm">Você errou esta questão</p>
+                            <p>
+                              Você marcou <strong>{LETTERS[chosen]}</strong> · Gabarito:{' '}
+                              <strong>{LETTERS[q.correctIndex]}</strong>. Enviada automaticamente para o{' '}
+                              <strong>Caderno de Erros</strong>!
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {q.explanation && (
+                        <div className="rounded-2xl subtle-surface p-4 text-xs text-muted-theme leading-relaxed whitespace-pre-wrap">
                           <strong>Comentário:</strong> {q.explanation}
-                        </p>
+                        </div>
                       )}
                     </div>
-                  );
-                })}
+                  )}
 
-                <div className="rounded-2xl border border-theme subtle-surface p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="text-xs space-y-0.5">
-                    {savedQuizJobs[activeQuizJobId] ? (
-                      <>
-                        <p className="font-bold text-emerald-700 dark:text-emerald-300">
-                          ✓ Resultado ({savedQuizJobs[activeQuizJobId].correct}/{savedQuizJobs[activeQuizJobId].total}) registrado em Evolução & Mapa de Acertos!
-                        </p>
-                        <p className="text-muted-theme">
-                          As questões já foram salvas no Banco de Questões e seus erros foram enviados para o Caderno de Erros.
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="font-bold">
-                          Questões salvas automaticamente no Banco · Erros vão para o Caderno de Erros
-                        </p>
-                        <p className="text-muted-theme">
-                          Ao responder todas as {activeQuizData.questions.length} questões, o resultado entra em Evolução e Mapa de Acertos.
-                        </p>
-                      </>
-                    )}
-                  </div>
-                  {!savedQuizJobs[activeQuizJobId] && Object.keys(quizAnswers).length > 0 && (
+                  {/* Navegação Anterior / Próxima + Status */}
+                  <div className="flex items-center justify-between gap-2 pt-3 border-t border-theme flex-wrap">
                     <button
                       type="button"
-                      onClick={() =>
-                        void saveQuizStatsToEvolution(activeQuizJobId, activeQuizData, quizAnswers)
-                      }
-                      className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold shrink-0"
+                      disabled={safeIdx === 0}
+                      onClick={() => setQuizIdx((i) => Math.max(0, i - 1))}
+                      className="px-4 py-2 rounded-xl subtle-surface border border-theme text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-40"
                     >
-                      Registrar resultado ({Object.keys(quizAnswers).length}/{activeQuizData.questions.length})
+                      <ArrowLeft className="w-4 h-4" />
+                      Anterior
                     </button>
-                  )}
+
+                    <div className="text-[11px] text-muted-theme text-center">
+                      {savedStats
+                        ? `✓ Salvo (${savedStats.correct}/${savedStats.total}) em Evolução & Mapa`
+                        : `${answeredCount}/${totalQ} respondidas`}
+                    </div>
+
+                    {safeIdx < totalQ - 1 ? (
+                      <button
+                        type="button"
+                        onClick={() => setQuizIdx((i) => Math.min(totalQ - 1, i + 1))}
+                        className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"
+                      >
+                        Próxima
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    ) : !savedStats && answeredCount > 0 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void saveQuizStatsToEvolution(activeQuizJobId, activeQuizData, quizAnswers)
+                        }
+                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold"
+                      >
+                        Salvar Resultado ({hitsCount}/{answeredCount})
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveQuizJobId(null);
+                          setActiveQuizRevId(null);
+                        }}
+                        className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+                      >
+                        Concluir
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}

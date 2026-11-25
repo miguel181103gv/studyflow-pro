@@ -86,6 +86,7 @@ interface ProfileContextValue {
   completeReview: (reviewId: string) => Promise<void>;
   postponeReview: (reviewId: string, newDueDate: string) => Promise<void>;
   deleteReview: (reviewId: string) => Promise<void>;
+  deleteReviewsForTopic: (topicId: string) => Promise<void>;
   addErrorEntry: (
     payload: Omit<ErrorEntry, 'id' | 'user_id' | 'profile_id' | 'created_at'>
   ) => Promise<ErrorEntry | null>;
@@ -1054,7 +1055,15 @@ export function ProfileProvider({
     });
   };
 
-  const deleteReview = async (reviewId: string) => {
+  const deleteReviewsForTopic = async (topicId: string) => {
+    setReviews((prev) => prev.filter((r) => r.topic_id !== topicId));
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase.from('spaced_reviews').delete().eq('topic_id', topicId);
+    });
+  };
+
+    const deleteReview = async (reviewId: string) => {
     const deleted = reviews.find((r) => r.id === reviewId);
     setReviews((prev) => prev.filter((r) => r.id !== reviewId));
     await withSync(async () => {
@@ -1436,6 +1445,7 @@ export function ProfileProvider({
         completeReview,
         postponeReview,
         deleteReview,
+        deleteReviewsForTopic,
         addErrorEntry,
         updateErrorEntry,
         deleteErrorEntry,

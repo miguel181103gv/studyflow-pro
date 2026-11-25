@@ -226,6 +226,7 @@ export default function ProgressoEditalPage() {
     flashcards,
     errors,
     toggleTopicStudied,
+    deleteReviewsForTopic,
     toggleSubjectStudied,
     toggleTopicPriority,
     updateTopicPdf,
@@ -242,6 +243,7 @@ export default function ProgressoEditalPage() {
   const [editalSearch, setEditalSearch] = useState('');
   const [difficultyMap, setDifficultyMap] = useState<Record<string, Difficulty>>({});
   const [pendingDifficultyTopic, setPendingDifficultyTopic] = useState<Topic | null>(null);
+  const [pendingUncheckTopic, setPendingUncheckTopic] = useState<{ topic: Topic; reviewCount: number } | null>(null);
 
   // Adicionar / Editar / Remover Matéria e Tópicos
   const [showNewSubject, setShowNewSubject] = useState(false);
@@ -467,6 +469,13 @@ export default function ProgressoEditalPage() {
 
   async function handleTopicCheck(topic: Topic) {
     const willBeStudied = !topic.studied;
+    if (!willBeStudied) {
+      const topicReviews = reviews.filter((r) => r.topic_id === topic.id);
+      if (topicReviews.length > 0) {
+        setPendingUncheckTopic({ topic, reviewCount: topicReviews.length });
+        return;
+      }
+    }
     await toggleTopicStudied(topic);
     if (willBeStudied) {
       setPendingDifficultyTopic(topic);
@@ -1970,6 +1979,68 @@ export default function ProgressoEditalPage() {
           );
         })}
       </div>
+
+      {/* Modal: Ao desmarcar tópico concluído, perguntar se mantém ou remove revisões agendadas */}
+      {pendingUncheckTopic && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="card-surface w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl animate-pop-in">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-base">Desmarcar tópico concluído?</h3>
+                <p className="text-xs text-muted-theme mt-1">
+                  <strong>{pendingUncheckTopic.topic.title}</strong> possui{' '}
+                  <strong>{pendingUncheckTopic.reviewCount}</strong>{' '}
+                  {pendingUncheckTopic.reviewCount === 1
+                    ? 'revisão agendada'
+                    : 'revisões agendadas'}. O que deseja fazer com elas?
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingUncheckTopic(null)}
+                className="p-1.5 rounded-xl subtle-surface"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                type="button"
+                onClick={async () => {
+                  const target = pendingUncheckTopic.topic;
+                  setPendingUncheckTopic(null);
+                  await toggleTopicStudied(target);
+                  await deleteReviewsForTopic(target.id);
+                  notify('Tópico desmarcado e revisões agendadas removidas.', 'info');
+                }}
+                className="w-full py-2.5 px-4 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold text-left"
+              >
+                Desmarcar tópico e remover revisões ({pendingUncheckTopic.reviewCount})
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  const target = pendingUncheckTopic.topic;
+                  setPendingUncheckTopic(null);
+                  await toggleTopicStudied(target);
+                  notify('Tópico desmarcado! As revisões agendadas foram mantidas.', 'info');
+                }}
+                className="w-full py-2.5 px-4 rounded-2xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold text-left"
+              >
+                Desmarcar só o tópico (manter revisões)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPendingUncheckTopic(null)}
+                className="w-full py-2.5 px-4 rounded-2xl subtle-surface border border-theme text-xs font-semibold"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Esse tópico foi Fácil, Médio ou Difícil? */}
       {pendingDifficultyTopic && (

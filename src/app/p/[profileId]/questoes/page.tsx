@@ -409,6 +409,9 @@ export default function QuestoesPage() {
   const [selectedScope, setSelectedScope] = useState<SelectedScope>(null);
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
   const [collapsedQ, setCollapsedQ] = useState<Record<string, boolean>>({});
+  const solvedStorageKey = `sf_solved_questions_${profile?.id || 'default'}`;
+  const [solvedMap, setSolvedMap] = useState<Record<string, { hit: boolean; answeredAt: string }>>({});
+  const [solvedFilter, setSolvedFilter] = useState<'all' | 'unsolved' | 'solved'>('all');
 
   // Adicionar questões (Gerar com IA por Tópico, Texto ou Imagem -> Quiz)
   const [showAddPanel, setShowAddPanel] = useState(false);
@@ -445,6 +448,35 @@ export default function QuestoesPage() {
       // ignore
     }
   }, [storageKey]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(solvedStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') setSolvedMap(parsed);
+      } else {
+        setSolvedMap({});
+      }
+    } catch {
+      setSolvedMap({});
+    }
+  }, [solvedStorageKey]);
+
+  function markQuestionSolved(questionId: string, hit: boolean) {
+    setSolvedMap((prev) => {
+      const next = {
+        ...prev,
+        [questionId]: { hit, answeredAt: new Date().toISOString() },
+      };
+      try {
+        localStorage.setItem(solvedStorageKey, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }
 
   function saveBank(next: BankQuestion[]) {
     setQuestions(next);
@@ -499,6 +531,14 @@ export default function QuestoesPage() {
     : allQuestions.filter(
         (q) => q.subject_id === selectedScope.subjectId && q.topic_id === selectedScope.topicId
       );
+
+  const visibleScopeQuestions =
+    solvedFilter === 'all'
+      ? scopeQuestions
+      : solvedFilter === 'unsolved'
+      ? scopeQuestions.filter((q) => !solvedMap[q.id])
+      : scopeQuestions.filter((q) => Boolean(solvedMap[q.id]));
+  const scopeSolvedCount = scopeQuestions.filter((q) => Boolean(solvedMap[q.id])).length;
 
   const effectiveSubjectId = targetSubjectId || subjects[0]?.id || '';
   const effectiveSubject = subjects.find((s) => s.id === effectiveSubjectId);
@@ -786,7 +826,9 @@ ${q.statement}`;
       );
     }
     if (quizPicked) {
-      if (quizPicked === clean) {
+      const hit = quizPicked === clean;
+      markQuestionSolved(currentQ.id, hit);
+      if (hit) {
         setQuizHits((h) => h + 1);
       } else {
         setQuizMisses((m) => m + 1);
@@ -1376,7 +1418,30 @@ ${q.statement}`;
             </div>
           ) : (
             <div className="space-y-3">
-              <div className="flex justify-end gap-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {(
+                    [
+                      { id: 'all', label: `Todas (${scopeQuestions.length})` },
+                      { id: 'unsolved', label: `Não resolvidas (${scopeQuestions.length - scopeSolvedCount})` },
+                      { id: 'solved', label: `Já resolvidas (${scopeSolvedCount})` },
+                    ] as const
+                  ).map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      onClick={() => setSolvedFilter(f.id)}
+                      className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                        solvedFilter === f.id
+                          ? 'bg-teal-600 text-white'
+                          : 'subtle-surface text-muted-theme hover:text-[var(--text-main)]'
+                      }`}
+                    >
+                      {f.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex justify-end gap-1.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -1395,8 +1460,9 @@ ${q.statement}`;
                 >
                   Expandir todas
                 </button>
+                </div>
               </div>
-              {scopeQuestions.map((q, i) => {
+              {visibleScopeQuestions.map((q, i) => {
                 const isCol = !!collapsedQ[q.id];
                 const qSub = subjects.find((s) => s.id === q.subject_id);
                 const qTopic = q.topic_id ? topics.find((t) => t.id === q.topic_id) : undefined;
@@ -1421,6 +1487,17 @@ ${q.statement}`;
                         {q.id.startsWith('err-') && (
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
                             Caderno de Erros
+                          </span>
+                        )}
+                        {solvedMap[q.id] && (
+                          <span
+                            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 ${
+                              solvedMap[q.id].hit
+                                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                : 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                            }`}
+                          >
+                            {solvedMap[q.id].hit ? '✓ Resolvida (Acertou)' : '✕ Resolvida (Errou)'}
                           </span>
                         )}
                         {q.header && (
@@ -1691,6 +1768,7 @@ ${q.statement}`;
                         setQuizAnswered(true);
                         if (!currentQCorrect) return;
                         const hit = quizPicked === currentQCorrect;
+                        markQuestionSolved(currentQ.id, hit);
                         if (hit) {
                           setQuizHits((h) => h + 1);
                         } else {

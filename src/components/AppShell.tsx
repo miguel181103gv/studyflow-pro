@@ -896,26 +896,34 @@ export function AppShell({
           }}
           className="animate-pop-in"
         >
-          <button
-            type="button"
-            onClick={() => openQuickDictModal(selDictMenu.text)}
-            className="px-3.5 py-2 rounded-2xl bg-slate-900 dark:bg-teal-600 text-white text-xs font-bold shadow-2xl border border-white/15 inline-flex items-center gap-1.5 hover:scale-105 transition whitespace-nowrap"
-          >
-            <BookA className="w-3.5 h-3.5 text-teal-300 dark:text-white" />
-            Adicionar &ldquo;{selDictMenu.text.slice(0, 22)}
-            {selDictMenu.text.length > 22 ? '...' : ''}&rdquo; ao Dicionário
-          </button>
+          <div className="rounded-2xl bg-slate-900 dark:bg-teal-600 text-white text-xs font-bold shadow-2xl border border-white/15 inline-flex items-center overflow-hidden">
+            <button
+              type="button"
+              onClick={() => openQuickDictModal(selDictMenu.text)}
+              className="px-3.5 py-2 inline-flex items-center gap-1.5 hover:bg-white/10 transition whitespace-nowrap"
+            >
+              <BookA className="w-3.5 h-3.5 text-teal-300 dark:text-white" />
+              Adicionar &ldquo;{selDictMenu.text.slice(0, 22)}
+              {selDictMenu.text.length > 22 ? '...' : ''}&rdquo; ao Dicionário
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelDictMenu(null)}
+              title="Fechar"
+              className="px-2 py-2 border-l border-white/15 hover:bg-white/15 transition"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
       {/* Modal Rápido: Adicionar palavra selecionada ao Dicionário */}
       {quickDictOpen && (
         <div
-          onClick={() => setQuickDictOpen(false)}
           className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
         >
           <div
-            onClick={(e) => e.stopPropagation()}
             className="card-surface w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl border border-theme animate-pop-in"
           >
             <div className="flex items-center justify-between">
