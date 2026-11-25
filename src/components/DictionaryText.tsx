@@ -4,6 +4,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useProfile } from './ProfileProvider';
 import { BookOpen, ExternalLink, Loader2, Scale, X } from 'lucide-react';
+import { parseLeiSecaBlocks } from '@/lib/leiSecaParser';
+import { LegalBlocksView } from './LegalBlocksView';
 
 export interface DictEntryLite {
   id: string;
@@ -624,9 +626,10 @@ export function DictionaryText({
                   {modal.error}
                 </div>
               ) : (
-                <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed">
-                  {modal.text}
-                </div>
+                <LegalBlocksView
+                  blocks={parseLeiSecaBlocks(modal.text || '')}
+                  interactive={false}
+                />
               )}
             </div>
 

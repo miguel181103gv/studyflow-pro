@@ -789,38 +789,76 @@ ${String(rawText).slice(0, 12000)}`;
       const isStatement = mode === 'statement';
       const prompt = isStatement
         ? `Você é um "tradutor de enunciados" de provas e concursos. O aluno às vezes se perde em enunciados longos ou cheios de termos difíceis.
-Traduza o ENUNCIADO abaixo passo a passo, em linguagem super simples, como se estivesse acompanhando a leitura do lado do aluno:
+Traduza o ENUNCIADO abaixo passo a passo, em linguagem super simples, sem usar asteriscos (**) ou cerquilhas (#) de Markdown.
 
 REGRAS RÍGIDAS:
 1. NÃO dê a resposta nem diga qual alternativa está certa (sem spoiler!).
-2. Quebre o enunciado na ordem em que ele acontece:
-   - "📌 Até aqui ele contou que:" (resuma o cenário/personagens em linguagem bem simples)
-   - "📌 Depois aconteceu / detalhe importante:" (traduza os fatos ou regras citadas, explicando termos difíceis entre parênteses)
-   - "🎯 O que ele está querendo saber:" (diga exatamente o que a pergunta final pede)
-3. Seja bem direto, claro e fácil de ler.
+2. Quebre o enunciado na ordem em que ele acontece em seções claras.
+3. Traduza qualquer termo difícil entre parênteses.
 
-${context ? `MATÉRIA/BANCA: ${String(context).slice(0, 200)}
-` : ''}ENUNCIADO:
-${String(content).slice(0, 5000)}`
+${context ? `MATÉRIA/BANCA: ${String(context).slice(0, 200)}\n` : ''}ENUNCIADO:
+${String(content).slice(0, 5000)}
+
+Retorne SOMENTE JSON válido neste formato exato:
+{
+  "title": "Tradução do Enunciado",
+  "summary": "Resumo de 1 frase do cenário da questão.",
+  "sections": [
+    {
+      "heading": "1. Até aqui ele contou que...",
+      "points": ["Fato ou personagem explicado de forma simples"],
+      "callout": ""
+    },
+    {
+      "heading": "2. Depois aconteceu / detalhe importante",
+      "points": ["O que mudou ou regra envolvida em linguagem fácil"],
+      "callout": ""
+    },
+    {
+      "heading": "3. O que ele está querendo saber",
+      "points": ["A pergunta final traduzida de forma direta"],
+      "callout": ""
+    }
+  ]
+}`
         : `Você é um professor muito paciente, didático e bom em analogias.
 Explique o assunto abaixo TÃO MASTIGADO, SIMPLES E PASSO A PASSO que até uma criança de 10 anos conseguiria entender perfeitamente — sem perder a precisão do que cai na prova.
+NÃO use asteriscos (**), cerquilhas (#) ou sintaxe Markdown dentro dos textos; escreva texto limpo.
 
 REGRAS:
-1. Use linguagem cotidiana, exemplos práticos do dia a dia (ex.: escola, loja, jogo, família, trabalho simples).
+1. Use linguagem cotidiana e exemplos práticos do dia a dia (escola, loja, trabalho, jogo, família).
 2. Se aparecer alguma palavra difícil ou termo jurídico/técnico, traduza imediatamente entre parênteses.
-3. Estruture de forma leve:
-   - "💡 Em palavras bem simples:" (a ideia central em 2-3 frases fáceis)
-   - "📖 Exemplo do dia a dia:" (uma historinha ou analogia concreta)
-   - "🎯 O que você não pode esquecer na prova:" (1 ou 2 pontos-chave bem diretos)
-4. Seja conciso e gostoso de ler (não escreva um livro gigante).
+3. Organize em seções claras e fáceis de ler.
 
-${context ? `CONTEXTO/MATÉRIA: ${String(context).slice(0, 200)}
-` : ''}${title ? `TEMA/TÍTULO: ${String(title).slice(0, 300)}
-` : ''}CONTEÚDO PARA EXPLICAR:
-${String(content).slice(0, 6000)}`;
+${context ? `CONTEXTO/MATÉRIA: ${String(context).slice(0, 200)}\n` : ''}${title ? `TEMA/TÍTULO: ${String(title).slice(0, 300)}\n` : ''}CONTEÚDO PARA EXPLICAR:
+${String(content).slice(0, 6000)}
 
-      const explanation = await callGemini([{ text: prompt }], false, false, false);
-      return NextResponse.json({ ok: true, data: { explanation: explanation.trim() } });
+Retorne SOMENTE JSON válido neste formato exato:
+{
+  "title": "Explicação Simples: ${String(title || 'Tema').replace(/"/g, "'").slice(0, 80)}",
+  "summary": "A ideia central explicada em 2 frases bem fáceis.",
+  "sections": [
+    {
+      "heading": "💡 Em palavras bem simples",
+      "points": ["Ponto fácil 1", "Ponto fácil 2"],
+      "callout": ""
+    },
+    {
+      "heading": "📖 Exemplo do dia a dia",
+      "points": ["Analogia ou historinha concreta passo a passo"],
+      "callout": ""
+    },
+    {
+      "heading": "🎯 O que não esquecer na prova",
+      "points": ["Regra prática 1", "Regra prática 2"],
+      "callout": "Truque de memória ou pegadinha comum (ou vazio)"
+    }
+  ]
+}`;
+
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
     }
 
     if (action === 'generate_study_summary') {

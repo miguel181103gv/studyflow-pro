@@ -612,56 +612,64 @@ export default function CadernoErrosPage() {
             const correctLetter = (entry.correct_answer || '').trim().toUpperCase();
             const wrongLetter = (entry.user_answer || '').trim().toUpperCase();
 
+            const boardLabel = dq?.header ? dq.header.split('·')[0].trim() : '';
+
             return (
-              <div key={entry.id} className="card-surface rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
-                <div className="flex items-center justify-between gap-2 flex-wrap border-b border-theme pb-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
-                      style={{ backgroundColor: sub?.color || '#0d9488' }}
-                    >
-                      {sub?.name}
-                    </span>
-                    <span className="text-[11px] px-2.5 py-0.5 rounded-full subtle-surface font-medium">
-                      {entry.error_cause}
-                    </span>
-                    {!isEditingTopic && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingTopicEntryId(entry.id);
-                          setEditEntrySubjectId(entry.subject_id);
-                          setEditEntryTopicId(entry.topic_id || '');
-                        }}
-                        title="Clique para definir ou alterar a matéria/tópico desta questão"
-                        className="text-[11px] px-2.5 py-0.5 rounded-full bg-teal-500/12 border border-teal-500/30 text-teal-700 dark:text-teal-300 font-semibold inline-flex items-center gap-1 hover:bg-teal-500/20 transition max-w-[260px]"
-                      >
-                        <Pencil className="w-2.5 h-2.5 shrink-0" />
-                        <span className="truncate">
-                          {topicObj ? topicObj.title : 'Definir tópico'}
-                        </span>
-                      </button>
+              <div key={entry.id} className="card-surface rounded-2xl p-4 sm:p-5 border border-theme space-y-3">
+                <div className={`flex items-center justify-between gap-3 ${isCollapsed ? '' : 'border-b border-theme/60 pb-3'}`}>
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    {boardLabel && (
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-500/12 text-[var(--text-main)] shrink-0">
+                        {boardLabel}
+                      </span>
                     )}
-                    {dq?.header && (
-                      <span className="text-[11px] font-semibold text-muted-theme">
-                        · {dq.header}
+                    <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-theme min-w-0">
+                      <span
+                        className="w-2 h-2 rounded-full shrink-0"
+                        style={{ backgroundColor: sub?.color || '#0d9488' }}
+                      />
+                      <span className="truncate max-w-[180px]">{sub?.name}</span>
+                      {!isEditingTopic && (
+                        <>
+                          <span className="opacity-40">›</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingTopicEntryId(entry.id);
+                              setEditEntrySubjectId(entry.subject_id);
+                              setEditEntryTopicId(entry.topic_id || '');
+                            }}
+                            title="Clique para alterar a matéria/tópico"
+                            className="inline-flex items-center gap-1 text-[var(--text-main)] hover:text-teal-500 transition truncate max-w-[240px]"
+                          >
+                            <span className="truncate">
+                              {topicObj ? topicObj.title : 'Definir tópico'}
+                            </span>
+                            <Pencil className="w-2.5 h-2.5 opacity-50 shrink-0" />
+                          </button>
+                        </>
+                      )}
+                    </span>
+                    {entry.error_cause && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full subtle-surface text-muted-theme font-medium">
+                        {entry.error_cause}
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1 shrink-0">
                     {imgUrl && !dq && (
                       <button
                         type="button"
                         disabled={isDigitizing}
                         onClick={() => digitizeExistingEntry(entry)}
-                        className="px-3 py-1.5 rounded-xl bg-teal-600/12 text-teal-700 dark:text-teal-300 hover:bg-teal-600 hover:text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                        className="px-2.5 py-1.5 rounded-lg bg-teal-600/12 text-teal-700 dark:text-teal-300 hover:bg-teal-600 hover:text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-50"
                       >
                         {isDigitizing ? (
                           <Loader2 className="w-3.5 h-3.5 animate-spin" />
                         ) : (
                           <ScanText className="w-3.5 h-3.5" />
                         )}
-                        {isDigitizing ? 'Digitalizando...' : 'Digitalizar Foto'}
+                        {isDigitizing ? 'Digitalizando...' : 'Digitalizar'}
                       </button>
                     )}
                     {imgUrl && dq && (
@@ -673,9 +681,9 @@ export default function CadernoErrosPage() {
                             [entry.id]: !showOriginalImg,
                           }))
                         }
-                        className="px-2.5 py-1.5 rounded-xl subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)]"
+                        className="px-2 py-1 rounded-lg subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)]"
                       >
-                        {showOriginalImg ? 'Ocultar foto' : 'Ver foto original'}
+                        {showOriginalImg ? 'Ocultar foto' : 'Foto'}
                       </button>
                     )}
                     <button
@@ -684,18 +692,12 @@ export default function CadernoErrosPage() {
                         setCollapsedByCard((prev) => ({ ...prev, [entry.id]: !isCollapsed }))
                       }
                       title={isCollapsed ? 'Expandir questão' : 'Recolher questão'}
-                      className="px-2.5 py-1.5 rounded-xl subtle-surface text-[11px] font-semibold text-muted-theme hover:text-[var(--text-main)] inline-flex items-center gap-1"
+                      className="p-1.5 rounded-lg subtle-surface text-muted-theme hover:text-[var(--text-main)]"
                     >
                       {isCollapsed ? (
-                        <>
-                          <ChevronDown className="w-3.5 h-3.5" />
-                          Expandir
-                        </>
+                        <ChevronDown className="w-3.5 h-3.5" />
                       ) : (
-                        <>
-                          <ChevronUp className="w-3.5 h-3.5" />
-                          Recolher
-                        </>
+                        <ChevronUp className="w-3.5 h-3.5" />
                       )}
                     </button>
                     <button
@@ -703,7 +705,7 @@ export default function CadernoErrosPage() {
                       aria-label="Excluir erro"
                       className="p-1.5 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
                     >
-                      <Trash2 className="w-4 h-4" />
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>

@@ -2453,17 +2453,44 @@ export default function ProgressoEditalPage() {
                               </button>
                             </div>
                           </div>
-                          <ExplainForChildButton
-                            title={activeTopic.title}
-                            content={
-                              rec.formatted
-                                ? `${rec.formatted.title}\n${rec.formatted.summary || ''}\n${(rec.formatted.sections || [])
-                                    .map((sec) => `${sec.heading}: ${(sec.points || []).join(' ')}`)
-                                    .join('\n')}`
-                                : rec.rawText.trim() || activeTopic.title
-                            }
-                            context={activeTopicSub?.name || ''}
-                          />
+                          <div className="flex flex-wrap items-center gap-2">
+                            <ExplainForChildButton
+                              title={activeTopic.title}
+                              content={
+                                rec.formatted
+                                  ? `${rec.formatted.title}\n${rec.formatted.summary || ''}\n${(rec.formatted.sections || [])
+                                      .map((sec) => `${sec.heading}: ${(sec.points || []).join(' ')}`)
+                                      .join('\n')}`
+                                  : rec.rawText.trim() || activeTopic.title
+                              }
+                              context={activeTopicSub?.name || ''}
+                              onSaveAsNewTab={(formattedChild, tabTitle) => {
+                                if (!activeTopicId) return;
+                                const rawLines = [
+                                  formattedChild.title,
+                                  formattedChild.summary,
+                                  ...(formattedChild.sections || []).flatMap((sec) => [
+                                    sec.heading,
+                                    ...(sec.points || []),
+                                    sec.callout ? `Dica de ouro: ${sec.callout}` : '',
+                                  ]),
+                                ]
+                                  .filter(Boolean)
+                                  .join('\n\n');
+                                const newTab: TopicNoteItem = {
+                                  id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                  title: tabTitle,
+                                  rawText: rawLines,
+                                  formatted: formattedChild,
+                                };
+                                const nextItems = [...items, newTab];
+                                saveTopicNote(activeTopic.id, { items: nextItems });
+                                setActiveNoteIdx(nextItems.length - 1);
+                                setEditingNoteMode(false);
+                                notify('Explicação para criança adicionada em um novo texto!', 'success');
+                              }}
+                            />
+                          </div>
 
                           {showFormatted && rec.formatted ? (
                             <div className="space-y-4 animate-fade-in-up">
