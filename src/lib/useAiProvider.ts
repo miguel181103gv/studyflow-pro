@@ -8,7 +8,7 @@ let pendingCheck: Promise<boolean> | null = null;
 async function fetchDeepseekStatus(): Promise<boolean> {
   if (cachedDeepseekEnabled !== null) return cachedDeepseekEnabled;
   if (pendingCheck) return pendingCheck;
-  pendingCheck = fetch('/api/gemini', { method: 'GET' })
+  pendingCheck = fetch('/api/gemini', { method: 'GET', cache: 'no-store' })
     .then((r) => r.json())
     .then((d) => {
       cachedDeepseekEnabled = Boolean(d?.deepseekEnabled);
