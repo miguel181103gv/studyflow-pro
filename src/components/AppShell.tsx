@@ -28,6 +28,7 @@ import {
   Cloud,
   Pause,
   Play,
+  Square,
   Palette,
   Layers,
   PanelLeftClose,
@@ -507,6 +508,7 @@ export function AppShell({
                   {formatDurationHMS(stopwatch.elapsedSeconds)}
                 </span>
                 <button
+                  type="button"
                   onClick={() =>
                     stopwatch.running
                       ? pauseStopwatch()
@@ -520,6 +522,22 @@ export function AppShell({
                   ) : (
                     <Play className="w-3.5 h-3.5" />
                   )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (
+                      stopwatch.elapsedSeconds > 15 &&
+                      !window.confirm('Parar e descartar esta sessão sem salvar?')
+                    ) {
+                      return;
+                    }
+                    resetStopwatch();
+                  }}
+                  className="p-1.5 rounded-full bg-rose-500/15 hover:bg-rose-600 text-rose-600 hover:text-white transition"
+                  title="Parar / desistir desta sessão"
+                >
+                  <Square className="w-3.5 h-3.5 fill-current" />
                 </button>
               </div>
             )}

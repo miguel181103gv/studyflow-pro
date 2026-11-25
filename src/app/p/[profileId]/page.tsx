@@ -53,6 +53,7 @@ export default function DashboardPage() {
     stopwatch,
     startStopwatch,
     pauseStopwatch,
+    resetStopwatch,
     completeReview,
   } = useProfile();
 
@@ -575,6 +576,22 @@ export default function DashboardPage() {
               >
                 Encerrar e salvar
               </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  if (
+                    stopwatch.elapsedSeconds > 15 &&
+                    !window.confirm('Parar e descartar esta sessão sem salvar?')
+                  ) {
+                    return;
+                  }
+                  resetStopwatch();
+                }}
+                className="px-4 py-3.5 rounded-2xl bg-rose-500/30 hover:bg-rose-600 text-white text-sm font-bold transition"
+                title="Parar e descartar esta sessão"
+              >
+                Parar
+              </button>
             </div>
           </div>
         ) : (

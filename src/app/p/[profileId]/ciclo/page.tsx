@@ -6,6 +6,7 @@ import { useGlobal } from '@/components/GlobalProvider';
 import { addDaysISO, formatDurationHMS, formatDurationHM, formatDateBR, todayISO } from '@/lib/utils';
 import {
   Play,
+  Square,
   Pause,
   RotateCcw,
   GripVertical,
@@ -382,11 +383,21 @@ export default function CicloPage() {
                     {stopwatch.running ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                   </button>
                   <button
-                    onClick={resetStopwatch}
-                    className="p-3.5 rounded-2xl card-surface hover:opacity-80"
-                    title="Zerar"
+                    type="button"
+                    onClick={() => {
+                      if (
+                        stopwatch.elapsedSeconds > 15 &&
+                        !window.confirm('Parar e descartar esta sessão sem salvar?')
+                      ) {
+                        return;
+                      }
+                      resetStopwatch();
+                    }}
+                    className="px-4 py-3.5 rounded-2xl bg-rose-500/15 hover:bg-rose-600 text-rose-600 hover:text-white text-sm font-bold inline-flex items-center gap-1.5 transition"
+                    title="Parar e descartar sessão (caso tenha desistido)"
                   >
-                    <RotateCcw className="w-5 h-5" />
+                    <Square className="w-4 h-4 fill-current" />
+                    Parar
                   </button>
                   <button
                     onClick={() => openRegisterModal(stopwatch.subjectId!, true)}
