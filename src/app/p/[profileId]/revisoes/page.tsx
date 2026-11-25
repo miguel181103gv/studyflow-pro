@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -38,6 +39,7 @@ export default function RevisoesPage() {
     addStudyLog,
     addErrorEntry,
   } = useProfile();
+  const aiName = useAiProviderName();
   const { aiJobs, runAiJob, dismissAiJob, notify } = useGlobal();
 
   const today = todayISO();
@@ -481,7 +483,7 @@ ${q.statement}`;
                       ? `Ver Quiz (${savedQuiz.savedStats.correct}/${savedQuiz.savedStats.total})`
                       : isQuizReady
                       ? 'Abrir Quiz Salvo'
-                      : 'Quiz Gemini'}
+                      : `Quiz ${aiName}`}
                   </button>
                   {!rev.completed && (
                     <>
@@ -573,7 +575,7 @@ ${q.statement}`;
               <div className="flex items-center gap-2 min-w-0">
                 <Sparkles className="w-5 h-5 text-violet-600 shrink-0" />
                 <h2 className="font-bold text-base truncate">
-                  {activeQuizData?.title || activeQuizJob?.label || 'Quiz Gemini'}
+                  {activeQuizData?.title || activeQuizJob?.label || `Quiz ${aiName}`}
                 </h2>
               </div>
               <div className="flex items-center gap-2 shrink-0">

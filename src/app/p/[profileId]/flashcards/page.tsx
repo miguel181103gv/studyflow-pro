@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { createClient } from '@/lib/supabase/client';
@@ -83,6 +84,7 @@ export default function FlashcardsPage() {
     reviewFlashcard,
     deleteFlashcard,
   } = useProfile();
+  const aiName = useAiProviderName();
 
   const { aiJobs, runAiJob } = useGlobal();
   const today = todayISO();
@@ -865,7 +867,7 @@ export default function FlashcardsPage() {
                       ) : (
                         <Sparkles className="w-4 h-4" />
                       )}
-                      {generating ? 'Gerando...' : 'Gerar com Gemini'}
+                      {generating ? 'Gerando...' : `Gerar com ${aiName}`}
                     </button>
                   </div>
                   {aiError && (

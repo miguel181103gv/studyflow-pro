@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from './ProfileProvider';
 import { useGlobal } from './GlobalProvider';
 import { formatDurationHMS, todayISO } from '@/lib/utils';
@@ -128,6 +129,7 @@ export function AppShell({
     startStopwatch,
     resetStopwatch,
   } = useProfile();
+  const aiName = useAiProviderName();
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -599,7 +601,7 @@ export function AppShell({
                   <Link
                     key={item.href}
                     href={fullHref}
-                    title={item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : item.label}
+                    title={item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : (item.href === '/relatorios' ? `Mentor ${aiName} AI` : item.label)}
                     onClick={() => setMobileOpen(false)}
                     className={`group flex items-center ${
                       compact ? 'justify-center px-2' : 'justify-between px-3.5'
@@ -613,7 +615,7 @@ export function AppShell({
                           isActive ? 'scale-110' : 'group-hover:scale-110'
                         }`}
                       />
-                      {!compact && <span className="truncate">{item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : item.label}</span>}
+                      {!compact && <span className="truncate">{item.href === '/estudos' ? studyMode.syllabusNavLabel : item.href === '/simulados' ? studyMode.simuladosNavLabel : (item.href === '/relatorios' ? `Mentor ${aiName} AI` : item.label)}</span>}
                     </span>
                     {!compact && badgeCount > 0 && (
                       <span
@@ -1066,7 +1068,7 @@ export function AppShell({
                     ) : (
                       <Sparkles className="w-3 h-3" />
                     )}
-                    Gerar com Gemini
+                    Gerar com {aiName}
                   </button>
                 </div>
                 <textarea

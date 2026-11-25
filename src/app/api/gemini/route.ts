@@ -2,6 +2,13 @@ import { NextResponse } from 'next/server';
 
 export const maxDuration = 60;
 
+export async function GET() {
+  return NextResponse.json({
+    deepseekEnabled: Boolean(process.env.DEEPSEEK_API_KEY?.trim()),
+    geminiEnabled: Boolean(process.env.GEMINI_API_KEY?.trim()),
+  });
+}
+
 // Prioriza modelos mais recentes (Gemini 3.8 Flash) + descoberta automática de modelos ativos na chave
 // Prioriza SEMPRE Flash Lite (500 req/dia e 15 req/min no plano gratuito!) antes dos Flash normais (20 req/dia)
 const PREFERRED_MODELS = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.8-flash'];
@@ -57,43 +64,46 @@ async function callDeepSeek(promptText: string, jsonMode = false): Promise<strin
   const dsKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!dsKey) return null;
 
-  try {
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${dsKey}`,
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [
-          {
-            role: 'system',
-            content: jsonMode
-              ? 'Você é um especialista em concursos públicos e estudos no Brasil. Responda exclusivamente em português do Brasil e retorne apenas JSON válido.'
-              : 'Você é um especialista em concursos públicos e estudos no Brasil. Responda sempre em português do Brasil.',
-          },
-          { role: 'user', content: promptText },
-        ],
-        temperature: jsonMode ? 0.2 : 0.4,
-        max_tokens: 4096,
-        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
-      }),
-      signal: AbortSignal.timeout(40000),
-    });
+  const dsModels = ['deepseek-flash', 'deepseek-chat'];
+  for (const dsModel of dsModels) {
+    try {
+      const res = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${dsKey}`,
+        },
+        body: JSON.stringify({
+          model: dsModel,
+          messages: [
+            {
+              role: 'system',
+              content: jsonMode
+                ? 'Você é um especialista em concursos públicos e estudos no Brasil. Responda exclusivamente em português do Brasil e retorne apenas JSON válido.'
+                : 'Você é um especialista em concursos públicos e estudos no Brasil. Responda sempre em português do Brasil.',
+            },
+            { role: 'user', content: promptText },
+          ],
+          temperature: jsonMode ? 0.2 : 0.4,
+          max_tokens: 4096,
+          ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
+        }),
+        signal: AbortSignal.timeout(40000),
+      });
 
-    if (!res.ok) {
-      return null;
+      if (!res.ok) {
+        continue;
+      }
+      const data = await res.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (typeof content === 'string' && content.trim()) {
+        return content.trim();
+      }
+    } catch {
+      continue;
     }
-    const data = await res.json();
-    const content = data?.choices?.[0]?.message?.content;
-    if (typeof content === 'string' && content.trim()) {
-      return content.trim();
-    }
-    return null;
-  } catch {
-    return null;
   }
+  return null;
 }
 
 async function callGemini(parts: unknown[], jsonMode = false, useSearch = false) {

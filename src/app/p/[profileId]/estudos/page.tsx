@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -235,6 +236,7 @@ export default function ProgressoEditalPage() {
     addHighlight,
     deleteHighlight,
   } = useProfile();
+  const aiName = useAiProviderName();
 
   const { notify, videoJob, startBatchVideoJob } = useGlobal();
   const studyMode = getStudyMode(profile);
@@ -2253,7 +2255,7 @@ export default function ProgressoEditalPage() {
                                 ) : (
                                   <Sparkles className="w-3.5 h-3.5" />
                                 )}
-                                {formattingNote ? 'Formatando...' : 'Formatar com Gemini'}
+                                {formattingNote ? 'Formatando...' : `Formatar com ${aiName}`}
                               </button>
                             </div>
                           </div>

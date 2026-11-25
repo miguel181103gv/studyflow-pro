@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { todayISO } from '@/lib/utils';
@@ -405,6 +406,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 
 export default function QuestoesPage() {
   const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog } = useProfile();
+  const aiName = useAiProviderName();
   const { notify } = useGlobal();
 
   const storageKey = `sf_question_bank_${profile?.id || 'default'}`;
@@ -1411,7 +1413,7 @@ ${q.statement}`;
                       )}
                       {converting
                         ? `Gerando ${aiCount} questões...`
-                        : `Gerar ${aiCount} Questões com Gemini`}
+                        : `Gerar ${aiCount} Questões com ${aiName}`}
                     </button>
                   </div>
                 </form>
