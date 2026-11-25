@@ -160,7 +160,7 @@ export default function SimuladosPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchingExams, setSearchingExams] = useState(false);
   const [searchedExams, setSearchedExams] = useState<
-    Array<{ title: string; board?: string; organ?: string; year?: string; url?: string; snippet?: string }>
+    Array<{ title: string; board?: string; organ?: string; year?: string; url?: string; pdf_url?: string; snippet?: string }>
   >([]);
   const [genTitle, setGenTitle] = useState('');
   const [genBoard, setGenBoard] = useState('FCC');
@@ -662,17 +662,70 @@ export default function SimuladosPage() {
     return chunks.length > 0 ? chunks : [text.slice(0, maxChars)];
   }
 
+  function base64ToPdfFile(b64: string, filename: string): File {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new File([bytes], filename, { type: 'application/pdf' });
+  }
+
+  async function handleAutoImportSearchedExam(ex: {
+    title: string;
+    url?: string;
+    pdf_url?: string;
+  }) {
+    if (!ex.url && !ex.pdf_url) return;
+    setSearchingExams(true);
+    try {
+      notify(`Procurando PDF oficial de "${ex.title}"...`, 'info');
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'fetch_exam_pdfs_from_url',
+          url: ex.url || '',
+          pdfUrl: ex.pdf_url || '',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok || !json.data?.examBase64) {
+        throw new Error(json.error || 'O site bloqueou o download automático.');
+      }
+      const safeName = `${ex.title.replace(/[^a-zA-Z0-9\s-]/g, '').slice(0, 40) || 'prova'}.pdf`;
+      const examFile = base64ToPdfFile(String(json.data.examBase64), safeName);
+      const gabFile = json.data.gabBase64
+        ? base64ToPdfFile(String(json.data.gabBase64), `gabarito-${safeName}`)
+        : null;
+      setShowSearchModal(false);
+      processExamPdfFiles(examFile, gabFile);
+    } catch (err) {
+      notify(
+        `${err instanceof Error ? err.message : 'Download bloqueado.'} Abrindo o link para você baixar o PDF.`,
+        'info'
+      );
+      if (ex.pdf_url || ex.url) {
+        window.open(ex.pdf_url || ex.url, '_blank', 'noopener,noreferrer');
+      }
+    } finally {
+      setSearchingExams(false);
+    }
+  }
+
   function handleImportExamPdf(e: React.FormEvent) {
     e.preventDefault();
-    if (!examPdfFile || !profile?.id) return;
+    if (!examPdfFile) return;
     const examFileSnap = examPdfFile;
     const gabFileSnap = gabaritoPdfFile;
-    const storageKeySnap = genStorageKey;
-    const subjectNamesSnap = subjects.map((s) => s.name);
-
     setShowPdfModal(false);
     setExamPdfFile(null);
     setGabaritoPdfFile(null);
+    processExamPdfFiles(examFileSnap, gabFileSnap);
+  }
+
+  function processExamPdfFiles(examFileSnap: File, gabFileSnap: File | null) {
+    if (!profile?.id) return;
+    const storageKeySnap = genStorageKey;
+    const subjectNamesSnap = subjects.map((s) => s.name);
 
     runAiJob({
       id: simJobId,
@@ -1468,6 +1521,17 @@ export default function SimuladosPage() {
                       <p className="text-xs text-muted-theme line-clamp-2">{ex.snippet}</p>
                     )}
                     <div className="flex flex-wrap gap-2 pt-1">
+                      {(ex.pdf_url || ex.url) && (
+                        <button
+                          type="button"
+                          disabled={searchingExams || generating}
+                          onClick={() => void handleAutoImportSearchedExam(ex)}
+                          className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-50"
+                        >
+                          <FileUp className="w-3 h-3" />
+                          Importar PDF & Resolver
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {

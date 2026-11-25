@@ -10,6 +10,7 @@ import { formatDurationHMS, todayISO } from '@/lib/utils';
 import type { ThemeId } from '@/lib/types';
 import { getStudyMode } from '@/lib/studyModes';
 import { dispatchDictionaryUpdated, type DictEntryLite } from './DictionaryText';
+import { syncDictionaryToCloud } from '@/lib/dictSync';
 import { findSimilarItems } from '@/lib/similarity';
 import { DuplicateWarningBanner } from './DuplicateWarningBanner';
 import {
@@ -147,6 +148,7 @@ export function AppShell({
   const pathname = usePathname();
   const router = useRouter();
   const {
+    userId,
     profile,
     loading,
     syncing,
@@ -379,6 +381,9 @@ export function AppShell({
       ].sort((a, b) => a.word.localeCompare(b.word, 'pt-BR', { sensitivity: 'base' }));
       localStorage.setItem(dictKey, JSON.stringify(next));
       dispatchDictionaryUpdated();
+      if (userId && profile?.id) {
+        void syncDictionaryToCloud(userId, profile.id, next);
+      }
       setQuickDictConfirmDup(false);
       setQuickDictOpen(false);
       notify(`"${finalWord}" adicionado ao Dicionário!`, 'success');

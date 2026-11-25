@@ -5,6 +5,7 @@ import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { dispatchDictionaryUpdated } from '@/components/DictionaryText';
+import { syncDictionaryToCloud } from '@/lib/dictSync';
 import { DuplicateWarningBanner } from '@/components/DuplicateWarningBanner';
 import { compareShortTerms, findSimilarItems } from '@/lib/similarity';
 import {
@@ -71,7 +72,7 @@ function normalizeFirstLetter(word: string): string {
 }
 
 export default function DicionarioPage() {
-  const { profile, subjects } = useProfile();
+  const { userId, profile, subjects } = useProfile();
   const aiName = useAiProviderName();
   const { notify } = useGlobal();
 
@@ -123,15 +124,20 @@ export default function DicionarioPage() {
   }, []);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setEntries(parsed);
+    const load = () => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) setEntries(parsed);
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
-    }
+    };
+    load();
+    window.addEventListener('sf-dictionary-updated', load);
+    return () => window.removeEventListener('sf-dictionary-updated', load);
   }, [storageKey]);
 
   function saveEntries(next: DictEntry[]) {
@@ -142,6 +148,9 @@ export default function DicionarioPage() {
     try {
       localStorage.setItem(storageKey, JSON.stringify(sorted));
       dispatchDictionaryUpdated();
+      if (userId && profile?.id) {
+        void syncDictionaryToCloud(userId, profile.id, sorted);
+      }
     } catch {
       // ignore
     }

@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { mergeDictionaryLists, readLocalDictionary, syncDictionaryToCloud, writeLocalDictionary } from '@/lib/dictSync';
 import type {
   AIReport,
   ErrorEntry,
@@ -482,7 +483,23 @@ export function ProfileProvider({
       swSyncRowIdRef.current = swSyncRow.id;
       applyCloudStopwatch(swSyncRow.metrics_snapshot);
     }
-    setReports(allReports.filter((r) => String(r.period_type) !== '__SYNC_SW__'));
+    const dictSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_DICT__');
+    try {
+      const cloudDict = dictSyncRow?.content_markdown ? JSON.parse(dictSyncRow.content_markdown) : [];
+      const localDict = readLocalDictionary(profileId);
+      if (Array.isArray(cloudDict)) {
+        const { merged, localHadExtra } = mergeDictionaryLists(localDict, cloudDict);
+        if (merged.length > 0) {
+          writeLocalDictionary(profileId, merged);
+          if (localHadExtra && userId) {
+            void syncDictionaryToCloud(userId, profileId, merged);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setReports(allReports.filter((r) => !String(r.period_type || '').startsWith('__SYNC_')));
     setFlashcards((fcRes?.data as Flashcard[]) || []);
 
     const savedTheme = (setRes.data?.theme as ThemeId) || 'clean';

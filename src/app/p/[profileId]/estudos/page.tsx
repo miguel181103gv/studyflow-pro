@@ -47,9 +47,38 @@ interface FormattedNote {
   sections: { heading: string; points: string[]; callout?: string }[];
 }
 
-interface TopicNoteRecord {
+interface TopicNoteItem {
+  id: string;
+  title?: string;
   rawText: string;
+  formatted: FormattedNote | null;
+}
+
+interface TopicNoteRecord {
+  rawText?: string;
   formatted?: FormattedNote | null;
+  items?: TopicNoteItem[];
+}
+
+function getTopicNoteItems(rec?: TopicNoteRecord): TopicNoteItem[] {
+  if (rec?.items && Array.isArray(rec.items) && rec.items.length > 0) {
+    return rec.items;
+  }
+  if (rec?.rawText?.trim() || rec?.formatted) {
+    return [
+      {
+        id: 'note-0',
+        title: rec.formatted?.title || 'Texto 1',
+        rawText: rec.rawText || '',
+        formatted: rec.formatted || null,
+      },
+    ];
+  }
+  return [{ id: 'note-0', title: 'Texto 1', rawText: '', formatted: null }];
+}
+
+function hasAnyTopicNoteContent(rec?: TopicNoteRecord): boolean {
+  return getTopicNoteItems(rec).some((it) => Boolean(it.rawText?.trim() || it.formatted));
 }
 
 interface FoundVideo {
@@ -288,6 +317,7 @@ export default function ProgressoEditalPage() {
   const [formattingNote, setFormattingNote] = useState(false);
   const [signedPdfUrl, setSignedPdfUrl] = useState<string | null>(null);
   const [activePdfIdx, setActivePdfIdx] = useState(0);
+  const [activeNoteIdx, setActiveNoteIdx] = useState(0);
   const [loadingPdfUrl, setLoadingPdfUrl] = useState(false);
   const [expandedParents, setExpandedParents] = useState<Record<string, boolean>>({});
   const [videoInput, setVideoInput] = useState('');
@@ -322,7 +352,9 @@ export default function ProgressoEditalPage() {
 
   async function handleFormatNoteWithGemini() {
     if (!activeTopicId) return;
-    const current = topicNotesMap[activeTopicId];
+    const items = getTopicNoteItems(topicNotesMap[activeTopicId]);
+    const safeIdx = Math.min(activeNoteIdx, Math.max(0, items.length - 1));
+    const current = items[safeIdx];
     if (!current?.rawText?.trim()) return;
     setFormattingNote(true);
     try {
@@ -340,12 +372,19 @@ export default function ProgressoEditalPage() {
       if (!res.ok || !json.ok || !json.data?.sections) {
         throw new Error(json.error || 'Não foi possível formatar o texto.');
       }
-      saveTopicNote(activeTopicId, {
-        rawText: current.rawText,
-        formatted: json.data as FormattedNote,
-      });
+      const fmt = json.data as FormattedNote;
+      const nextItems = items.map((it, idx) =>
+        idx === safeIdx
+          ? {
+              ...it,
+              title: it.title && !/^Texto \d+$/.test(it.title) ? it.title : fmt.title || it.title,
+              formatted: fmt,
+            }
+          : it
+      );
+      saveTopicNote(activeTopicId, { items: nextItems });
       setEditingNoteMode(false);
-      notify('Texto formatado e organizado pelo Gemini!', 'success');
+      notify(`Texto formatado e organizado pelo ${aiName}!`, 'success');
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Erro ao formatar texto.', 'error');
     } finally {
@@ -367,7 +406,7 @@ export default function ProgressoEditalPage() {
     const pdfCount = affectedTopics.filter((t) => Boolean(t.pdf_path)).length;
     const videoCount = affectedTopics.filter((t) => Boolean(t.video_url)).length;
     const hlCount = highlights.filter((h) => affectedTopicSet.has(h.topic_id)).length;
-    const noteCount = affectedTopicIds.filter((id) => Boolean(topicNotesMap[id]?.rawText?.trim())).length;
+    const noteCount = affectedTopicIds.filter((id) => hasAnyTopicNoteContent(topicNotesMap[id])).length;
     const fcCount = flashcards.filter(
       (c) => (c.topic_id && affectedTopicSet.has(c.topic_id)) || subSet.has(c.subject_id)
     ).length;
@@ -1718,7 +1757,7 @@ export default function ProgressoEditalPage() {
                                 </span>
                               )}
 
-                              {topicNotesMap[topic.id]?.rawText?.trim() && (
+                              {hasAnyTopicNoteContent(topicNotesMap[topic.id]) && (
                                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-teal-500/15 text-teal-800 dark:text-teal-300 inline-flex items-center gap-1">
                                   <AlignLeft className="w-3 h-3" />
                                   Texto
@@ -1792,12 +1831,13 @@ export default function ProgressoEditalPage() {
                           <button
                             type="button"
                             onClick={() => {
-                              setEditingNoteMode(!topicNotesMap[topic.id]?.formatted);
+                              setActiveNoteIdx(0);
+                              setEditingNoteMode(!getTopicNoteItems(topicNotesMap[topic.id])[0]?.formatted);
                               openTopicViewer(topic.id, topic.pdf_path, 'texto');
                             }}
                             title="Texto / Resumo formatado com Gemini"
                             className={`p-2 rounded-xl transition ${
-                              topicNotesMap[topic.id]?.rawText?.trim()
+                              hasAnyTopicNoteContent(topicNotesMap[topic.id])
                                 ? 'bg-indigo-600 text-white hover:bg-indigo-500'
                                 : 'card-surface text-muted-theme hover:text-indigo-600'
                             }`}
@@ -2226,14 +2266,90 @@ export default function ProgressoEditalPage() {
                 ) : viewerTab === 'texto' ? (
                   <div className="flex-1 overflow-y-auto p-5 sm:p-8 space-y-5">
                     {(() => {
-                      const rec = topicNotesMap[activeTopic.id] || { rawText: '', formatted: null };
+                      const items = getTopicNoteItems(topicNotesMap[activeTopic.id]);
+                      const safeIdx = Math.min(activeNoteIdx, Math.max(0, items.length - 1));
+                      const rec = items[safeIdx];
                       const showFormatted = Boolean(rec.formatted) && !editingNoteMode;
+
+                      const updateCurrentItem = (patch: Partial<TopicNoteItem>) => {
+                        const nextItems = items.map((it, idx) =>
+                          idx === safeIdx ? { ...it, ...patch } : it
+                        );
+                        saveTopicNote(activeTopic.id, { items: nextItems });
+                      };
+
+                      const addNewTextTab = () => {
+                        const nextItems: TopicNoteItem[] = [
+                          ...items,
+                          {
+                            id: `note-${Date.now()}`,
+                            title: `Texto ${items.length + 1}`,
+                            rawText: '',
+                            formatted: null,
+                          },
+                        ];
+                        saveTopicNote(activeTopic.id, { items: nextItems });
+                        setActiveNoteIdx(nextItems.length - 1);
+                        setEditingNoteMode(true);
+                      };
+
+                      const deleteCurrentTextTab = () => {
+                        if (items.length <= 1) return;
+                        const nextItems = items.filter((_, idx) => idx !== safeIdx);
+                        saveTopicNote(activeTopic.id, { items: nextItems });
+                        setActiveNoteIdx(Math.max(0, safeIdx - 1));
+                      };
+
                       return (
                         <div className="max-w-3xl mx-auto space-y-4">
+                          {/* Barra de múltiplos textos (igual aos múltiplos PDFs) */}
+                          <div className="flex flex-wrap items-center gap-1.5 pb-2 border-b border-theme">
+                            {items.map((it, idx) => (
+                              <button
+                                key={it.id}
+                                type="button"
+                                onClick={() => {
+                                  setActiveNoteIdx(idx);
+                                  setEditingNoteMode(!it.formatted);
+                                }}
+                                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition max-w-[200px] truncate ${
+                                  idx === safeIdx
+                                    ? 'bg-teal-600 text-white shadow-xs'
+                                    : 'card-surface border border-theme text-muted-theme hover:text-[var(--text-main)]'
+                                }`}
+                                title={it.title || `Texto ${idx + 1}`}
+                              >
+                                {it.title || `Texto ${idx + 1}`}
+                              </button>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={addNewTextTab}
+                              className="px-3 py-1.5 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 text-teal-700 dark:text-teal-300 text-xs font-bold inline-flex items-center gap-1"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              Novo Texto
+                            </button>
+                            {items.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={deleteCurrentTextTab}
+                                className="ml-auto px-2.5 py-1.5 rounded-xl hover:bg-rose-500/15 text-muted-theme hover:text-rose-500 text-xs font-semibold inline-flex items-center gap-1"
+                                title="Excluir este texto"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Excluir texto
+                              </button>
+                            )}
+                          </div>
+
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="text-xs font-bold uppercase tracking-wider text-muted-theme">
-                              Material em Texto do Tópico
-                            </p>
+                            <input
+                              value={rec.title || ''}
+                              onChange={(e) => updateCurrentItem({ title: e.target.value })}
+                              placeholder={`Título (ex: Resumo ${safeIdx + 1}, Jurisprudência...)`}
+                              className="rounded-xl card-surface border border-theme px-3 py-1.5 text-xs font-bold w-full sm:w-64"
+                            />
                             <div className="flex items-center gap-2 flex-wrap">
                               {rec.formatted && (
                                 <button
@@ -2266,7 +2382,7 @@ export default function ProgressoEditalPage() {
                                 <h3 className="text-lg font-extrabold">{rec.formatted.title}</h3>
                                 {rec.formatted.summary && (
                                   <p className="text-sm text-muted-theme leading-relaxed">
-                                    {rec.formatted.summary}
+                                    <DictionaryText text={rec.formatted.summary} />
                                   </p>
                                 )}
                               </div>
@@ -2283,13 +2399,13 @@ export default function ProgressoEditalPage() {
                                     {sec.points.map((pt, pIdx) => (
                                       <li key={pIdx} className="text-sm leading-relaxed flex items-start gap-2">
                                         <span className="w-1.5 h-1.5 rounded-full bg-teal-600 mt-2 shrink-0" />
-                                        <span>{pt}</span>
+                                        <span><DictionaryText text={pt} /></span>
                                       </li>
                                     ))}
                                   </ul>
                                   {sec.callout && (
                                     <div className="rounded-xl bg-amber-500/12 border border-amber-500/30 px-3.5 py-2.5 text-xs text-amber-900 dark:text-amber-200 font-medium">
-                                      <strong>Atenção:</strong> {sec.callout}
+                                      <strong>Atenção:</strong> <DictionaryText text={sec.callout} />
                                     </div>
                                   )}
                                 </div>
@@ -2300,17 +2416,12 @@ export default function ProgressoEditalPage() {
                               <textarea
                                 rows={14}
                                 value={rec.rawText}
-                                onChange={(e) =>
-                                  saveTopicNote(activeTopic.id, {
-                                    ...rec,
-                                    rawText: e.target.value,
-                                  })
-                                }
-                                placeholder="Cole aqui suas anotações, resumo, letra de lei ou texto da aula — depois clique em 'Formatar com Gemini' para deixar tudo organizado e separadinho por tópicos!"
+                                onChange={(e) => updateCurrentItem({ rawText: e.target.value })}
+                                placeholder={`Cole aqui suas anotações, resumo, letra de lei ou texto da aula — depois clique em 'Formatar com ${aiName}' para deixar tudo organizado e separadinho!`}
                                 className="w-full rounded-2xl card-surface border border-slate-300 dark:border-slate-600 p-4 text-sm leading-relaxed"
                               />
                               <p className="text-[11px] text-muted-theme">
-                                Salvo automaticamente conforme você digita. Clique em <strong>Formatar com Gemini</strong> para transformar em um resumo estruturado.
+                                Salvo automaticamente conforme você digita. Clique em <strong>Formatar com {aiName}</strong> para transformar em um resumo estruturado.
                               </p>
                             </div>
                           )}

@@ -1026,22 +1026,113 @@ Retorne SOMENTE JSON válido:
 
     if (action === 'search_past_exams') {
       const { query = '' } = body;
-      if (!query || !String(query).trim()) {
+      const qClean = String(query || '').trim();
+      if (!qClean) {
         return NextResponse.json({ error: 'Digite o concurso, cargo ou banca para buscar.' }, { status: 400 });
       }
-      const hits = await searchDeepSeekWeb(`${String(query).trim()} prova concurso pdf gabarito`, false, 8);
-      if (!hits) {
+      const [pciHits, pdfHits] = await Promise.all([
+        searchDeepSeekWeb(`site:pciconcursos.com.br/provas ${qClean}`, false, 8),
+        searchDeepSeekWeb(`${qClean} prova anterior concurso filetype:pdf gabarito`, false, 6),
+      ]);
+      const combined = [pciHits ? `PCI CONCURSOS PROVAS:\n${pciHits}` : '', pdfHits ? `PDFs ENCONTRADOS:\n${pdfHits}` : '']
+        .filter(Boolean)
+        .join('\n\n');
+
+      if (!combined) {
         return NextResponse.json({ ok: true, data: { exams: [] } });
       }
-      const prompt = `Com base nos resultados abaixo, liste até 6 provas anteriores reais encontradas para o usuário escolher.
+      const prompt = `Com base nos resultados abaixo, liste até 10 PROVAS ANTERIORES REAIS (evite notícias ou editais previstos; priorize páginas de prova/download de PDF, ordenadas das mais recentes para as mais antigas) para "${qClean}".
+Se a URL já terminar em .pdf, coloque-a em "pdf_url" (senão deixe "").
+
 RESULTADOS:
-${hits}
+${combined.slice(0, 12000)}
 
 Retorne SOMENTE JSON válido:
-{"exams":[{"title":"Nome da Prova (ex: TRT-MG 2022 - Técnico Judiciário)","board":"FCC","organ":"TRT-MG","year":"2022","url":"https://...","snippet":"Resumo curto"}]}`;
+{"exams":[{"title":"Nome da Prova (ex: TRT-15 2025 - Técnico Judiciário)","board":"FCC","organ":"TRT-15","year":"2025","url":"https://...","pdf_url":"https://... ou vazio","snippet":"Resumo curto"}]}`;
       const raw = await callGemini([{ text: prompt }], true, false, false);
       const data = extractJsonObject(raw);
       return NextResponse.json({ ok: true, data });
+    }
+
+    if (action === 'fetch_exam_pdfs_from_url') {
+      const { url = '', pdfUrl = '' } = body;
+      const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+      let targetExamPdf = String(pdfUrl || '').trim();
+      let targetGabPdf = '';
+
+      if (!targetExamPdf && url) {
+        const cleanUrl = String(url).trim();
+        if (cleanUrl.toLowerCase().endsWith('.pdf')) {
+          targetExamPdf = cleanUrl;
+        } else {
+          try {
+            const pageRes = await fetch(cleanUrl, {
+              headers: { 'User-Agent': ua },
+              signal: AbortSignal.timeout(8000),
+            });
+            if (pageRes.ok) {
+              const html = await pageRes.text();
+              const links = Array.from(html.matchAll(/href=["']([^"']+\.pdf[^"']*)["']/gi)).map((m) => {
+                try {
+                  return new URL(m[1], cleanUrl).toString();
+                } catch {
+                  return m[1];
+                }
+              });
+              const gabLink = links.find((l) => /gab|respost/i.test(l));
+              const provaLink = links.find((l) => !/gab|respost|edital/i.test(l)) || links[0];
+              if (provaLink) targetExamPdf = provaLink;
+              if (gabLink) targetGabPdf = gabLink;
+            }
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      if (!targetExamPdf) {
+        return NextResponse.json(
+          { ok: false, error: 'Não foi possível localizar o link direto do PDF nessa página.' },
+          { status: 404 }
+        );
+      }
+
+      const fetchPdfB64 = async (u: string): Promise<string> => {
+        const r = await fetch(u, {
+          headers: { 'User-Agent': ua },
+          signal: AbortSignal.timeout(12000),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const ct = r.headers.get('content-type') || '';
+        if (!ct.includes('pdf') && !u.toLowerCase().includes('.pdf')) {
+          throw new Error('Link não retornou um PDF.');
+        }
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength > 12 * 1024 * 1024) {
+          throw new Error('PDF muito grande para download automático.');
+        }
+        return Buffer.from(buf).toString('base64');
+      };
+
+      const examBase64 = await fetchPdfB64(targetExamPdf);
+      let gabBase64 = '';
+      if (targetGabPdf) {
+        try {
+          gabBase64 = await fetchPdfB64(targetGabPdf);
+        } catch {
+          gabBase64 = '';
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        data: {
+          examBase64,
+          gabBase64,
+          examPdfUrl: targetExamPdf,
+          gabPdfUrl: targetGabPdf,
+        },
+      });
     }
 
     if (action === 'fetch_board_style') {
