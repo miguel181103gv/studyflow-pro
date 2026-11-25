@@ -74,7 +74,7 @@ async function callDeepSeek(
   const dsModels = hasImage
     ? ['deepseek-flash']
     : preferPro
-    ? ['deepseek-v4-pro', 'deepseek-flash', 'deepseek-chat']
+    ? ['deepseek-flash', 'deepseek-v4-pro']
     : ['deepseek-flash', 'deepseek-chat'];
 
   for (const dsModel of dsModels) {
@@ -100,7 +100,7 @@ async function callDeepSeek(
           max_tokens: 4096,
           ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
         }),
-        signal: AbortSignal.timeout(hasImage ? 45000 : 40000),
+        signal: AbortSignal.timeout(hasImage ? 35000 : 24000),
       });
 
       if (!res.ok) {
