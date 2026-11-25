@@ -296,7 +296,7 @@ REGRAS RÍGIDAS:
 - Liste CADA cargo individualmente pelo nome exato que aparece no edital (ex: "Agente Legislativo", "Analista Administrativo", "Técnico em Informática").
 - Se o edital for de apenas 1 cargo, retorne um array com esse 1 cargo.
 - REGRA CRÍTICA SOBRE MATÉRIAS vs CATEGORIAS: "Conhecimentos Básicos", "Conhecimentos Gerais" e "Conhecimentos Específicos" são APENAS o campo "category" — JAMAIS crie uma matéria com name = "Conhecimentos Específicos", "Conhecimentos Básicos" ou "Conhecimentos Gerais"! Dentro da seção de Conhecimentos Específicos, separe CADA disciplina real como uma matéria própria (ex: "Direito do Trabalho", "Direito Processual do Trabalho", "Conhecimentos Bancários") com category: "Conhecimentos Específicos", e coloque os itens numerados de cada disciplina em "topics".
-- Em "roles_details", inclua para CADA cargo: salário base, vale-alimentação/auxílios, carga horária, data da prova e TODAS as matérias com TODOS os seus TÓPICOS do conteúdo programático (Conhecimentos Básicos/Gerais + Específicos). Nunca omita os tópicos de uma matéria!
+- Em "roles_details", inclua para CADA cargo: salário base, vale-alimentação/auxílios, carga horária, data da prova e TODAS as matérias com TODOS os seus TÓPICOS do conteúdo programático (Conhecimentos Básicos/Gerais + Específicos). Nunca omita os tópicos de uma matéria! Se o edital informar o peso (ex: peso 1 para Gerais, peso 2 para Específicos) ou a quantidade de questões de cada disciplina/bloco, preencha "weight" (número) e "exam_questions" (número ou null).
 - Não invente valores que não estejam no PDF — deixe "" se não encontrar.
 
 Retorne SOMENTE um JSON válido neste formato:
@@ -319,6 +319,8 @@ Retorne SOMENTE um JSON válido neste formato:
           "name": "Língua Portuguesa",
           "category": "Básica",
           "hours_target": 2,
+          "weight": 1,
+          "exam_questions": null,
           "topics": ["Compreensão e interpretação de textos", "Ortografia oficial", "Acentuação gráfica"]
         }
       ]
@@ -358,6 +360,8 @@ Retorne SOMENTE um JSON válido neste formato:
     {
       "name": "Nome da Matéria",
       "category": "Conhecimentos Gerais ou Conhecimentos Específicos",
+      "weight": 1,
+      "exam_questions": null,
       "topics": ["Tópico 1 limpo", "Tópico 2 limpo"]
     }
   ]

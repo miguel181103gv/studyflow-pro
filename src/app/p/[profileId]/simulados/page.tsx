@@ -49,7 +49,15 @@ interface GeneratedSimulado {
   board: string;
   style: 'multipla' | 'certo_errado';
   created_at: string;
+  weights?: Record<string, number>;
   questions: SimQuestion[];
+  saved_progress?: {
+    answers: Record<string, string>;
+    flagged: Record<string, boolean>;
+    elapsed_sec: number;
+    idx: number;
+    saved_at: string;
+  };
   last_score?: {
     correct: number;
     total: number;
@@ -105,6 +113,7 @@ export default function SimuladosPage() {
   const [genMode, setGenMode] = useState<'rapido' | 'prova_real'>('rapido');
   const [genTotalCount, setGenTotalCount] = useState<number>(15);
   const [genSubjectCounts, setGenSubjectCounts] = useState<Record<string, number>>({});
+  const [genSubjectWeights, setGenSubjectWeights] = useState<Record<string, number>>({});
   const [genSubjectIds, setGenSubjectIds] = useState<string[]>([]);
   const simJobId = `simulados:${profile?.id || 'default'}`;
   const simJob = aiJobs[simJobId];
@@ -121,6 +130,8 @@ export default function SimuladosPage() {
   const [examFinished, setExamFinished] = useState(false);
   const [examElapsedSec, setExamElapsedSec] = useState(0);
   const [savingResult, setSavingResult] = useState(false);
+  const [showClosePrompt, setShowClosePrompt] = useState(false);
+  const [showTopicSpoiler, setShowTopicSpoiler] = useState(false);
 
   useEffect(() => {
     try {
@@ -211,46 +222,82 @@ export default function SimuladosPage() {
     setShowAdd(false);
   }
 
-  function computeRealisticExamCounts(targetTotal: number, activeSubs: typeof subjects): Record<string, number> {
-    if (activeSubs.length === 0) return {};
-    const weights = activeSubs.map((s) => {
-      const cat = (s.category || '').toLowerCase();
-      const isSpec = cat.includes('espec');
-      const baseW = Math.max(1, Math.max(1, (Number(s.cycle_minutes) || Number(s.cycle_hours) * 60 || 60) / 60));
-      return isSpec ? baseW * 1.8 : baseW;
+  function computeDefaultWeights(activeSubs: typeof subjects): Record<string, number> {
+    const wMap: Record<string, number> = {};
+    activeSubs.forEach((s) => {
+      const isSpec = (s.category || '').toLowerCase().includes('espec');
+      wMap[s.id] = isSpec ? 2 : 1;
     });
-    const sumW = weights.reduce((a, b) => a + b, 0) || 1;
-    const raw = weights.map((w) => Math.max(1, Math.round((w / sumW) * targetTotal)));
-    let diff = targetTotal - raw.reduce((a, b) => a + b, 0);
-    let idx = 0;
-    while (diff !== 0 && activeSubs.length > 0) {
-      const pos = idx % activeSubs.length;
-      if (diff > 0) {
-        raw[pos] += 1;
-        diff--;
-      } else if (raw[pos] > 1) {
-        raw[pos] -= 1;
-        diff++;
-      }
-      idx++;
-      if (idx > 500) break;
-    }
+    return wMap;
+  }
+
+  function distributeBucket(subs: typeof subjects, bucketTotal: number): Record<string, number> {
     const map: Record<string, number> = {};
-    activeSubs.forEach((s, i) => {
-      map[s.id] = raw[i];
+    if (subs.length === 0 || bucketTotal <= 0) return map;
+    const base = Math.floor(bucketTotal / subs.length);
+    const rem = bucketTotal % subs.length;
+    subs.forEach((s, i) => {
+      map[s.id] = base + (i < rem ? 1 : 0);
     });
     return map;
   }
 
+  function computeRealisticExamCounts(targetTotal: number, activeSubs: typeof subjects): Record<string, number> {
+    if (activeSubs.length === 0) return {};
+    const gerais = activeSubs.filter((s) => !(s.category || '').toLowerCase().includes('espec'));
+    const espec = activeSubs.filter((s) => (s.category || '').toLowerCase().includes('espec'));
+    if (gerais.length > 0 && espec.length > 0) {
+      const gTotal = Math.round(targetTotal / 2);
+      const eTotal = targetTotal - gTotal;
+      return {
+        ...distributeBucket(gerais, gTotal),
+        ...distributeBucket(espec, eTotal),
+      };
+    }
+    return distributeBucket(activeSubs, targetTotal);
+  }
+
   function applyProvaRealPreset(boardName: string) {
     const isCebraspe = boardName.toLowerCase().includes('cebraspe') || boardName.toLowerCase().includes('cespe');
-    const target = isCebraspe ? 120 : 60;
+    let target = isCebraspe ? 120 : 60;
     const allIds = subjects.map((s) => s.id);
+
+    let editalMeta: Record<string, { weight?: number; exam_questions?: number | null }> = {};
+    try {
+      const rawMeta = localStorage.getItem(`sf_subject_exam_meta_${profile?.id || 'default'}`);
+      if (rawMeta) editalMeta = JSON.parse(rawMeta) || {};
+    } catch {
+      editalMeta = {};
+    }
+
+    const weights = computeDefaultWeights(subjects);
+    let hasEditalCounts = true;
+    const editalCounts: Record<string, number> = {};
+    let editalSum = 0;
+
+    subjects.forEach((s) => {
+      const meta = editalMeta[s.id];
+      if (meta?.weight && meta.weight > 0) weights[s.id] = meta.weight;
+      if (meta?.exam_questions && meta.exam_questions > 0) {
+        editalCounts[s.id] = meta.exam_questions;
+        editalSum += meta.exam_questions;
+      } else {
+        hasEditalCounts = false;
+      }
+    });
+
+    const finalCounts =
+      hasEditalCounts && editalSum > 0
+        ? editalCounts
+        : computeRealisticExamCounts(target, subjects);
+    if (hasEditalCounts && editalSum > 0) target = editalSum;
+
     setGenMode('prova_real');
     setGenStyle(isCebraspe ? 'certo_errado' : 'multipla');
     setGenTotalCount(target);
     setGenSubjectIds(allIds);
-    setGenSubjectCounts(computeRealisticExamCounts(target, subjects));
+    setGenSubjectCounts(finalCounts);
+    setGenSubjectWeights(weights);
   }
 
   function handleGenerateSimulado(e: React.FormEvent) {
@@ -266,19 +313,27 @@ export default function SimuladosPage() {
     const styleSnap = genStyle;
     const storageKeySnap = genStorageKey;
     const topicsSnap = topics;
+    const weightsSnap = genMode === 'prova_real' ? { ...genSubjectWeights } : computeDefaultWeights(chosenSubs);
+
+    const orderedChosenSubs = [...chosenSubs].sort((a, b) => {
+      const aSpec = (a.category || '').toLowerCase().includes('espec') ? 1 : 0;
+      const bSpec = (b.category || '').toLowerCase().includes('espec') ? 1 : 0;
+      if (aSpec !== bSpec) return aSpec - bSpec;
+      return (a.cycle_order ?? 0) - (b.cycle_order ?? 0);
+    });
 
     const plan =
       genMode === 'prova_real'
-        ? chosenSubs
+        ? orderedChosenSubs
             .map((sub) => ({
               subject: sub,
               count: Math.max(0, Number(genSubjectCounts[sub.id] ?? 0)),
             }))
             .filter((p) => p.count > 0)
         : (() => {
-            const basePerSub = Math.floor(genTotalCount / chosenSubs.length);
-            const remainder = genTotalCount % chosenSubs.length;
-            return chosenSubs
+            const basePerSub = Math.floor(genTotalCount / orderedChosenSubs.length);
+            const remainder = genTotalCount % orderedChosenSubs.length;
+            return orderedChosenSubs
               .map((sub, idx) => ({
                 subject: sub,
                 count: basePerSub + (idx < remainder ? 1 : 0),
@@ -443,6 +498,9 @@ export default function SimuladosPage() {
           await Promise.all(workers);
         } finally {
           if (collected.length > 0) {
+            const orderMap = new Map<string, number>();
+            plan.forEach((p, idx) => orderMap.set(p.subject.id, idx));
+            collected.sort((a, b) => (orderMap.get(a.subject_id) ?? 999) - (orderMap.get(b.subject_id) ?? 999));
             const isPartial = collected.length < totalSnap;
             const newSim: GeneratedSimulado = {
               id: `gensim-${Date.now()}`,
@@ -450,6 +508,7 @@ export default function SimuladosPage() {
               board: boardSnap,
               style: styleSnap,
               created_at: new Date().toISOString(),
+              weights: weightsSnap,
               questions: collected,
             };
 
@@ -470,13 +529,60 @@ export default function SimuladosPage() {
     });
   }
 
-  function startExamRunner(sim: GeneratedSimulado) {
+  function startExamRunner(sim: GeneratedSimulado, restartFresh = false) {
     setActiveSim(sim);
-    setExamIdx(0);
-    setExamAnswers({});
-    setExamFlagged({});
+    setShowClosePrompt(false);
+    setShowTopicSpoiler(false);
     setExamFinished(false);
-    setExamElapsedSec(0);
+    if (!restartFresh && sim.saved_progress) {
+      setExamAnswers(sim.saved_progress.answers || {});
+      setExamFlagged(sim.saved_progress.flagged || {});
+      setExamElapsedSec(sim.saved_progress.elapsed_sec || 0);
+      setExamIdx(
+        Math.min(
+          Math.max(0, sim.saved_progress.idx || 0),
+          Math.max(0, sim.questions.length - 1)
+        )
+      );
+    } else {
+      setExamIdx(0);
+      setExamAnswers({});
+      setExamFlagged({});
+      setExamElapsedSec(0);
+    }
+  }
+
+  function handlePauseAndSaveExam() {
+    if (!activeSim) return;
+    const updated = generatedList.map((g) =>
+      g.id === activeSim.id
+        ? {
+            ...g,
+            saved_progress: {
+              answers: examAnswers,
+              flagged: examFlagged,
+              elapsed_sec: examElapsedSec,
+              idx: examIdx,
+              saved_at: new Date().toISOString(),
+            },
+          }
+        : g
+    );
+    saveGeneratedList(updated);
+    setShowClosePrompt(false);
+    setActiveSim(null);
+    notify('Cronômetro pausado e progresso do simulado salvo!', 'info');
+  }
+
+  function handleDiscardExamProgress() {
+    if (!activeSim) return;
+    const updated = generatedList.map((g) =>
+      g.id === activeSim.id ? { ...g, saved_progress: undefined } : g
+    );
+    saveGeneratedList(updated);
+    setShowClosePrompt(false);
+    setActiveSim(null);
+    notify('Simulado encerrado sem salvar andamento.', 'info');
   }
 
   async function handleFinishExam() {
@@ -538,7 +644,7 @@ export default function SimuladosPage() {
           subject_name: v.subject_name,
           total: v.total,
           correct: v.correct,
-          weight: 1,
+          weight: Number(activeSim.weights?.[subject_id] ?? 1) || 1,
         })
       );
 
@@ -608,6 +714,7 @@ export default function SimuladosPage() {
         g.id === activeSim.id
           ? {
               ...g,
+              saved_progress: undefined,
               last_score: {
                 correct: totalCorrect,
                 total: activeSim.questions.length,
@@ -732,18 +839,36 @@ export default function SimuladosPage() {
                   </p>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => startExamRunner(gs)}
-                  className="w-full py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5"
-                >
-                  {gs.last_score ? (
-                    <RotateCw className="w-3.5 h-3.5" />
-                  ) : (
-                    <Play className="w-3.5 h-3.5" />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => startExamRunner(gs)}
+                    className="flex-1 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5"
+                  >
+                    {gs.saved_progress ? (
+                      <Play className="w-3.5 h-3.5" />
+                    ) : gs.last_score ? (
+                      <RotateCw className="w-3.5 h-3.5" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5" />
+                    )}
+                    {gs.saved_progress
+                      ? `Continuar (${Object.keys(gs.saved_progress.answers || {}).length}/${gs.questions.length})`
+                      : gs.last_score
+                      ? 'Refazer Simulado'
+                      : 'Iniciar Simulado Agora'}
+                  </button>
+                  {gs.saved_progress && (
+                    <button
+                      type="button"
+                      onClick={() => startExamRunner(gs, true)}
+                      className="px-3 py-2.5 rounded-xl subtle-surface border border-theme text-xs font-semibold"
+                      title="Recomeçar do zero"
+                    >
+                      Zerar
+                    </button>
                   )}
-                  {gs.last_score ? 'Refazer Simulado' : 'Iniciar Simulado Agora'}
-                </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1021,20 +1146,38 @@ export default function SimuladosPage() {
                         />
                         <span className="font-medium truncate flex-1">{s.name}</span>
                         {genMode === 'prova_real' && checked && (
-                          <input
-                            type="number"
-                            min={1}
-                            max={60}
-                            value={subQty}
-                            onChange={(e) =>
-                              setGenSubjectCounts((prev) => ({
-                                ...prev,
-                                [s.id]: Math.max(0, Number(e.target.value) || 0),
-                              }))
-                            }
-                            className="w-16 rounded-lg bg-[var(--bg-card)] border border-theme px-2 py-1 text-center font-bold text-xs"
-                            title="Questões desta matéria"
-                          />
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <input
+                              type="number"
+                              min={0}
+                              max={60}
+                              value={subQty}
+                              onChange={(e) =>
+                                setGenSubjectCounts((prev) => ({
+                                  ...prev,
+                                  [s.id]: Math.max(0, Number(e.target.value) || 0),
+                                }))
+                              }
+                              className="w-14 rounded-lg bg-[var(--bg-card)] border border-theme px-1.5 py-1 text-center font-bold text-xs"
+                              title="Quantidade de questões"
+                            />
+                            <span className="text-[10px] text-muted-theme">q · p.</span>
+                            <input
+                              type="number"
+                              step="0.5"
+                              min={0.5}
+                              max={10}
+                              value={genSubjectWeights[s.id] ?? ((s.category || '').toLowerCase().includes('espec') ? 2 : 1)}
+                              onChange={(e) =>
+                                setGenSubjectWeights((prev) => ({
+                                  ...prev,
+                                  [s.id]: Math.max(0.5, Number(e.target.value) || 1),
+                                }))
+                              }
+                              className="w-12 rounded-lg bg-[var(--bg-card)] border border-indigo-500/40 px-1.5 py-1 text-center font-bold text-xs text-indigo-600 dark:text-indigo-300"
+                              title="Peso da matéria na nota"
+                            />
+                          </div>
                         )}
                       </div>
                     );
@@ -1108,9 +1251,9 @@ export default function SimuladosPage() {
 
       {/* MODAL PROVA INTERATIVA DO SIMULADO */}
       {activeSim && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="card-surface w-full max-w-3xl rounded-3xl p-5 sm:p-6 my-6 space-y-5 shadow-2xl animate-pop-in">
-            <div className="flex items-center justify-between gap-3 border-b border-theme pb-3 flex-wrap">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+          <div className="card-surface w-full max-w-3xl max-h-[94vh] flex flex-col rounded-3xl p-4 sm:p-6 shadow-2xl animate-pop-in">
+            <div className="flex items-center justify-between gap-3 border-b border-theme pb-3 shrink-0">
               <div className="min-w-0">
                 <p className="text-xs font-bold text-violet-600 truncate">
                   {activeSim.title} · {activeSim.board}
@@ -1127,12 +1270,50 @@ export default function SimuladosPage() {
               </div>
               <button
                 type="button"
-                onClick={() => setActiveSim(null)}
-                className="p-2 rounded-xl subtle-surface shrink-0"
+                aria-label="Fechar simulado"
+                onClick={() => {
+                  if (examFinished) setActiveSim(null);
+                  else setShowClosePrompt(true);
+                }}
+                className="p-2.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-600 dark:text-rose-400 shrink-0 transition"
+                title="Fechar ou pausar simulado"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
+
+            {showClosePrompt && !examFinished && (
+              <div className="my-3 rounded-2xl border border-amber-500/40 bg-amber-500/10 p-4 space-y-3 shrink-0 animate-fade-in-up">
+                <p className="text-xs font-bold text-amber-900 dark:text-amber-200">
+                  O que deseja fazer com este simulado em andamento?
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePauseAndSaveExam}
+                    className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold"
+                  >
+                    Pausar cronômetro e salvar progresso
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDiscardExamProgress}
+                    className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
+                  >
+                    Parar e descartar simulado
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowClosePrompt(false)}
+                    className="px-3.5 py-2 rounded-xl subtle-surface border border-theme text-xs font-semibold"
+                  >
+                    Voltar para a prova
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex-1 overflow-y-auto pt-4 pr-1">
 
             {!examFinished && currentExamQ ? (
               <div className="space-y-4">
@@ -1170,9 +1351,24 @@ export default function SimuladosPage() {
                       {currentExamQ.subject_name}
                     </span>
                     {currentExamQ.topic_title && (
-                      <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full subtle-surface border border-theme">
-                        {currentExamQ.topic_title}
-                      </span>
+                      showTopicSpoiler ? (
+                        <button
+                          type="button"
+                          onClick={() => setShowTopicSpoiler(false)}
+                          className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full subtle-surface border border-theme"
+                          title="Clique para recolher o tópico"
+                        >
+                          {currentExamQ.topic_title} · Ocultar
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowTopicSpoiler(true)}
+                          className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full subtle-surface border border-theme text-muted-theme hover:text-[var(--text-main)]"
+                        >
+                          Ver tópico (oculto)
+                        </button>
+                      )
                     )}
                     {currentExamQ.header && (
                       <span className="text-xs text-muted-theme">{currentExamQ.header}</span>
@@ -1284,15 +1480,23 @@ export default function SimuladosPage() {
                       examAnswers[q.id] &&
                       examAnswers[q.id] === q.correct_answer.trim().toUpperCase()
                   ).length;
-                  const pct = calcAccuracy(hits, activeSim.questions.length);
+                  const wEarned = activeSim.questions.reduce((acc, q) => {
+                    const w = Number(activeSim.weights?.[q.subject_id] ?? 1) || 1;
+                    const ok = examAnswers[q.id] && examAnswers[q.id] === q.correct_answer.trim().toUpperCase();
+                    return acc + (ok ? w : 0);
+                  }, 0);
+                  const wMax = activeSim.questions.reduce((acc, q) => {
+                    return acc + (Number(activeSim.weights?.[q.subject_id] ?? 1) || 1);
+                  }, 0);
+                  const pct = wMax > 0 ? Math.round((wEarned / wMax) * 100) : calcAccuracy(hits, activeSim.questions.length);
                   return (
                     <div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/30 p-4 flex items-center justify-between gap-3 flex-wrap">
                       <div>
                         <p className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
-                          Resultado Final
+                          Resultado Final (Ponderado)
                         </p>
                         <p className="text-2xl font-extrabold">
-                          {hits}/{activeSim.questions.length} acertos ({pct}%)
+                          {hits}/{activeSim.questions.length} acertos · {wEarned.toFixed(1)}/{wMax.toFixed(1)} pts ({pct}%)
                         </p>
                       </div>
                       <p className="text-xs text-muted-theme">
@@ -1357,6 +1561,7 @@ export default function SimuladosPage() {
                 </div>
               </div>
             )}
+            </div>
           </div>
         </div>
       )}

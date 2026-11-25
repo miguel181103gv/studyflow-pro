@@ -30,6 +30,8 @@ interface ParsedSubject {
   name: string;
   category: string;
   topics: string[];
+  weight?: number;
+  exam_questions?: number | null;
 }
 
 interface EditalDraft {
@@ -521,7 +523,7 @@ export default function ProfileSelectorPage() {
 
       if (error || !created) throw error || new Error('Erro ao criar perfil');
 
-      const subjectsToInsert =
+      const subjectsToInsert: ParsedSubject[] =
         parsedSubjects.length > 0
           ? parsedSubjects
           : [
@@ -532,6 +534,7 @@ export default function ProfileSelectorPage() {
               },
             ];
 
+      const examMetaMap: Record<string, { weight?: number; exam_questions?: number | null }> = {};
       for (let i = 0; i < subjectsToInsert.length; i++) {
         const s = subjectsToInsert[i];
         const { data: sub } = await supabase
@@ -548,6 +551,13 @@ export default function ProfileSelectorPage() {
           })
           .select('id')
           .single();
+
+        if (sub && (s.weight || s.exam_questions)) {
+          examMetaMap[sub.id] = {
+            weight: typeof s.weight === 'number' && s.weight > 0 ? s.weight : undefined,
+            exam_questions: typeof s.exam_questions === 'number' && s.exam_questions > 0 ? s.exam_questions : null,
+          };
+        }
 
         if (sub && s.topics?.length) {
           await supabase.from('topics').insert(
@@ -603,8 +613,9 @@ export default function ProfileSelectorPage() {
         .single();
       if (error || !created) throw error || new Error('Erro ao criar perfil');
 
-      const subjectsToInsert =
+      const subjectsToInsert: ParsedSubject[] =
         parsedSubjects.length > 0 ? parsedSubjects : modeCfg.defaultSubjects;
+      const examMetaMap: Record<string, { weight?: number; exam_questions?: number | null }> = {};
       for (let i = 0; i < subjectsToInsert.length; i++) {
         const s = subjectsToInsert[i];
         const { data: sub } = await supabase
@@ -621,6 +632,13 @@ export default function ProfileSelectorPage() {
           })
           .select('id')
           .single();
+        if (sub && (s.weight || s.exam_questions)) {
+          examMetaMap[sub.id] = {
+            weight: typeof s.weight === 'number' && s.weight > 0 ? s.weight : undefined,
+            exam_questions: typeof s.exam_questions === 'number' && s.exam_questions > 0 ? s.exam_questions : null,
+          };
+        }
+
         if (sub && s.topics?.length) {
           await supabase.from('topics').insert(
             s.topics.map((t, tIdx) => ({
