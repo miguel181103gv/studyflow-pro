@@ -26,6 +26,7 @@ interface StopwatchState {
   elapsedSeconds: number;
   baseElapsedSeconds?: number;
   startedAt: number | null;
+  updatedAt?: number;
   quickNote?: string;
 }
 
@@ -225,15 +226,18 @@ export function ProfileProvider({
     setStopwatch((prev) => {
       const sameSubject = prev.subjectId === subjectId;
       const base = sameSubject ? prev.elapsedSeconds : 0;
-      return {
+      const next: StopwatchState = {
         running: true,
         subjectId,
         topicId: topicId ?? (sameSubject ? prev.topicId : null),
         elapsedSeconds: base,
         baseElapsedSeconds: base,
         startedAt: Date.now(),
+        updatedAt: Date.now(),
         quickNote: sameSubject ? prev.quickNote : undefined,
       };
+      void syncStopwatchToCloud(next);
+      return next;
     });
   };
 
@@ -244,28 +248,114 @@ export function ProfileProvider({
         prev.running && prev.startedAt
           ? base + Math.max(0, Math.floor((Date.now() - prev.startedAt) / 1000))
           : prev.elapsedSeconds;
-      return {
+      const next: StopwatchState = {
         ...prev,
         running: false,
         elapsedSeconds: finalElapsed,
         baseElapsedSeconds: finalElapsed,
         startedAt: null,
+        updatedAt: Date.now(),
       };
+      void syncStopwatchToCloud(next);
+      return next;
     });
   };
+
+  const syncStopwatchToCloud = useCallback(
+    async (nextSw: StopwatchState | null) => {
+      try {
+        const supabase = createClient();
+        await supabase.auth.updateUser({
+          data: {
+            sf_stopwatch: nextSw
+              ? { ...nextSw, profileId, updatedAt: nextSw.updatedAt || Date.now() }
+              : { clearedAt: Date.now(), profileId },
+          },
+        });
+      } catch {
+        // silencioso se offline
+      }
+    },
+    [profileId]
+  );
+
+  const applyCloudStopwatch = useCallback(
+    (cloudRaw: unknown) => {
+      if (!cloudRaw || typeof cloudRaw !== 'object') return;
+      const cloud = cloudRaw as StopwatchState & { profileId?: string; clearedAt?: number };
+      if (cloud.profileId && cloud.profileId !== profileId) return;
+
+      setStopwatch((local) => {
+        const localUpdated = local.updatedAt || 0;
+        if (cloud.clearedAt) {
+          if (cloud.clearedAt > localUpdated && (local.subjectId || local.running)) {
+            try {
+              localStorage.removeItem(swStorageKey);
+            } catch {}
+            return {
+              running: false,
+              subjectId: null,
+              topicId: null,
+              elapsedSeconds: 0,
+              baseElapsedSeconds: 0,
+              startedAt: null,
+              updatedAt: cloud.clearedAt,
+            };
+          }
+          return local;
+        }
+
+        const cloudUpdated = cloud.updatedAt || 0;
+        if (!cloud.subjectId || cloudUpdated <= localUpdated) return local;
+
+        if (cloud.running && cloud.startedAt) {
+          const base =
+            typeof cloud.baseElapsedSeconds === 'number'
+              ? cloud.baseElapsedSeconds
+              : cloud.elapsedSeconds || 0;
+          const extra = Math.max(0, Math.floor((Date.now() - cloud.startedAt) / 1000));
+          return {
+            running: true,
+            subjectId: cloud.subjectId,
+            topicId: cloud.topicId ?? null,
+            baseElapsedSeconds: base,
+            elapsedSeconds: base + extra,
+            startedAt: cloud.startedAt,
+            updatedAt: cloudUpdated,
+            quickNote: cloud.quickNote,
+          };
+        }
+
+        return {
+          running: false,
+          subjectId: cloud.subjectId,
+          topicId: cloud.topicId ?? null,
+          baseElapsedSeconds: cloud.baseElapsedSeconds ?? cloud.elapsedSeconds ?? 0,
+          elapsedSeconds: cloud.elapsedSeconds ?? 0,
+          startedAt: null,
+          updatedAt: cloudUpdated,
+          quickNote: cloud.quickNote,
+        };
+      });
+    },
+    [profileId, swStorageKey]
+  );
 
   const resetStopwatch = () => {
     try {
       localStorage.removeItem(swStorageKey);
     } catch {}
-    setStopwatch({
+    const cleared: StopwatchState = {
       running: false,
       subjectId: null,
       topicId: null,
       elapsedSeconds: 0,
       baseElapsedSeconds: 0,
       startedAt: null,
-    });
+      updatedAt: Date.now(),
+    };
+    setStopwatch(cleared);
+    void syncStopwatchToCloud(null);
   };
 
   const refreshAll = useCallback(async () => {
@@ -276,6 +366,9 @@ export function ProfileProvider({
     if (!user) return;
     setUserId(user.id);
     setUserEmail(user.email || '');
+    if (user.user_metadata?.sf_stopwatch) {
+      applyCloudStopwatch(user.user_metadata.sf_stopwatch);
+    }
 
     const [
       profRes,
@@ -1107,6 +1200,33 @@ export function ProfileProvider({
       }
     });
   };
+
+  // Sincroniza cronômetro entre PC e Celular ao abrir/voltar para o app
+  useEffect(() => {
+    if (!userId) return;
+    const pullCloudStopwatch = async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase.auth.getUser();
+        if (data?.user?.user_metadata?.sf_stopwatch) {
+          applyCloudStopwatch(data.user.user_metadata.sf_stopwatch);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void pullCloudStopwatch();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', pullCloudStopwatch);
+    const poll = window.setInterval(pullCloudStopwatch, 20000);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', pullCloudStopwatch);
+      window.clearInterval(poll);
+    };
+  }, [userId, applyCloudStopwatch]);
 
   // Pontos de restauração automáticos a cada 1 hora (mantém últimos 7 dias)
   const backupDataRef = useRef({
