@@ -407,7 +407,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 export default function QuestoesPage() {
   const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog } = useProfile();
   const aiName = useAiProviderName();
-  const { notify } = useGlobal();
+  const { notify, aiJobs, runAiJob } = useGlobal();
 
   const storageKey = `sf_question_bank_${profile?.id || 'default'}`;
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
@@ -431,6 +431,9 @@ export default function QuestoesPage() {
   const [aiBoard, setAiBoard] = useState('');
   const [rawTextInput, setRawTextInput] = useState('');
   const [converting, setConverting] = useState(false);
+  const aiGenJobId = `questoes:${profile?.id || 'default'}`;
+  const aiGenJob = aiJobs[aiGenJobId];
+  const aiGenerating = aiGenJob?.status === 'running';
   const [targetSubjectId, setTargetSubjectId] = useState('');
   const [targetTopicId, setTargetTopicId] = useState('');
 
@@ -456,6 +459,22 @@ export default function QuestoesPage() {
     } catch {
       // ignore
     }
+  }, [storageKey]);
+
+  useEffect(() => {
+    const reloadBank = () => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) setQuestions(parsed);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('sf-question-bank-updated', reloadBank);
+    return () => window.removeEventListener('sf-question-bank-updated', reloadBank);
   }, [storageKey]);
 
   useEffect(() => {
@@ -567,64 +586,101 @@ export default function QuestoesPage() {
   const effectiveTopics = topics.filter((t) => t.subject_id === effectiveSubjectId);
   const effectiveTopic = effectiveTopics.find((t) => t.id === targetTopicId);
 
-  async function handleGenerateTopicQuestions(e: React.FormEvent) {
+  function handleGenerateTopicQuestions(e: React.FormEvent) {
     e.preventDefault();
-    if (!effectiveSubjectId) return;
-    setConverting(true);
-    try {
-      const res = await fetch('/api/gemini', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'generate_topic_questions',
-          subjectName: effectiveSubject?.name || '',
-          topicTitle: effectiveTopic?.title || '',
-          count: aiCount,
-          style: aiStyle,
-          board: aiBoard.trim(),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao gerar questões com IA.');
-      const list = Array.isArray(json.data?.questions) ? json.data.questions : [];
-      if (list.length === 0) throw new Error('Nenhuma questão foi gerada.');
+    if (!effectiveSubjectId || !profile?.id) return;
 
-      const created: BankQuestion[] = list.map(
-        (
-          q: {
-            header?: string;
-            statement: string;
-            options?: QuizOption[];
-            correct_answer?: string;
-            explanation?: string;
-          },
-          i: number
-        ) => ({
-          id: `q-ai-${Date.now()}-${i}`,
-          subject_id: effectiveSubjectId,
-          topic_id: targetTopicId || null,
-          header: q.header || `${aiBoard.trim() || 'Questão IA'} · ${effectiveSubject?.name || ''}`,
-          statement: q.statement || '',
-          options: Array.isArray(q.options) ? q.options : [],
-          correct_answer: (q.correct_answer || '').trim().toUpperCase(),
-          explanation: q.explanation || '',
-          created_at: new Date().toISOString(),
-        })
-      );
+    const subjectIdSnap = effectiveSubjectId;
+    const subjectNameSnap = effectiveSubject?.name || '';
+    const topicIdSnap = targetTopicId || null;
+    const topicTitleSnap = effectiveTopic?.title || '';
+    const countSnap = aiCount;
+    const styleSnap = aiStyle;
+    const boardSnap = aiBoard.trim();
+    const bankKeySnap = storageKey;
+    const labelTarget = topicTitleSnap || subjectNameSnap || 'Matéria';
 
-      saveBank([...created, ...questions]);
-      setShowAddPanel(false);
-      notify(
-        `${plural(created.length, 'questão gerada', 'questões geradas')} para ${
-          effectiveTopic ? effectiveTopic.title : effectiveSubject?.name
-        }!`,
-        'success'
-      );
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Erro ao gerar questões.', 'error');
-    } finally {
-      setConverting(false);
-    }
+    setShowAddPanel(false);
+
+    runAiJob({
+      id: aiGenJobId,
+      kind: 'quiz',
+      label: `Gerando ${countSnap} questões de ${labelTarget}`,
+      route: `/p/${profile.id}/questoes`,
+      successMsg: `${plural(countSnap, 'questão gerada', 'questões geradas')} para ${labelTarget}!`,
+      task: async () => {
+        const chunks: number[] = [];
+        let rem = countSnap;
+        while (rem > 0) {
+          const step = Math.min(3, rem);
+          chunks.push(step);
+          rem -= step;
+        }
+
+        const collected: BankQuestion[] = [];
+        for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
+          const batchCount = chunks[cIdx];
+          const res = await fetch('/api/gemini', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'generate_topic_questions',
+              subjectName: subjectNameSnap,
+              topicTitle: topicTitleSnap,
+              count: batchCount,
+              style: styleSnap,
+              board: boardSnap,
+            }),
+          });
+          const rawResp = await res.text();
+          let json: { ok?: boolean; error?: string; data?: { questions?: unknown[] } } = {};
+          try {
+            json = JSON.parse(rawResp);
+          } catch {
+            throw new Error('O servidor demorou para responder neste lote.');
+          }
+          if (!res.ok || !json.ok || !Array.isArray(json.data?.questions)) {
+            throw new Error(json.error || 'Erro ao gerar questões com IA.');
+          }
+          const nowTs = Date.now();
+          json.data.questions.forEach((rawQ: unknown, i: number) => {
+            const q = rawQ as {
+              header?: string;
+              statement: string;
+              options?: QuizOption[];
+              correct_answer?: string;
+              explanation?: string;
+            };
+            if (!q?.statement) return;
+            collected.push({
+              id: `q-ai-${nowTs}-${cIdx}-${i}`,
+              subject_id: subjectIdSnap,
+              topic_id: topicIdSnap,
+              header: q.header || `${boardSnap || 'Questão IA'} · ${subjectNameSnap}`,
+              statement: q.statement || '',
+              options: Array.isArray(q.options) ? q.options : [],
+              correct_answer: (q.correct_answer || '').trim().toUpperCase(),
+              explanation: q.explanation || '',
+              created_at: new Date().toISOString(),
+            });
+          });
+        }
+
+        if (collected.length === 0) {
+          throw new Error('Nenhuma questão foi gerada.');
+        }
+
+        try {
+          const rawExisting = localStorage.getItem(bankKeySnap);
+          const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
+          const nextArr = [...collected, ...(Array.isArray(prevArr) ? prevArr : [])];
+          localStorage.setItem(bankKeySnap, JSON.stringify(nextArr));
+          window.dispatchEvent(new CustomEvent('sf-question-bank-updated'));
+        } catch {
+          // ignore
+        }
+      },
+    });
   }
 
   const parsedPreviewQuestions = useMemo(
@@ -1403,16 +1459,16 @@ ${q.statement}`;
                     </p>
                     <button
                       type="submit"
-                      disabled={converting || !effectiveSubjectId}
+                      disabled={aiGenerating || !effectiveSubjectId}
                       className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50 shrink-0"
                     >
-                      {converting ? (
+                      {aiGenerating ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
                         <Sparkles className="w-4 h-4" />
                       )}
                       {converting
-                        ? `Gerando ${aiCount} questões...`
+                        ? 'Gerando em segundo plano...'
                         : `Gerar ${aiCount} Questões com ${aiName}`}
                     </button>
                   </div>
@@ -1513,7 +1569,7 @@ ${q.statement}`;
                 </form>
               ) : (
                 <div className="rounded-2xl border border-dashed border-teal-500/45 p-6 text-center space-y-3">
-                  {converting ? (
+                  {aiGenerating ? (
                     <div className="flex flex-col items-center gap-2 text-violet-600">
                       <Loader2 className="w-6 h-6 animate-spin" />
                       <p className="text-xs font-bold">
