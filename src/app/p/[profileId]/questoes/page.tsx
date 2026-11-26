@@ -445,7 +445,18 @@ export default function QuestoesPage() {
   const [manualAnswers, setManualAnswers] = useState<Record<number, string>>({});
   const [aiCount, setAiCount] = useState(5);
   const [aiStyle, setAiStyle] = useState<'Múltipla escolha (A-E)' | 'Certo ou Errado'>('Múltipla escolha (A-E)');
-  const [aiBoard, setAiBoard] = useState('');
+  const BOARD_OPTIONS = ['FCC', 'FGV', 'Cebraspe (Cespe)', 'Cesgranrio', 'Vunesp', 'Outra...'] as const;
+  const [aiBoard, setAiBoard] = useState('FCC');
+  const [customAiBoard, setCustomAiBoard] = useState('');
+
+  useEffect(() => {
+    const txt = `${profile?.name || ''} ${profile?.extras || ''} ${profile?.status_text || ''}`;
+    if (/fgv/i.test(txt)) setAiBoard('FGV');
+    else if (/cebraspe|cespe/i.test(txt)) setAiBoard('Cebraspe (Cespe)');
+    else if (/cesgranrio|caixa|banco do brasil/i.test(txt)) setAiBoard('Cesgranrio');
+    else if (/vunesp/i.test(txt)) setAiBoard('Vunesp');
+    else setAiBoard('FCC');
+  }, [profile?.id, profile?.name, profile?.extras, profile?.status_text]);
   const [rawTextInput, setRawTextInput] = useState('');
   const [converting, setConverting] = useState(false);
   const aiGenJobId = `questoes:${profile?.id || 'default'}`;
@@ -650,7 +661,7 @@ export default function QuestoesPage() {
     const topicTitleSnap = effectiveTopic?.title || '';
     const countSnap = aiCount;
     const styleSnap = aiStyle;
-    const boardSnap = aiBoard.trim();
+    const boardSnap = (aiBoard === 'Outra...' ? customAiBoard : aiBoard).trim() || 'FCC';
     const bankKeySnap = storageKey;
     const labelTarget = topicTitleSnap || subjectNameSnap || 'Matéria';
 
@@ -1681,14 +1692,27 @@ ${q.statement}`;
                     </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-muted-theme mb-1">
-                        Banca (opcional)
+                        Banca (padrão do edital)
                       </label>
-                      <input
+                      <select
                         value={aiBoard}
                         onChange={(e) => setAiBoard(e.target.value)}
-                        placeholder="Ex: FCC, Cebraspe, FGV..."
-                        className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
-                      />
+                        className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+                      >
+                        {BOARD_OPTIONS.map((b) => (
+                          <option key={b} value={b}>
+                            {b}
+                          </option>
+                        ))}
+                      </select>
+                      {aiBoard === 'Outra...' && (
+                        <input
+                          value={customAiBoard}
+                          onChange={(e) => setCustomAiBoard(e.target.value)}
+                          placeholder="Digite o nome da banca..."
+                          className="w-full mt-1.5 rounded-xl subtle-surface border border-theme px-3 py-1.5 text-xs"
+                        />
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center justify-between gap-2 flex-wrap">

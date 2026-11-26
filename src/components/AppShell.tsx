@@ -158,6 +158,7 @@ export function AppShell({
     subjects,
     topics,
     highlights,
+    addHighlight,
     reviews,
     flashcards,
     errors,
@@ -185,6 +186,15 @@ export function AppShell({
   const [quickDictSubjectId, setQuickDictSubjectId] = useState('');
   const [quickDictAiBusy, setQuickDictAiBusy] = useState(false);
   const [quickDictConfirmDup, setQuickDictConfirmDup] = useState(false);
+
+  // Grifo rápido (qualquer texto selecionado em qualquer tela -> Matéria + Tópico)
+  const [quickHlOpen, setQuickHlOpen] = useState(false);
+  const [quickHlText, setQuickHlText] = useState('');
+  const [quickHlNote, setQuickHlNote] = useState('');
+  const [quickHlSubjectId, setQuickHlSubjectId] = useState('');
+  const [quickHlTopicId, setQuickHlTopicId] = useState('');
+  const [quickHlColor, setQuickHlColor] = useState('yellow');
+  const [quickHlSaving, setQuickHlSaving] = useState(false);
   const [quickDictExisting, setQuickDictExisting] = useState<DictEntryLite[]>([]);
 
   const basePath = `/p/${profileId}`;
@@ -242,7 +252,7 @@ export function AppShell({
       }
       const sel = window.getSelection();
       const raw = sel ? sel.toString().replace(/\s+/g, ' ').trim() : '';
-      if (!raw || raw.length < 2 || raw.length > 65) {
+      if (!raw || raw.length < 2 || raw.length > 1500) {
         setSelDictMenu(null);
         return;
       }
@@ -276,7 +286,7 @@ export function AppShell({
       if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
       const sel = window.getSelection();
       const raw = sel ? sel.toString().replace(/\s+/g, ' ').trim() : '';
-      if (raw && raw.length >= 2 && raw.length <= 65) {
+      if (raw && raw.length >= 2 && raw.length <= 1500) {
         e.preventDefault();
         captureSelection(e.clientX, e.clientY);
       }
@@ -291,6 +301,46 @@ export function AppShell({
       document.removeEventListener('contextmenu', onContextMenu);
     };
   }, []);
+
+  function openQuickHighlightModal(selectedText: string) {
+    setSelDictMenu(null);
+    const defaultSubId = stopwatch.subjectId || subjects[0]?.id || '';
+    const subTopics = topics.filter((t) => t.subject_id === defaultSubId);
+    const defaultTopicId =
+      (stopwatch.topicId && subTopics.some((t) => t.id === stopwatch.topicId)
+        ? stopwatch.topicId
+        : subTopics[0]?.id) || '';
+    setQuickHlText(selectedText);
+    setQuickHlNote('');
+    setQuickHlSubjectId(defaultSubId);
+    setQuickHlTopicId(defaultTopicId);
+    setQuickHlColor('yellow');
+    setQuickHlOpen(true);
+  }
+
+  async function handleSaveQuickHighlight(e: React.FormEvent) {
+    e.preventDefault();
+    if (!quickHlText.trim() || !quickHlTopicId) {
+      notify('Escolha a matéria e o tópico para salvar o grifo.', 'error');
+      return;
+    }
+    setQuickHlSaving(true);
+    try {
+      await addHighlight({
+        topic_id: quickHlTopicId,
+        text: quickHlText.trim(),
+        color: quickHlColor,
+        note: quickHlNote.trim(),
+        page_number: 0,
+      });
+      setQuickHlOpen(false);
+      notify('Trecho salvo nas Partes Grifadas!', 'success');
+    } catch {
+      notify('Não foi possível salvar o grifo.', 'error');
+    } finally {
+      setQuickHlSaving(false);
+    }
+  }
 
   function openQuickDictModal(selectedText: string) {
     setSelDictMenu(null);
@@ -1072,8 +1122,8 @@ export function AppShell({
         </div>
       )}
 
-      {/* Botão flutuante ao selecionar palavra / botão direito -> Dicionário */}
-      {selDictMenu && !quickDictOpen && (
+      {/* Botão flutuante ao selecionar texto -> Dicionário + Partes Grifadas */}
+      {selDictMenu && !quickDictOpen && !quickHlOpen && (
         <div
           data-dict-pill="true"
           style={{
@@ -1085,15 +1135,26 @@ export function AppShell({
           }}
           className="animate-pop-in"
         >
-          <div className="rounded-2xl bg-slate-900 dark:bg-teal-600 text-white text-xs font-bold shadow-2xl border border-white/15 inline-flex items-center overflow-hidden">
+          <div className="rounded-2xl bg-slate-900 dark:bg-slate-800 text-white text-xs font-bold shadow-2xl border border-white/15 inline-flex items-center overflow-hidden">
+            {selDictMenu.text.length <= 65 && (
+              <button
+                type="button"
+                onClick={() => openQuickDictModal(selDictMenu.text)}
+                className="px-3 py-2 inline-flex items-center gap-1.5 hover:bg-teal-600/80 transition whitespace-nowrap"
+              >
+                <BookA className="w-3.5 h-3.5 text-teal-300" />
+                + Dicionário
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => openQuickDictModal(selDictMenu.text)}
-              className="px-3.5 py-2 inline-flex items-center gap-1.5 hover:bg-white/10 transition whitespace-nowrap"
+              onClick={() => openQuickHighlightModal(selDictMenu.text)}
+              className={`px-3 py-2 inline-flex items-center gap-1.5 hover:bg-amber-500/80 transition whitespace-nowrap ${
+                selDictMenu.text.length <= 65 ? 'border-l border-white/15' : ''
+              }`}
             >
-              <BookA className="w-3.5 h-3.5 text-teal-300 dark:text-white" />
-              Adicionar &ldquo;{selDictMenu.text.slice(0, 22)}
-              {selDictMenu.text.length > 22 ? '...' : ''}&rdquo; ao Dicionário
+              <Highlighter className="w-3.5 h-3.5 text-amber-300" />
+              + Grifos
             </button>
             <button
               type="button"
@@ -1103,6 +1164,130 @@ export function AppShell({
             >
               <X className="w-3.5 h-3.5" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Rápido: Salvar trecho selecionado nas Partes Grifadas */}
+      {quickHlOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="card-surface w-full max-w-md rounded-3xl p-6 space-y-4 shadow-2xl border border-theme animate-pop-in">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-base flex items-center gap-2">
+                <Highlighter className="w-5 h-5 text-amber-500" />
+                Salvar nas Partes Grifadas
+              </h2>
+              <button
+                type="button"
+                onClick={() => setQuickHlOpen(false)}
+                className="p-2 rounded-xl subtle-surface"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={(e) => void handleSaveQuickHighlight(e)} className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-xs font-semibold text-muted-theme mb-1">
+                    Matéria *
+                  </label>
+                  <select
+                    value={quickHlSubjectId}
+                    onChange={(e) => {
+                      const nextSub = e.target.value;
+                      setQuickHlSubjectId(nextSub);
+                      const firstTopic = topics.find((t) => t.subject_id === nextSub);
+                      setQuickHlTopicId(firstTopic?.id || '');
+                    }}
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+                  >
+                    {subjects.map((sub) => (
+                      <option key={sub.id} value={sub.id}>
+                        {sub.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-muted-theme mb-1">
+                    Tópico *
+                  </label>
+                  <select
+                    required
+                    value={quickHlTopicId}
+                    onChange={(e) => setQuickHlTopicId(e.target.value)}
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+                  >
+                    <option value="">Selecione o tópico...</option>
+                    {topics
+                      .filter((t) => t.subject_id === quickHlSubjectId)
+                      .map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-muted-theme mb-1">
+                  Trecho grifado *
+                </label>
+                <textarea
+                  required
+                  rows={4}
+                  value={quickHlText}
+                  onChange={(e) => setQuickHlText(e.target.value)}
+                  className="w-full rounded-xl subtle-surface border border-theme px-3.5 py-2.5 text-xs leading-relaxed"
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <input
+                  value={quickHlNote}
+                  onChange={(e) => setQuickHlNote(e.target.value)}
+                  placeholder="Nota rápida (opcional)..."
+                  className="flex-1 rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                />
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {[
+                    { id: 'yellow', cls: 'bg-amber-400' },
+                    { id: 'green', cls: 'bg-emerald-500' },
+                    { id: 'blue', cls: 'bg-sky-500' },
+                    { id: 'pink', cls: 'bg-rose-500' },
+                  ].map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => setQuickHlColor(c.id)}
+                      className={`w-5 h-5 rounded-full ${c.cls} transition ${
+                        quickHlColor === c.id ? 'ring-2 ring-offset-2 ring-teal-500 scale-110' : 'opacity-60'
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setQuickHlOpen(false)}
+                  className="px-4 py-2 rounded-xl subtle-surface text-xs font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={quickHlSaving}
+                  className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {quickHlSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Highlighter className="w-3.5 h-3.5" />}
+                  Salvar nos Grifos
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
