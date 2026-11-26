@@ -66,7 +66,7 @@ interface ProfileContextValue {
   moveSubject: (sourceId: string, targetId: string) => Promise<void>;
   setSubjectOrder: (orderedIds: string[]) => Promise<void>;
   setTopicOrder: (subjectId: string, orderedTopicIds: string[]) => Promise<void>;
-  addTopic: (subjectId: string, title: string) => Promise<void>;
+  addTopic: (subjectId: string, title: string, afterTopicId?: string) => Promise<void>;
   addTopicsBatch: (subjectId: string, titles: string[]) => Promise<void>;
   updateTopicTitle: (topicId: string, title: string) => Promise<void>;
   deleteTopic: (topicId: string) => Promise<void>;
@@ -702,8 +702,9 @@ export function ProfileProvider({
     });
   };
 
-  const addTopic = async (subjectId: string, title: string) => {
+  const addTopic = async (subjectId: string, title: string, afterTopicId?: string) => {
     if (!userId || !title.trim()) return;
+    const subList = topics.filter((t) => t.subject_id === subjectId);
     await withSync(async () => {
       const supabase = createClient();
       const { data } = await supabase
@@ -715,11 +716,53 @@ export function ProfileProvider({
           title: title.trim(),
           studied: false,
           is_priority: false,
-          sort_order: topics.filter((t) => t.subject_id === subjectId).length,
+          sort_order: subList.length,
         })
         .select('*')
         .single();
-      if (data) setTopics((prev) => [...prev, data as Topic]);
+      if (data) {
+        const created = data as Topic;
+        if (afterTopicId) {
+          const parentIdx = subList.findIndex((t) => t.id === afterTopicId);
+          if (parentIdx !== -1) {
+            let insertPos = parentIdx + 1;
+            while (
+              insertPos < subList.length &&
+              /^\s*↳/.test(subList[insertPos].title || '')
+            ) {
+              insertPos++;
+            }
+            const reorderedSub = [...subList];
+            reorderedSub.splice(insertPos, 0, created);
+            const updatedSub = reorderedSub.map((t, i) => ({ ...t, sort_order: i }));
+            setTopics((prev) => {
+              const out: Topic[] = [];
+              let pushed = false;
+              for (const t of prev) {
+                if (t.subject_id === subjectId) {
+                  if (!pushed) {
+                    out.push(...updatedSub);
+                    pushed = true;
+                  }
+                } else {
+                  out.push(t);
+                }
+              }
+              if (!pushed) out.push(...updatedSub);
+              return out;
+            });
+            await Promise.all(
+              updatedSub.map((t) =>
+                supabase.from('topics').update({ sort_order: t.sort_order }).eq('id', t.id)
+              )
+            );
+            notify('Subtópico adicionado!');
+            return;
+          }
+        }
+        setTopics((prev) => [...prev, created]);
+        notify('Tópico adicionado!');
+      }
     });
   };
 

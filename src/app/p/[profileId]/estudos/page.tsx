@@ -363,6 +363,7 @@ export default function ProgressoEditalPage() {
     assetsSummary: string[];
   } | null>(null);
   const [migrateTargetTopicId, setMigrateTargetTopicId] = useState('');
+  const [migrateSearch, setMigrateSearch] = useState('');
   const [deletingBusy, setDeletingBusy] = useState(false);
 
   // Upload PDF + Modal de Vídeo / PDF / Grifos
@@ -2149,7 +2150,8 @@ export default function ProgressoEditalPage() {
                           onSubmit={async (e) => {
                             e.preventDefault();
                             if (!newSubtopicTitle.trim()) return;
-                            await addTopic(sub.id, `↳ ${newSubtopicTitle.trim()}`);
+                            await addTopic(sub.id, `↳ ${newSubtopicTitle.trim()}`, topic.id);
+                            setExpandedParents((prev) => ({ ...prev, [topic.id]: true }));
                             setNewSubtopicTitle('');
                             setAddingSubForTopicId(null);
                           }}
@@ -2861,7 +2863,7 @@ export default function ProgressoEditalPage() {
       {/* Modal de Proteção & Migração de Materiais (Grifos, PDFs, Vídeos, Textos, Flashcards) */}
       {pendingDelete && (
         <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="card-surface w-full max-w-lg rounded-3xl p-6 space-y-4 shadow-2xl animate-pop-in">
+          <div className="card-surface w-full max-w-2xl rounded-3xl p-6 space-y-4 shadow-2xl animate-pop-in">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-2.5">
                 <div className="w-10 h-10 rounded-xl bg-amber-500/15 text-amber-600 flex items-center justify-center shrink-0">
@@ -2893,23 +2895,61 @@ export default function ProgressoEditalPage() {
               );
               return candidateTopics.length > 0 ? (
                 <div className="subtle-surface rounded-2xl p-4 space-y-2.5">
-                  <label className="block text-xs font-bold">
-                    Deseja migrar esses materiais para outro tópico antes de apagar?
-                  </label>
-                  <select
-                    value={migrateTargetTopicId}
-                    onChange={(e) => setMigrateTargetTopicId(e.target.value)}
-                    className="w-full rounded-xl bg-[var(--bg-card)] border border-slate-300 dark:border-slate-600 px-3 py-2 text-xs"
-                  >
-                    {candidateTopics.map((t) => {
-                      const s = subjects.find((sb) => sb.id === t.subject_id);
-                      return (
-                        <option key={t.id} value={t.id}>
-                          {s?.name} › {cleanSubtopicDisplay(t.title)}
-                        </option>
-                      );
-                    })}
-                  </select>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <label className="block text-xs font-bold">
+                      Escolha o tópico ou subtópico de destino para migrar os materiais:
+                    </label>
+                    <input
+                      value={migrateSearch}
+                      onChange={(e) => setMigrateSearch(e.target.value)}
+                      placeholder="Buscar matéria, tópico ou subtópico..."
+                      className="rounded-xl bg-[var(--bg-card)] border border-theme px-3 py-1.5 text-xs sm:w-64"
+                    />
+                  </div>
+                  <div className="max-h-72 overflow-y-auto space-y-1 pr-1 rounded-xl border border-theme bg-[var(--bg-card)] p-2">
+                    {candidateTopics
+                      .filter((t) => {
+                        const q = migrateSearch.trim().toLowerCase();
+                        if (!q) return true;
+                        const s = subjects.find((sb) => sb.id === t.subject_id);
+                        return `${s?.name || ''} ${t.title}`.toLowerCase().includes(q);
+                      })
+                      .map((t) => {
+                        const s = subjects.find((sb) => sb.id === t.subject_id);
+                        const isSub = isSubtopicTitle(t.title);
+                        const active = migrateTargetTopicId === t.id;
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => setMigrateTargetTopicId(t.id)}
+                            className={`w-full text-left px-3 py-2 rounded-xl text-xs flex items-center justify-between gap-2 transition ${
+                              active
+                                ? 'bg-teal-600 text-white font-bold'
+                                : 'hover:bg-[var(--bg-subtle)]'
+                            } ${isSub ? 'pl-7' : ''}`}
+                          >
+                            <span className="truncate">
+                              <span className={active ? 'opacity-85' : 'text-muted-theme'}>
+                                {s?.name} ›{' '}
+                              </span>
+                              {cleanSubtopicDisplay(t.title)}
+                            </span>
+                            {isSub && (
+                              <span
+                                className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ${
+                                  active
+                                    ? 'bg-white/20 text-white'
+                                    : 'bg-teal-500/12 text-teal-700 dark:text-teal-300'
+                                }`}
+                              >
+                                Subtópico
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                  </div>
                   <button
                     type="button"
                     disabled={deletingBusy || !migrateTargetTopicId}
