@@ -51,8 +51,11 @@ function extractAnnotations(text: string): { clean: string; annotations: string[
 
 /**
  * Parser instantâneo (0ms) para textos de Lei Seca brasileira:
- * separa Caput (Art.), Incisos (I, II, III...), Parágrafos (§ 1º / Parágrafo único),
- * Alíneas (a), b), c)) e Itens (1., 2.), juntando linhas quebradas de PDF.
+ * 1. Caput (Art.)
+ * 2. Parágrafos (§ 1º / Parágrafo único)
+ * 3. Incisos (I, II, III...)
+ * 4. Alíneas (a), b), c))
+ * 5. Itens (1), 2), 3) ou 1., 2., 3.)
  */
 export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   if (!rawText.trim()) return [];
@@ -63,6 +66,13 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     .replace(/[ \t]+/g, ' ')
     .trim();
 
+  // Remove cabeçalhos/rodapés isolados comuns de PDFs do Planalto/Senado
+  normalized = normalized
+    .replace(/^\s*Consolidação das Leis do Trabalho\s*$/gim, '')
+    .replace(/^\s*Presidência da República\s*$/gim, '')
+    .replace(/^\s*Casa Civil\s*$/gim, '');
+
+  // Quebra antes de marcadores legais caso venham colados após ':', ';' ou '.'
   normalized = normalized
     .replace(/([.;:])\s+(Art\.?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
     .replace(/([.;:])\s+(Parágrafo\s+único\.?)/gi, '$1\n$2')
@@ -70,7 +80,9 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     .replace(
       /([.;:])\s+((?:X{0,3}(?:IX|IV|V?I{0,3})|L(?:X{0,3}(?:IX|IV|V?I{0,3}))?|C)\s*[-–—])/g,
       '$1\n$2'
-    );
+    )
+    .replace(/([.;:])\s+([a-z]\))/g, '$1\n$2')
+    .replace(/([.;:])\s+(\d{1,2}[.)])/g, '$1\n$2');
 
   const rawLines = normalized
     .split('\n')
@@ -82,7 +94,7 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
   const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
   const alineaRe = /^([a-z])\)\s+(.*)$/;
-  const itemRe = /^(\d{1,2})\.\s+(.*)$/;
+  const itemRe = /^(\d{1,2})[.)]\s+(.*)$/;
 
   const blocks: LegalBlock[] = [];
 
@@ -107,7 +119,8 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     } else if (mAli) {
       matched = { kind: 'alinea', marker: `${mAli[1]})`, body: mAli[2].trim() };
     } else if (mItem) {
-      matched = { kind: 'item', marker: `${mItem[1]}.`, body: mItem[2].trim() };
+      const punct = line.match(/^(\d{1,2}[.)])/)?.[1] || `${mItem[1]})`;
+      matched = { kind: 'item', marker: punct, body: mItem[2].trim() };
     }
 
     if (matched) {

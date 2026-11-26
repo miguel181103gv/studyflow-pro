@@ -857,12 +857,12 @@ Limpe e organize o texto legal abaixo para ficar visualmente perfeito e agradáv
 REGRAS RÍGIDAS:
 1. NUNCA resuma, parafraseie ou apague artigos, parágrafos, incisos ou alíneas — mantenha 100% do texto legal fiel.
 2. Remova apenas lixo de PDF (números de página isolados, cabeçalhos repetidos como 'Presidência da República / Casa Civil', hifens de quebra de linha no meio de palavras e quebras de linha no meio da frase).
-3. Coloque cada elemento estrutural em sua própria linha:
-   - Títulos/Capítulos/Seções em maiúsculas ou linha própria
-   - Cada 'Art. Xº' em nova linha
-   - Cada '§ Xº' ou 'Parágrafo único.' em nova linha
-   - Cada inciso ('I -', 'II -', 'III -'...) em nova linha
-   - Cada alínea ('a)', 'b)', 'c)'...) em nova linha
+3. Respeite RIGOROSAMENTE a hierarquia da lei brasileira, colocando CADA elemento em sua própria linha:
+   - 1. Caput: cada 'Art. Xº' em nova linha
+   - 2. Parágrafos: cada '§ Xº' ou 'Parágrafo único.' em nova linha
+   - 3. Incisos (algarismos romanos): cada 'I -', 'II -', 'III -'... em nova linha
+   - 4. Alíneas (letras minúsculas): cada 'a)', 'b)', 'c)'... em nova linha
+   - 5. Itens (algarismos arábicos): cada '1)', '2)', '3)' ou '1.', '2.', '3.'... em nova linha (NUNCA junte itens dentro da alínea anterior e NUNCA confunda número de item com letra de alínea!)
 4. Retorne APENAS o texto legal formatado, sem comentários extras ou markdown.
 
 TEXTO:

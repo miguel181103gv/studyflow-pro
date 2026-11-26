@@ -199,6 +199,8 @@ function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     .replace(/([.;:])\s+(Art\.?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
     .replace(/([.;:])\s+(Parágrafo\s+único\.?)/gi, '$1\n$2')
     .replace(/([.;:])\s+(§§?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
+    .replace(/([.;:])\s+([a-z]\))/g, '$1\n$2')
+    .replace(/([.;:])\s+(\d{1,2}[.)])/g, '$1\n$2')
     .replace(
       /([.;:])\s+((?:X{0,3}(?:IX|IV|V?I{0,3})|L(?:X{0,3}(?:IX|IV|V?I{0,3}))?|C)\s*[-–—])/g,
       '$1\n$2'
@@ -215,7 +217,7 @@ function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
   const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
   const alineaRe = /^([a-z])\)\s+(.*)$/;
-  const itemRe = /^(\d{1,2})\.\s+(.*)$/;
+  const itemRe = /^(\d{1,2})[.)]\s+(.*)$/;
 
   const blocks: LegalBlock[] = [];
 
@@ -240,7 +242,8 @@ function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     } else if (mAli) {
       matched = { kind: 'alinea', marker: `${mAli[1]})`, body: mAli[2].trim() };
     } else if (mItem) {
-      matched = { kind: 'item', marker: `${mItem[1]}.`, body: mItem[2].trim() };
+      const punct = line.match(/^(\d{1,2}[.)])/)?.[1] || `${mItem[1]})`;
+      matched = { kind: 'item', marker: punct, body: mItem[2].trim() };
     }
 
     if (matched) {
