@@ -21,6 +21,7 @@ import {
   RotateCcw,
   Scale,
   Search,
+  Star,
   StickyNote,
   FileUp,
   Loader2,
@@ -48,6 +49,7 @@ interface LeiSecaArticle {
   rawText: string;
   note: string;
   studied: boolean;
+  favorite?: boolean;
   readCount?: number;
   lastReadAt?: string;
   highlights: Record<string, HighlightTone>; // keyed by block index/id
@@ -55,7 +57,37 @@ interface LeiSecaArticle {
   updatedAt: string;
 }
 
-const LAW_PRESETS = ['CF/88', 'CLT', 'CPC', 'CDC', 'Código Civil', 'Código Penal', 'Lei 8.112/90', 'Lei 14.133/21', 'LGPD'];
+const LAW_PRESETS = [
+  'CF/88',
+  'CLT',
+  'CPC',
+  'CDC',
+  'Código Civil',
+  'Código Penal',
+  'LC 101/2000 (LRF)',
+  'Lei 8.429/1992',
+  'Lei 8.112/90',
+  'Lei 14.133/21',
+  'LGPD',
+];
+
+const NORM_CATEGORIES = [
+  { key: '__CAT:LC__', label: 'Leis Complementares (LC)' },
+  { key: '__CAT:LO__', label: 'Leis Ordinárias' },
+  { key: '__CAT:MP__', label: 'Medidas Provisórias (MP)' },
+  { key: '__CAT:EC__', label: 'Emendas Constitucionais (EC)' },
+  { key: '__CAT:DL__', label: 'Decretos-Leis' },
+] as const;
+
+function classifyNormCategory(lawName: string, title = '', rawText = ''): string {
+  const txt = `${lawName} ${title} ${rawText.slice(0, 300)}`.trim();
+  if (/\b(?:lc|lei\s+complementar)\b|101\/2000|responsabilidade\s+fiscal/i.test(txt)) return '__CAT:LC__';
+  if (/\b(?:mp|medida\s+provis[óo]ria)\b/i.test(txt)) return '__CAT:MP__';
+  if (/\b(?:ec|emenda\s+constitucional)\b/i.test(txt)) return '__CAT:EC__';
+  if (/decreto[-\s]?lei|\b(?:clt|c[óo]digo\s+penal|c[óo]digo\s+de\s+processo\s+penal|2\.?848|5\.?452|3\.?689)\b/i.test(txt)) return '__CAT:DL__';
+  if (/\blei\b|8\.?429|8\.?112|14\.?133|9\.?784|8\.?078|10\.?406|13\.?105|13\.?709|8\.?069/i.test(txt)) return '__CAT:LO__';
+  return '';
+}
 
 function normalizeLawBucket(lawName: string, title = '', rawText = ''): string {
   const combined = `${lawName} ${title} ${rawText.slice(0, 350)}`.trim();
@@ -70,15 +102,27 @@ function normalizeLawBucket(lawName: string, title = '', rawText = ''): string {
   if (/\bctn\b|5\.?172|tribut[áa]rio\s+nacional/i.test(target)) return 'CTN';
   if (/\beca\b|8\.?069|estatuto\s+da\s+crian[çc]a/i.test(target)) return 'ECA';
   if (/\blgpd\b|13\.?709/i.test(target)) return 'LGPD';
+  if (/101\/?2000|responsabilidade\s+fiscal|\blrf\b/i.test(target)) return 'LC 101/2000 (LRF)';
+  if (/8\.?429|improbidade/i.test(target)) return 'Lei 8.429/1992';
   if (/8\.?112/i.test(target)) return 'Lei 8.112/90';
   if (/14\.?133/i.test(target)) return 'Lei 14.133/21';
   if (/9\.?784/i.test(target)) return 'Lei 9.784/99';
   if (/\bcc\b|10\.?406|c[óo]digo\s+civil/i.test(target)) return 'Código Civil';
   if (/\bcp\b|2\.?848|c[óo]digo\s+penal/i.test(target)) return 'Código Penal';
 
+  const ecM = target.match(/\b(?:EC|Emenda\s+Constitucional)\s*(?:n[º°]?\s*)?(\d+(?:\/\d{2,4})?)/i);
+  if (ecM) return `EC ${ecM[1]}`;
+  const mpM = target.match(/\b(?:MP|Medida\s+Provis[óo]ria)\s*(?:n[º°]?\s*)?(\d[\d.]*(?:\/\d{2,4})?)/i);
+  if (mpM) return `MP ${mpM[1]}`;
+  const lcM = target.match(/\b(?:LC|Lei\s+Complementar)\s*(?:n[º°]?\s*)?(\d[\d.]*(?:\/\d{2,4})?)/i);
+  if (lcM) return `LC ${lcM[1]}`;
+  const dlM = target.match(/\bDecreto[-\s]?Lei\s*(?:n[º°]?\s*)?(\d[\d.]*(?:\/\d{2,4})?)/i);
+  if (dlM) return `Decreto-Lei ${dlM[1]}`;
+  const leiM = target.match(/\bLei(?:\s+Ordin[áa]ria)?\s*(?:n[º°]?\s*)?(\d[\d.]*(?:\/\d{2,4})?)/i);
+  if (leiM) return `Lei ${leiM[1]}`;
+
   if (primary) return primary;
 
-  // Se lawName estiver vazio, tenta inferir pelo texto completo
   if (/\bcf(?:\/88)?\b|constitui[çc][ãa]o/i.test(combined)) return 'CF/88';
   if (/\bclt\b|5\.?452/i.test(combined)) return 'CLT';
   if (/\bcpc\b|13\.?105/i.test(combined)) return 'CPC';
@@ -621,7 +665,11 @@ export default function LeiSecaPage() {
   // Filtros
   const [selectedLaw, setSelectedLaw] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'unread' | 'highlighted'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'favorites' | 'unread' | 'highlighted'>('all');
+  const [themeQuery, setThemeQuery] = useState('');
+  const [themeBusy, setThemeBusy] = useState(false);
+  const [themeMatchedIds, setThemeMatchedIds] = useState<string[] | null>(null);
+  const [activeThemeLabel, setActiveThemeLabel] = useState('');
 
   // Recolher/Expandir
   const [collapsedIds, setCollapsedIds] = useState<Record<string, boolean>>({});
@@ -785,11 +833,19 @@ export default function LeiSecaPage() {
 
   const filteredArticles = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const themeSet = themeMatchedIds ? new Set(themeMatchedIds) : null;
     return articles.filter((a) => {
+      if (themeSet && !themeSet.has(a.id)) return false;
       if (selectedLaw !== 'ALL') {
-        const bucket = normalizeLawBucket(a.lawName, a.title, a.rawText);
-        if (bucket !== selectedLaw) return false;
+        if (selectedLaw.startsWith('__CAT:')) {
+          const cat = classifyNormCategory(a.lawName, a.title, a.rawText);
+          if (cat !== selectedLaw) return false;
+        } else {
+          const bucket = normalizeLawBucket(a.lawName, a.title, a.rawText);
+          if (bucket !== selectedLaw) return false;
+        }
       }
+      if (statusFilter === 'favorites' && !a.favorite) return false;
       if (statusFilter === 'unread' && a.studied) return false;
       if (statusFilter === 'highlighted') {
         const hasHl = Object.values(a.highlights || {}).some((v) => v && v !== 'none');
@@ -813,7 +869,7 @@ export default function LeiSecaPage() {
       }
       return true;
     });
-  }, [articles, selectedLaw, searchQuery, statusFilter, subjectMap]);
+  }, [articles, selectedLaw, searchQuery, statusFilter, subjectMap, themeMatchedIds]);
 
   const lawBuckets = useMemo(() => {
     const map = new Map<string, number>();
@@ -1047,6 +1103,53 @@ export default function LeiSecaPage() {
     persist(articles.filter((a) => a.id !== id));
   }
 
+  function handleToggleFavorite(id: string) {
+    const now = new Date().toISOString();
+    persist(
+      articles.map((a) => (a.id === id ? { ...a, favorite: !a.favorite, updatedAt: now } : a))
+    );
+  }
+
+  async function handleFilterByTheme(e: React.FormEvent) {
+    e.preventDefault();
+    const t = themeQuery.trim();
+    if (!t) {
+      setThemeMatchedIds(null);
+      setActiveThemeLabel('');
+      return;
+    }
+    if (articles.length === 0) return;
+    setThemeBusy(true);
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'filter_lei_seca_theme',
+          theme: t,
+          items: articles.map((a) => ({
+            id: a.id,
+            lawName: a.lawName,
+            title: a.title,
+            preview: a.rawText.slice(0, 220),
+          })),
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Erro ao filtrar por tema.');
+      const ids = Array.isArray(json.data?.matched_ids) ? json.data.matched_ids : [];
+      setThemeMatchedIds(ids);
+      setActiveThemeLabel(t);
+      if (ids.length === 0) {
+        notify(`Nenhum artigo salvo encontrado sobre "${t}".`, 'info');
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Erro ao filtrar com IA.', 'error');
+    } finally {
+      setThemeBusy(false);
+    }
+  }
+
   function handleToggleStudied(id: string) {
     const now = new Date().toISOString();
     persist(
@@ -1208,11 +1311,27 @@ export default function LeiSecaPage() {
                 className="rounded-2xl subtle-surface border border-theme pl-8 pr-4 py-2.5 text-xs font-bold"
               >
                 <option value="ALL">Todas as leis ({articles.length})</option>
-                {lawBuckets.map((law) => (
-                  <option key={law.name} value={law.name}>
-                    {law.name} ({law.count})
-                  </option>
-                ))}
+                <optgroup label="Por tipo de norma">
+                  {NORM_CATEGORIES.map((cat) => {
+                    const cnt = articles.filter(
+                      (a) => classifyNormCategory(a.lawName, a.title, a.rawText) === cat.key
+                    ).length;
+                    return (
+                      <option key={cat.key} value={cat.key}>
+                        {cat.label} ({cnt})
+                      </option>
+                    );
+                  })}
+                </optgroup>
+                {lawBuckets.length > 0 && (
+                  <optgroup label="Normas salvas">
+                    {lawBuckets.map((law) => (
+                      <option key={law.name} value={law.name}>
+                        {law.name} ({law.count})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </div>
 
@@ -1261,10 +1380,45 @@ export default function LeiSecaPage() {
             );
           })}
 
-          <div className="ml-auto flex items-center gap-1">
+          <form onSubmit={(e) => void handleFilterByTheme(e)} className="flex items-center gap-1.5">
+            <div className="relative">
+              <Sparkles className="w-3 h-3 text-violet-500 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                value={themeQuery}
+                onChange={(e) => setThemeQuery(e.target.value)}
+                placeholder="Tema c/ IA (ex: férias, jornada)..."
+                className="rounded-xl subtle-surface border border-theme pl-7 pr-2.5 py-1 text-[11px] w-48 sm:w-56"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={themeBusy}
+              className="px-2.5 py-1 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-[11px] font-bold inline-flex items-center gap-1 disabled:opacity-50"
+            >
+              {themeBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Filtrar'}
+            </button>
+            {activeThemeLabel && (
+              <button
+                type="button"
+                onClick={() => {
+                  setThemeQuery('');
+                  setThemeMatchedIds(null);
+                  setActiveThemeLabel('');
+                }}
+                title="Limpar filtro por tema"
+                className="px-2 py-1 rounded-xl bg-violet-500/15 text-violet-700 dark:text-violet-300 text-[10px] font-bold inline-flex items-center gap-1"
+              >
+                {activeThemeLabel}
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </form>
+
+          <div className="ml-auto flex items-center gap-1 flex-wrap">
             {(
               [
                 { id: 'all', label: 'Todos' },
+                { id: 'favorites', label: `★ Favoritos (${articles.filter((a) => a.favorite).length})` },
                 { id: 'unread', label: 'Não lidos' },
                 { id: 'highlighted', label: 'Com grifo' },
               ] as const
@@ -1358,6 +1512,20 @@ export default function LeiSecaPage() {
                       ) : (
                         <Circle className="w-5 h-5 text-muted-theme hover:text-teal-500" />
                       )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleFavorite(art.id)}
+                      title={art.favorite ? 'Remover dos Favoritos' : 'Salvar nos Favoritos'}
+                      className="shrink-0"
+                    >
+                      <Star
+                        className={`w-4 h-4 transition ${
+                          art.favorite
+                            ? 'fill-amber-400 text-amber-400'
+                            : 'text-muted-theme hover:text-amber-400'
+                        }`}
+                      />
                     </button>
 
                     <div className="min-w-0">

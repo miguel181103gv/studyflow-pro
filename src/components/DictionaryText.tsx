@@ -67,7 +67,7 @@ function toAccentInsensitivePattern(word: string): string {
 }
 
 const LAW_ARTICLE_PATTERN =
-  '\\b(?:art(?:igo)?s?\\.?\\s*\\d+(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*[IVXLCDM]+|[IVXLCDM]+|al[íi]nea\\s+[a-z]|[a-z]\\)))*(?:\\s*(?:d[aeo]|no|na)\\s+(?:CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CP|C[óo]digo\\s+Penal|CC|C[óo]digo\\s+Civil|CPC|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP|C[óo]digo\\s+de\\s+Processo\\s+Penal|CDC|CTN|ECA|LGPD|LINDB|Lei\\s+(?:Complementar\\s+|n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?))?)';
+  '\\b(?:art(?:igo)?s?\\.?\\s*\\d+(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*[IVXLCDM]+|[IVXLCDM]+|al[íi]nea\\s+[a-z]|[a-z]\\)))*(?:\\s*(?:d[aeo]|no|na)\\s+(?:CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CP|C[óo]digo\\s+Penal|CC|C[óo]digo\\s+Civil|CPC|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP|C[óo]digo\\s+de\\s+Processo\\s+Penal|CDC|CTN|ECA|LGPD|LINDB|EC(?:\\s*n[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional(?:\\s*n[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?))?)';
 
 function parseLawCitation(raw: string): { article: string; lawHint: string } {
   const numMatch = raw.match(/art(?:igo)?s?\.?\s*(\d+(?:[º°oª])?(?:-[A-Za-z]+)?)/i);
@@ -86,8 +86,8 @@ function parseLawCitation(raw: string): { article: string; lawHint: string } {
   else if (/\bLGPD\b/i.test(raw)) lawHint = 'LGPD';
   else if (/\bLINDB\b/i.test(raw)) lawHint = 'LINDB';
   else {
-    const leiM = raw.match(/\b((?:Lei(?:\s+Complementar)?|LC)\s*(?:n[º°]?\s*)?\d[\d.]*(?:\/\d{2,4})?)/i);
-    if (leiM) lawHint = leiM[1].replace(/\s+/g, ' ').trim();
+    const normM = raw.match(/\b((?:Lei(?:\s+Complementar|\s+Ordin[áa]ria)?|LC|MP|Medida\s+Provis[óo]ria|EC|Emenda\s+Constitucional|Decreto-Lei)\s*(?:n[º°]?\s*)?\d[\d.]*(?:\/\d{2,4})?)/i);
+    if (normM) lawHint = normM[1].replace(/\s+/g, ' ').trim();
   }
 
   return { article, lawHint };

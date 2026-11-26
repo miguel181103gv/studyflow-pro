@@ -818,6 +818,35 @@ Retorne SOMENTE JSON válido neste formato:
       return NextResponse.json({ ok: true, data });
     }
 
+    if (action === 'filter_lei_seca_theme') {
+      const { theme = '', items = [] } = body;
+      const tClean = String(theme || '').trim();
+      if (!tClean || !Array.isArray(items) || items.length === 0) {
+        return NextResponse.json({ ok: true, data: { matched_ids: [] } });
+      }
+      const compactList = items.slice(0, 120).map((it: { id?: string; lawName?: string; title?: string; preview?: string }) => ({
+        id: it.id,
+        law: it.lawName || '',
+        title: it.title || '',
+        preview: String(it.preview || '').slice(0, 220),
+      }));
+      const prompt = `Você é um filtro jurídico inteligente de Lei Seca.
+O estudante quer encontrar TODOS os artigos/blocos abaixo relacionados ao tema: "${tClean}".
+Considere sinônimos e institutos jurídicos ligados ao tema (ex: "férias" inclui abono pecuniário, período aquisitivo, 1/3 constitucional; "jornada" inclui horas extras, intervalo, banco de horas; "crimes contra o patrimônio" inclui furto, roubo, estelionato; "direitos fundamentais" inclui Art. 5º ao 17 da CF/88).
+
+LISTA DE ARTIGOS SALVOS:
+${JSON.stringify(compactList)}
+
+Retorne SOMENTE JSON válido:
+{"matched_ids":["id1","id2"]}`;
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw) as { matched_ids?: string[] };
+      return NextResponse.json({
+        ok: true,
+        data: { matched_ids: Array.isArray(data?.matched_ids) ? data.matched_ids : [] },
+      });
+    }
+
     if (action === 'format_lei_seca') {
       const { rawText, lawName = '' } = body;
       if (!rawText || !String(rawText).trim()) {

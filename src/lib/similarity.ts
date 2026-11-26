@@ -9,6 +9,17 @@ export function normalizeForCompare(text: string): string {
     .trim();
 }
 
+const PT_STOPWORDS = new Set([
+  'de', 'da', 'do', 'das', 'dos', 'e', 'em', 'na', 'no', 'nas', 'nos',
+  'a', 'o', 'as', 'os', 'um', 'uma', 'para', 'por', 'com', 'sem', 'ao', 'aos',
+]);
+
+function meaningfulTokens(normText: string): string[] {
+  const raw = normText.split(' ').filter((w) => w.length >= 2);
+  const filtered = raw.filter((w) => !PT_STOPWORDS.has(w));
+  return filtered.length > 0 ? filtered : raw;
+}
+
 function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
@@ -31,16 +42,21 @@ function levenshtein(a: string, b: string): number {
   return dp[n];
 }
 
-function tokenJaccard(a: string, b: string): number {
-  const setA = new Set(a.split(' ').filter((w) => w.length >= 2));
-  const setB = new Set(b.split(' ').filter((w) => w.length >= 2));
-  if (setA.size === 0 || setB.size === 0) return 0;
+function tokenMetrics(a: string, b: string): { jaccard: number; overlap: number; minSize: number } {
+  const setA = new Set(meaningfulTokens(a));
+  const setB = new Set(meaningfulTokens(b));
+  if (setA.size === 0 || setB.size === 0) return { jaccard: 0, overlap: 0, minSize: 0 };
   let inter = 0;
   setA.forEach((w) => {
     if (setB.has(w)) inter++;
   });
   const union = setA.size + setB.size - inter;
-  return union === 0 ? 0 : inter / union;
+  const minSize = Math.min(setA.size, setB.size);
+  return {
+    jaccard: union === 0 ? 0 : inter / union,
+    overlap: minSize === 0 ? 0 : inter / minSize,
+    minSize,
+  };
 }
 
 export type MatchKind = 'exact' | 'similar';
@@ -52,7 +68,7 @@ export interface SimilarityMatch<T> {
 }
 
 /**
- * Compara duas palavras/termos curtos (ex: Dicionário).
+ * Compara duas palavras/termos curtos (ex: Dicionário) com detecção rígida de repetições.
  */
 export function compareShortTerms(aRaw: string, bRaw: string): { kind: MatchKind; score: number } | null {
   const a = normalizeForCompare(aRaw);
@@ -63,21 +79,26 @@ export function compareShortTerms(aRaw: string, bRaw: string): { kind: MatchKind
   const minLen = Math.min(a.length, b.length);
   const maxLen = Math.max(a.length, b.length);
 
-  if (minLen >= 4 && (a.includes(b) || b.includes(a)) && minLen / maxLen >= 0.65) {
-    return { kind: 'similar', score: minLen / maxLen };
+  // Contenção direta (ex: "convencao coletiva" dentro de "convencao coletiva de trabalho")
+  if (minLen >= 5 && (a.includes(b) || b.includes(a)) && minLen / maxLen >= 0.42) {
+    return { kind: 'similar', score: Math.max(0.75, minLen / maxLen) };
   }
 
-  if (maxLen <= 40) {
+  // Sobreposição de palavras relevantes (ignora "de", "da", "do", etc.)
+  const { jaccard, overlap, minSize } = tokenMetrics(a, b);
+  if (minSize >= 2 && overlap >= 0.85) {
+    return { kind: 'similar', score: Math.max(jaccard, overlap * 0.9) };
+  }
+  if (jaccard >= 0.5) {
+    return { kind: 'similar', score: jaccard };
+  }
+
+  if (maxLen <= 45) {
     const dist = levenshtein(a, b);
     const sim = 1 - dist / maxLen;
-    if ((maxLen >= 5 && dist <= 2) || sim >= 0.78) {
+    if ((maxLen >= 5 && dist <= 2) || sim >= 0.74) {
       return { kind: 'similar', score: sim };
     }
-  }
-
-  const jac = tokenJaccard(a, b);
-  if (jac >= 0.65) {
-    return { kind: 'similar', score: jac };
   }
 
   return null;
@@ -89,7 +110,7 @@ export function compareShortTerms(aRaw: string, bRaw: string): { kind: MatchKind
 export function compareLongTexts(
   aRaw: string,
   bRaw: string,
-  threshold = 0.62
+  threshold = 0.52
 ): { kind: MatchKind; score: number } | null {
   const a = normalizeForCompare(aRaw);
   const b = normalizeForCompare(bRaw);
@@ -99,19 +120,22 @@ export function compareLongTexts(
   const minLen = Math.min(a.length, b.length);
   const maxLen = Math.max(a.length, b.length);
 
-  if (minLen >= 20 && (a.includes(b) || b.includes(a))) {
+  if (minLen >= 14 && (a.includes(b) || b.includes(a))) {
     return { kind: 'similar', score: Math.max(0.8, minLen / maxLen) };
   }
 
-  const jac = tokenJaccard(a, b);
-  if (jac >= threshold) {
-    return { kind: 'similar', score: jac };
+  const { jaccard, overlap, minSize } = tokenMetrics(a, b);
+  if (minSize >= 4 && overlap >= 0.85) {
+    return { kind: 'similar', score: Math.max(jaccard, overlap * 0.85) };
+  }
+  if (jaccard >= threshold) {
+    return { kind: 'similar', score: jaccard };
   }
 
-  if (maxLen <= 120) {
+  if (maxLen <= 140) {
     const dist = levenshtein(a, b);
     const sim = 1 - dist / maxLen;
-    if (sim >= 0.8) {
+    if (sim >= 0.76) {
       return { kind: 'similar', score: sim };
     }
   }

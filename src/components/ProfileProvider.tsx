@@ -83,6 +83,7 @@ interface ProfileContextValue {
     payload: Omit<StudyLog, 'id' | 'user_id' | 'profile_id' | 'created_at'>
   ) => Promise<void>;
   deleteStudyLog: (id: string) => Promise<void>;
+  adjustQuestionStatOnDelete: (subjectId: string, topicId: string | null, wasCorrect: boolean) => Promise<void>;
 
   completeReview: (reviewId: string) => Promise<void>;
   postponeReview: (reviewId: string, newDueDate: string) => Promise<void>;
@@ -1026,6 +1027,51 @@ export function ProfileProvider({
     });
   };
 
+  const adjustQuestionStatOnDelete = async (
+    subjectId: string,
+    topicId: string | null,
+    wasCorrect: boolean
+  ) => {
+    const target =
+      studyLogs.find(
+        (l) =>
+          l.subject_id === subjectId &&
+          (l.topic_id || null) === (topicId || null) &&
+          l.period === 'Quiz' &&
+          l.questions_total > 0
+      ) ||
+      studyLogs.find(
+        (l) => l.subject_id === subjectId && l.period === 'Quiz' && l.questions_total > 0
+      ) ||
+      studyLogs.find((l) => l.subject_id === subjectId && l.questions_total > 0);
+
+    if (!target) return;
+    const newTotal = Math.max(0, target.questions_total - 1);
+    const newCorrect = wasCorrect
+      ? Math.max(0, target.questions_correct - 1)
+      : Math.min(newTotal, target.questions_correct);
+
+    if (newTotal === 0 && (target.duration_seconds || 0) === 0) {
+      await deleteStudyLog(target.id);
+      return;
+    }
+
+    setStudyLogs((prev) =>
+      prev.map((l) =>
+        l.id === target.id
+          ? { ...l, questions_total: newTotal, questions_correct: newCorrect }
+          : l
+      )
+    );
+    await withSync(async () => {
+      const supabase = createClient();
+      await supabase
+        .from('study_logs')
+        .update({ questions_total: newTotal, questions_correct: newCorrect })
+        .eq('id', target.id);
+    });
+  };
+
   const completeReview = async (reviewId: string) => {
     const completedAt = new Date().toISOString();
     setReviews((prev) =>
@@ -1459,6 +1505,7 @@ export function ProfileProvider({
         deleteHighlight,
         addStudyLog,
         deleteStudyLog,
+        adjustQuestionStatOnDelete,
         completeReview,
         postponeReview,
         deleteReview,

@@ -407,7 +407,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 }
 
 export default function QuestoesPage() {
-  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog } = useProfile();
+  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog, adjustQuestionStatOnDelete } = useProfile();
   const aiName = useAiProviderName();
   const { notify, aiJobs, runAiJob, updateAiJobProgress } = useGlobal();
 
@@ -433,7 +433,7 @@ export default function QuestoesPage() {
   const [collapsedQ, setCollapsedQ] = useState<Record<string, boolean>>({});
   const solvedStorageKey = `sf_solved_questions_${profile?.id || 'default'}`;
   const [solvedMap, setSolvedMap] = useState<Record<string, { hit: boolean; answeredAt: string }>>({});
-  const [solvedFilter, setSolvedFilter] = useState<'all' | 'unsolved' | 'solved'>('all');
+  const [solvedFilter, setSolvedFilter] = useState<'all' | 'unsolved' | 'solved'>('unsolved');
   const [scopeSearch, setScopeSearch] = useState('');
   const [scopeTopicFilter, setScopeTopicFilter] = useState('');
   const [quizSessionResults, setQuizSessionResults] = useState<{ subject_id: string; topic_id: string | null; hit: boolean }[]>([]);
@@ -533,6 +533,25 @@ export default function QuestoesPage() {
     }
   }
 
+  async function handleDeleteQuestion(q: BankQuestion) {
+    saveBank(questions.filter((x) => x.id !== q.id));
+    const wasSolved = solvedMap[q.id];
+    if (wasSolved) {
+      const nextSolved = { ...solvedMap };
+      delete nextSolved[q.id];
+      setSolvedMap(nextSolved);
+      try {
+        localStorage.setItem(solvedStorageKey, JSON.stringify(nextSolved));
+      } catch {
+        // ignore
+      }
+      await adjustQuestionStatOnDelete(q.subject_id, q.topic_id, wasSolved.hit);
+      notify('Questão excluída e retirada das estatísticas!', 'info');
+    } else {
+      notify('Questão excluída do banco.', 'info');
+    }
+  }
+
   useEffect(() => {
     setScopeSearch('');
     setScopeTopicFilter('');
@@ -556,8 +575,15 @@ export default function QuestoesPage() {
     .map(parseErrorToBankQuestion)
     .filter(Boolean) as BankQuestion[];
 
-  // Mescla automaticamente as questões digitalizadas do Caderno de Erros no Banco de Questões!
-  const allQuestions: BankQuestion[] = [...questions, ...digitizedErrorQuestions];
+  // Mescla questões do Caderno de Erros sem duplicar as que já existem no Banco de Questões
+  const normStmtKey = (txt: string) =>
+    (txt || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 120);
+  const bankStmtSet = new Set(questions.map((q) => normStmtKey(q.statement)).filter(Boolean));
+  const uniqueErrorQuestions = digitizedErrorQuestions.filter((eq) => {
+    const k = normStmtKey(eq.statement);
+    return !k || !bankStmtSet.has(k);
+  });
+  const allQuestions: BankQuestion[] = [...questions, ...uniqueErrorQuestions];
 
   const activeSubject =
     selectedScope && (selectedScope.type === 'subject' || selectedScope.type === 'topic')
@@ -1866,9 +1892,9 @@ ${q.statement}`;
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {(
                     [
-                      { id: 'all', label: `Todas (${scopeQuestions.length})` },
                       { id: 'unsolved', label: `Não resolvidas (${scopeQuestions.length - scopeSolvedCount})` },
                       { id: 'solved', label: `Já resolvidas (${scopeSolvedCount})` },
+                      { id: 'all', label: `Todas (${scopeQuestions.length})` },
                     ] as const
                   ).map((f) => (
                     <button
@@ -1906,129 +1932,103 @@ ${q.statement}`;
                 </button>
                 </div>
               </div>
-              {visibleScopeQuestions.map((q, i) => {
-                const isCol = !!collapsedQ[q.id];
-                const qSub = subjects.find((s) => s.id === q.subject_id);
-                const qTopic = q.topic_id ? topics.find((t) => t.id === q.topic_id) : undefined;
-                const solvedInfo = getSolvedInfo(q);
-                const boardLabel = q.header
-                  ? q.header.split('·')[0].trim()
-                  : '';
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {visibleScopeQuestions.map((q, i) => {
+                  const qSub = subjects.find((s) => s.id === q.subject_id);
+                  const qTopic = q.topic_id ? topics.find((t) => t.id === q.topic_id) : undefined;
+                  const solvedInfo = getSolvedInfo(q);
+                  const boardLabel = q.header ? q.header.split('·')[0].trim() : '';
 
-                return (
-                  <div
-                    key={q.id}
-                    className={`card-surface rounded-2xl p-4 sm:p-5 space-y-3 border transition ${
-                      solvedInfo ? 'border-theme/70 opacity-85' : 'border-theme'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2 flex-wrap min-w-0">
-                        <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-lg subtle-surface text-muted-theme">
-                          #{i + 1}
-                        </span>
-                        {boardLabel && (
-                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-500/12 text-[var(--text-main)]">
-                            {boardLabel}
-                          </span>
-                        )}
+                  return (
+                    <div
+                      key={q.id}
+                      className={`card-surface rounded-2xl p-4 flex flex-col justify-between gap-3 border transition hover:border-teal-500/45 ${
+                        solvedInfo ? 'border-theme/60 opacity-85' : 'border-theme'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                            <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded-md subtle-surface text-muted-theme">
+                              #{i + 1}
+                            </span>
+                            {boardLabel && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-500/12 text-[var(--text-main)]">
+                                {boardLabel}
+                              </span>
+                            )}
+                            {q.id.startsWith('err-') && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                                Erros
+                              </span>
+                            )}
+                            {solvedInfo && (
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                                  solvedInfo.hit
+                                    ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                                    : 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
+                                }`}
+                              >
+                                {solvedInfo.hit ? '✓ Acertou' : '✕ Errou'}
+                              </span>
+                            )}
+                          </div>
+                          {!q.id.startsWith('err-') && (
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteQuestion(q)}
+                              className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600 shrink-0"
+                              title="Excluir questão"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+
                         {qSub && (
-                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-theme min-w-0">
+                          <p className="text-[11px] text-muted-theme truncate flex items-center gap-1.5">
                             <span
                               className="w-2 h-2 rounded-full shrink-0"
                               style={{ backgroundColor: qSub.color || '#0d9488' }}
                             />
-                            <span className="truncate max-w-[160px]">{qSub.name}</span>
+                            <span className="truncate">{qSub.name}</span>
                             {qTopic && (
                               <>
                                 <span className="opacity-40">›</span>
-                                <span className="truncate max-w-[200px] text-[var(--text-main)]">
+                                <span className="truncate text-[var(--text-main)] font-medium">
                                   {qTopic.title}
                                 </span>
                               </>
                             )}
-                          </span>
+                          </p>
                         )}
-                        {q.id.startsWith('err-') && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
-                            Caderno de Erros
-                          </span>
-                        )}
-                        {solvedInfo && (
-                          <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                              solvedInfo.hit
-                                ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                                : 'bg-rose-500/15 text-rose-700 dark:text-rose-300'
-                            }`}
-                          >
-                            {solvedInfo.hit ? '✓ Acertou' : '✕ Errou'}
-                          </span>
-                        )}
+
+                        <p className="text-[13px] leading-snug line-clamp-3 text-[var(--text-main)]">
+                          {q.statement}
+                        </p>
                       </div>
 
-                      <div className="flex items-center gap-1 shrink-0">
+                      <div className="pt-2.5 border-t border-theme/50 flex items-center justify-between gap-2 mt-auto">
+                        <span className="text-[11px] text-muted-theme">
+                          {q.options.length} alt.
+                        </span>
                         <button
                           type="button"
-                          onClick={() =>
-                            setCollapsedQ((prev) => ({ ...prev, [q.id]: !isCol }))
-                          }
-                          title={isCol ? 'Expandir' : 'Recolher'}
-                          className="p-1.5 rounded-lg subtle-surface text-muted-theme hover:text-[var(--text-main)]"
+                          onClick={() => startQuiz([q], `Questão #${i + 1}`)}
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
+                            solvedInfo
+                              ? 'subtle-surface border border-theme hover:border-teal-500/50 text-[var(--text-main)]'
+                              : 'bg-teal-600 hover:bg-teal-500 text-white shadow-xs'
+                          }`}
                         >
-                          {isCol ? (
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          ) : (
-                            <ChevronUp className="w-3.5 h-3.5" />
-                          )}
+                          {solvedInfo ? 'Refazer' : 'Resolver'}
                         </button>
-                        {!q.id.startsWith('err-') && (
-                          <button
-                            type="button"
-                            onClick={() => saveBank(questions.filter((x) => x.id !== q.id))}
-                            className="p-1.5 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600"
-                            title="Excluir questão"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
                       </div>
                     </div>
-
-                    {isCol ? (
-                      <p
-                        onClick={() => setCollapsedQ((prev) => ({ ...prev, [q.id]: false }))}
-                        className="text-xs text-muted-theme truncate cursor-pointer hover:text-[var(--text-main)]"
-                      >
-                        {q.statement}
-                      </p>
-                    ) : (
-                      <div className="space-y-3">
-                        <p className="text-[14px] leading-relaxed whitespace-pre-wrap">
-                          <DictionaryText text={q.statement} />
-                        </p>
-                        <div className="flex items-center justify-between gap-2 pt-1 border-t border-theme/50">
-                          <span className="text-[11px] text-muted-theme">
-                            {q.options.length} alternativas
-                            {solvedInfo ? ' · Refazer não altera seus acertos' : ''}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => startQuiz([q], `Questão #${i + 1}`)}
-                            className={`px-4 py-2 rounded-xl text-xs font-bold transition ${
-                              solvedInfo
-                                ? 'subtle-surface border border-theme hover:border-teal-500/50 text-[var(--text-main)]'
-                                : 'bg-teal-600 hover:bg-teal-500 text-white shadow-xs'
-                            }`}
-                          >
-                            {solvedInfo ? 'Refazer questão' : 'Resolver questão'}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
