@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useProfile } from '@/components/ProfileProvider';
+import { CLOUD_SYNC_EVENT, pushGeneratedSimuladosToCloud, pushQuestionsToCloud } from '@/lib/cloudSync';
 import { useGlobal } from '@/components/GlobalProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { ExplainForChildButton } from '@/components/ExplainForChildButton';
@@ -232,12 +233,36 @@ export default function SimuladosPage() {
     return () => window.clearInterval(t);
   }, [activeSim, examFinished]);
 
+  useEffect(() => {
+    const onSync = (e: Event) => {
+      const scope = (e as CustomEvent<{ scope?: string }>).detail?.scope;
+      if (!scope || scope === 'simulados-gen') {
+        try {
+          const raw = localStorage.getItem(genStorageKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) setGeneratedList(parsed);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
+    window.addEventListener(CLOUD_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(CLOUD_SYNC_EVENT, onSync);
+  }, [genStorageKey]);
+
   function saveGeneratedList(next: GeneratedSimulado[]) {
+    const nextIds = new Set(next.map((x) => x.id));
+    const removedIds = generatedList.filter((x) => !nextIds.has(x.id)).map((x) => x.id);
     setGeneratedList(next);
     try {
       localStorage.setItem(genStorageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+    if (profile?.user_id && profile?.id) {
+      pushGeneratedSimuladosToCloud(profile.user_id, profile.id, removedIds);
     }
   }
 
@@ -1111,6 +1136,7 @@ export default function SimuladosPage() {
           }));
         if (toAdd.length > 0) {
           localStorage.setItem(bankKey, JSON.stringify([...toAdd, ...list]));
+          if (profile?.user_id && profile?.id) pushQuestionsToCloud(profile.user_id, profile.id);
         }
       } catch {
         // ignore

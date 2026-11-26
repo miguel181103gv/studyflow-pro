@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
+import { CLOUD_SYNC_EVENT, pushQuestionsToCloud } from '@/lib/cloudSync';
 import { useGlobal } from '@/components/GlobalProvider';
 import { todayISO } from '@/lib/utils';
 import { DictionaryText } from '@/components/DictionaryText';
@@ -503,9 +504,28 @@ export default function QuestoesPage() {
         // ignore
       }
     };
+    const onCloudSync = (e: Event) => {
+      const scope = (e as CustomEvent<{ scope?: string }>).detail?.scope;
+      if (!scope || scope === 'questions') {
+        reloadBank();
+        try {
+          const rawS = localStorage.getItem(solvedStorageKey);
+          if (rawS) {
+            const pS = JSON.parse(rawS);
+            if (pS && typeof pS === 'object') setSolvedMap(pS);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    };
     window.addEventListener('sf-question-bank-updated', reloadBank);
-    return () => window.removeEventListener('sf-question-bank-updated', reloadBank);
-  }, [storageKey]);
+    window.addEventListener(CLOUD_SYNC_EVENT, onCloudSync);
+    return () => {
+      window.removeEventListener('sf-question-bank-updated', reloadBank);
+      window.removeEventListener(CLOUD_SYNC_EVENT, onCloudSync);
+    };
+  }, [storageKey, solvedStorageKey]);
 
   useEffect(() => {
     try {
@@ -532,16 +552,20 @@ export default function QuestoesPage() {
       } catch {
         // ignore
       }
+      if (profile?.user_id && profile?.id) pushQuestionsToCloud(profile.user_id, profile.id);
       return next;
     });
   }
 
-  function saveBank(next: BankQuestion[]) {
+  function saveBank(next: BankQuestion[], deletedIds: string[] = []) {
     setQuestions(next);
     try {
       localStorage.setItem(storageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+    if (profile?.user_id && profile?.id) {
+      pushQuestionsToCloud(profile.user_id, profile.id, deletedIds);
     }
   }
 
@@ -550,7 +574,7 @@ export default function QuestoesPage() {
       const errId = q.id.slice(4);
       await deleteErrorEntry(errId);
     }
-    saveBank(questions.filter((x) => x.id !== q.id));
+    saveBank(questions.filter((x) => x.id !== q.id), [q.id]);
     const wasSolved = solvedMap[q.id];
     if (wasSolved) {
       const nextSolved = { ...solvedMap };
@@ -797,6 +821,7 @@ export default function QuestoesPage() {
               const prevArr = rawExisting ? JSON.parse(rawExisting) : [];
               const nextArr = [...collected, ...(Array.isArray(prevArr) ? prevArr : [])];
               localStorage.setItem(bankKeySnap, JSON.stringify(nextArr));
+              if (profile?.user_id && profile?.id) pushQuestionsToCloud(profile.user_id, profile.id);
               window.dispatchEvent(new CustomEvent('sf-question-bank-updated'));
             } catch {
               // ignore
@@ -2004,16 +2029,14 @@ ${q.statement}`;
                               </span>
                             )}
                           </div>
-                          {!q.id.startsWith('err-') && (
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteQuestion(q)}
-                              className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600 shrink-0"
-                              title="Excluir questão"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteQuestion(q)}
+                            className="p-1 rounded-lg hover:bg-rose-500/15 text-muted-theme hover:text-rose-600 shrink-0"
+                            title={q.id.startsWith('err-') ? 'Excluir do Caderno de Erros' : 'Excluir questão'}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
 
                         {qSub && (

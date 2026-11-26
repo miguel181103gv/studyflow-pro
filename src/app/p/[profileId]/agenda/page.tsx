@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useProfile } from '@/components/ProfileProvider';
+import { CLOUD_SYNC_EVENT, pushAgendaToCloud } from '@/lib/cloudSync';
 import { useGlobal } from '@/components/GlobalProvider';
 import { getStudyMode } from '@/lib/studyModes';
 import { buildGoogleCalendarUrl, downloadIcsFile } from '@/lib/calendarExport';
@@ -275,22 +276,31 @@ export default function AgendaPage() {
   }, [isSchoolOrCollege]);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw) as Partial<AgendaStore>;
-        setStore({
-          activePlanId: parsed.activePlanId || parsed.plans?.[0]?.id || null,
-          plans: Array.isArray(parsed.plans) ? parsed.plans : [],
-          notes: Array.isArray(parsed.notes) ? parsed.notes : [],
-          classes: Array.isArray(parsed.classes) ? parsed.classes : [],
-          assessments: Array.isArray(parsed.assessments) ? parsed.assessments : [],
-          subjectProfessors: parsed.subjectProfessors || {},
-        });
+    const loadAg = () => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as Partial<AgendaStore>;
+          setStore({
+            activePlanId: parsed.activePlanId || parsed.plans?.[0]?.id || null,
+            plans: Array.isArray(parsed.plans) ? parsed.plans : [],
+            notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+            classes: Array.isArray(parsed.classes) ? parsed.classes : [],
+            assessments: Array.isArray(parsed.assessments) ? parsed.assessments : [],
+            subjectProfessors: parsed.subjectProfessors || {},
+          });
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
-    }
+    };
+    loadAg();
+    const onSync = (e: Event) => {
+      const scope = (e as CustomEvent<{ scope?: string }>).detail?.scope;
+      if (!scope || scope === 'agenda') loadAg();
+    };
+    window.addEventListener(CLOUD_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(CLOUD_SYNC_EVENT, onSync);
   }, [storageKey]);
 
   function saveStore(next: AgendaStore) {
@@ -299,6 +309,9 @@ export default function AgendaPage() {
       localStorage.setItem(storageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+    if (profile?.user_id && profile?.id) {
+      pushAgendaToCloud(profile.user_id, profile.id);
     }
   }
 

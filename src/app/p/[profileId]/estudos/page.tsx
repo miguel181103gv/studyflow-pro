@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
+import { CLOUD_SYNC_EVENT, pushQuestionsToCloud, pushTopicNotesToCloud } from '@/lib/cloudSync';
 import { DictionaryText } from '@/components/DictionaryText';
 import { ExplainForChildButton } from '@/components/ExplainForChildButton';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -445,12 +446,21 @@ export default function ProgressoEditalPage() {
   const notesStorageKey = `sf_topic_notes_${profile?.id || 'default'}`;
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(notesStorageKey);
-      if (raw) setTopicNotesMap(JSON.parse(raw));
-    } catch {
-      // ignore
-    }
+    const loadNotes = () => {
+      try {
+        const raw = localStorage.getItem(notesStorageKey);
+        if (raw) setTopicNotesMap(JSON.parse(raw));
+      } catch {
+        // ignore
+      }
+    };
+    loadNotes();
+    const onSync = (e: Event) => {
+      const scope = (e as CustomEvent<{ scope?: string }>).detail?.scope;
+      if (!scope || scope === 'notes') loadNotes();
+    };
+    window.addEventListener(CLOUD_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(CLOUD_SYNC_EVENT, onSync);
   }, [notesStorageKey]);
 
   function saveTopicNote(topicId: string, record: TopicNoteRecord) {
@@ -460,6 +470,9 @@ export default function ProgressoEditalPage() {
       localStorage.setItem(notesStorageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+    if (profile?.user_id && profile?.id) {
+      pushTopicNotesToCloud(profile.user_id, profile.id);
     }
   }
 
@@ -698,6 +711,7 @@ export default function ProgressoEditalPage() {
               });
               if (qChanged) {
                 localStorage.setItem(qKey, JSON.stringify(nextQ));
+                if (profile?.user_id && profile?.id) pushQuestionsToCloud(profile.user_id, profile.id);
               }
             }
           }
@@ -741,12 +755,21 @@ export default function ProgressoEditalPage() {
   const diffStorageKey = `sf_topic_difficulty_${profile?.id || 'default'}`;
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(diffStorageKey);
-      if (raw) setDifficultyMap(JSON.parse(raw));
-    } catch {
-      // ignore
-    }
+    const loadDiff = () => {
+      try {
+        const raw = localStorage.getItem(diffStorageKey);
+        if (raw) setDifficultyMap(JSON.parse(raw));
+      } catch {
+        // ignore
+      }
+    };
+    loadDiff();
+    const onSync = (e: Event) => {
+      const scope = (e as CustomEvent<{ scope?: string }>).detail?.scope;
+      if (!scope || scope === 'notes') loadDiff();
+    };
+    window.addEventListener(CLOUD_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(CLOUD_SYNC_EVENT, onSync);
   }, [diffStorageKey]);
 
   function saveDifficulty(topicId: string, diff: Difficulty) {
@@ -756,6 +779,9 @@ export default function ProgressoEditalPage() {
       localStorage.setItem(diffStorageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+    if (profile?.user_id && profile?.id) {
+      pushTopicNotesToCloud(profile.user_id, profile.id);
     }
     setPendingDifficultyTopic(null);
   }

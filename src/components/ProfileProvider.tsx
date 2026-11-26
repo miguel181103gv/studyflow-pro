@@ -3,6 +3,15 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { mergeDictionaryLists, readLocalDictionary, syncDictionaryToCloud, writeLocalDictionary } from '@/lib/dictSync';
+import {
+  mergeAgendaFromCloud,
+  mergeGeneratedSimuladosFromCloud,
+  mergeLeiSecaFromCloud,
+  mergeQuestionsFromCloud,
+  mergeTopicNotesFromCloud,
+  pushQuestionsToCloud,
+  pushTopicNotesToCloud,
+} from '@/lib/cloudSync';
 import type {
   AIReport,
   ErrorEntry,
@@ -501,6 +510,16 @@ export function ProfileProvider({
     } catch {
       // ignore
     }
+    const notesSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_NOTES__');
+    const questionsSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_QUESTIONS__');
+    const leiSecaSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_LEI_SECA__');
+    const agendaSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_AGENDA__');
+    const simGenSyncRow = allReports.find((r) => String(r.period_type) === '__SYNC_SIMULADOS_GEN__');
+    mergeTopicNotesFromCloud(user.id, profileId, notesSyncRow?.content_markdown);
+    mergeQuestionsFromCloud(user.id, profileId, questionsSyncRow?.content_markdown);
+    mergeLeiSecaFromCloud(user.id, profileId, leiSecaSyncRow?.content_markdown);
+    mergeAgendaFromCloud(user.id, profileId, agendaSyncRow?.content_markdown);
+    mergeGeneratedSimuladosFromCloud(user.id, profileId, simGenSyncRow?.content_markdown);
     setReports(allReports.filter((r) => !String(r.period_type || '').startsWith('__SYNC_')));
     setFlashcards((fcRes?.data as Flashcard[]) || []);
 

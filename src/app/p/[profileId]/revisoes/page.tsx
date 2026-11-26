@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
+import { pushQuestionsToCloud } from '@/lib/cloudSync';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { addDaysISO, formatDateBR, todayISO } from '@/lib/utils';
@@ -147,6 +148,7 @@ export default function RevisoesPage() {
 
       if (newItems.length > 0) {
         localStorage.setItem(bankKey, JSON.stringify([...newItems, ...arr]));
+        if (profile?.user_id && profile?.id) pushQuestionsToCloud(profile.user_id, profile.id);
       }
     } catch {
       // ignore storage errors

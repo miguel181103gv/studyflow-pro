@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useProfile } from '@/components/ProfileProvider';
+import { CLOUD_SYNC_EVENT, pushLeiSecaToCloud } from '@/lib/cloudSync';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { useAiProviderName } from '@/lib/useAiProvider';
@@ -750,27 +751,41 @@ export default function LeiSecaPage() {
   const [showPreview, setShowPreview] = useState(true);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setArticles(parsed);
-      } else {
+    const loadLs = () => {
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) setArticles(parsed);
+        } else {
+          setArticles([]);
+        }
+      } catch {
         setArticles([]);
+      } finally {
+        setLoaded(true);
       }
-    } catch {
-      setArticles([]);
-    } finally {
-      setLoaded(true);
-    }
+    };
+    loadLs();
+    const onSync = (e: Event) => {
+      const scope = (e as CustomEvent<{ scope?: string }>).detail?.scope;
+      if (!scope || scope === 'lei-seca') loadLs();
+    };
+    window.addEventListener(CLOUD_SYNC_EVENT, onSync);
+    return () => window.removeEventListener(CLOUD_SYNC_EVENT, onSync);
   }, [storageKey]);
 
   function persist(next: LeiSecaArticle[]) {
+    const nextIds = new Set(next.map((a) => a.id));
+    const removedIds = articles.filter((a) => !nextIds.has(a.id)).map((a) => a.id);
     setArticles(next);
     try {
       localStorage.setItem(storageKey, JSON.stringify(next));
     } catch {
       // ignore
+    }
+    if (profile?.user_id && profile?.id) {
+      pushLeiSecaToCloud(profile.user_id, profile.id, removedIds);
     }
   }
 

@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useProfile } from './ProfileProvider';
+import { pushLeiSecaToCloud } from '@/lib/cloudSync';
 import { BookOpen, ExternalLink, Loader2, Scale, X } from 'lucide-react';
 import { parseLeiSecaBlocks } from '@/lib/leiSecaParser';
 import { LegalBlocksView } from './LegalBlocksView';
@@ -519,6 +520,7 @@ export function DictionaryText({
       };
       try {
         localStorage.setItem(lsKey, JSON.stringify([created, ...stored]));
+        if (profile?.user_id && profile?.id) pushLeiSecaToCloud(profile.user_id, profile.id);
       } catch {
         // ignore quota errors
       }
