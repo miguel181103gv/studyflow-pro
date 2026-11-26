@@ -65,6 +65,7 @@ interface ProfileContextValue {
   reorderSubject: (id: string, direction: 'up' | 'down') => Promise<void>;
   moveSubject: (sourceId: string, targetId: string) => Promise<void>;
   setSubjectOrder: (orderedIds: string[]) => Promise<void>;
+  setTopicOrder: (subjectId: string, orderedTopicIds: string[]) => Promise<void>;
   addTopic: (subjectId: string, title: string) => Promise<void>;
   addTopicsBatch: (subjectId: string, titles: string[]) => Promise<void>;
   updateTopicTitle: (topicId: string, title: string) => Promise<void>;
@@ -616,6 +617,44 @@ export function ProfileProvider({
         )
       );
       notify('Ordem do Ciclo de Estudos atualizada pelo cronograma!');
+    });
+  };
+
+  const setTopicOrder = async (subjectId: string, orderedTopicIds: string[]) => {
+    const pos = new Map(orderedTopicIds.map((id, i) => [id, i]));
+    const subTopics = topics
+      .filter((t) => t.subject_id === subjectId)
+      .sort((a, b) => {
+        const pa = pos.has(a.id) ? pos.get(a.id)! : 99999 + (a.sort_order || 0);
+        const pb = pos.has(b.id) ? pos.get(b.id)! : 99999 + (b.sort_order || 0);
+        return pa - pb;
+      })
+      .map((t, i) => ({ ...t, sort_order: i }));
+
+    const subMap = new Map(subTopics.map((t) => [t.id, t]));
+    const nextAll: Topic[] = [];
+    let inserted = false;
+    for (const t of topics) {
+      if (t.subject_id === subjectId) {
+        if (!inserted) {
+          nextAll.push(...subTopics);
+          inserted = true;
+        }
+      } else {
+        nextAll.push(t);
+      }
+    }
+    if (!inserted) nextAll.push(...subTopics);
+    setTopics(nextAll);
+
+    await withSync(async () => {
+      const supabase = createClient();
+      await Promise.all(
+        Array.from(subMap.values()).map((t) =>
+          supabase.from('topics').update({ sort_order: t.sort_order }).eq('id', t.id)
+        )
+      );
+      notify('Ordem dos tópicos salva!');
     });
   };
 
@@ -1490,6 +1529,7 @@ export function ProfileProvider({
         reorderSubject,
         moveSubject,
         setSubjectOrder,
+        setTopicOrder,
         addTopic,
         addTopicsBatch,
         updateTopicTitle,

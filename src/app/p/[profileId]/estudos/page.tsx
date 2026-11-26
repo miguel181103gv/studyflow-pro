@@ -254,6 +254,7 @@ export default function ProgressoEditalPage() {
     addTopic,
     addTopicsBatch,
     updateTopicTitle,
+  setTopicOrder,
     migrateAndDeleteTopics,
     deleteSubjectsBatch,
     flashcards,
@@ -302,6 +303,46 @@ export default function ProgressoEditalPage() {
   const [editingSubjectId, setEditingSubjectId] = useState<string | null>(null);
   const [draggedSubId, setDraggedSubId] = useState<string | null>(null);
   const [dragOverSubId, setDragOverSubId] = useState<string | null>(null);
+  const [draggedTopic, setDraggedTopic] = useState<{ id: string; subjectId: string } | null>(null);
+  const [dragOverTopicId, setDragOverTopicId] = useState<string | null>(null);
+
+  function handleDropTopic(subjectId: string, fromId: string, toId: string) {
+    if (fromId === toId) return;
+    const subList = topics.filter((t) => t.subject_id === subjectId);
+    const ids = subList.map((t) => t.id);
+    const fromIdx = ids.indexOf(fromId);
+    const toIdx = ids.indexOf(toId);
+    if (fromIdx === -1 || toIdx === -1) return;
+
+    // Se arrastou um tópico pai com subtópicos (↳), move o grupo inteiro junto
+    const movingGroup = [fromId];
+    if (!isSubtopicTitle(subList[fromIdx].title)) {
+      for (let k = fromIdx + 1; k < subList.length; k++) {
+        if (isSubtopicTitle(subList[k].title)) movingGroup.push(subList[k].id);
+        else break;
+      }
+    }
+    if (movingGroup.includes(toId)) return;
+
+    const remaining = ids.filter((id) => !movingGroup.includes(id));
+    let insertAt = remaining.indexOf(toId);
+    if (insertAt === -1) return;
+    if (fromIdx < toIdx) {
+      // Se arrastou para baixo e o alvo tem subtópicos, insere após o grupo do alvo
+      let afterTarget = insertAt + 1;
+      const targetSubIdx = ids.indexOf(toId);
+      if (targetSubIdx !== -1 && !isSubtopicTitle(subList[targetSubIdx].title)) {
+        while (afterTarget < remaining.length) {
+          const itemObj = subList.find((x) => x.id === remaining[afterTarget]);
+          if (itemObj && isSubtopicTitle(itemObj.title)) afterTarget++;
+          else break;
+        }
+      }
+      insertAt = afterTarget;
+    }
+    remaining.splice(insertAt, 0, ...movingGroup);
+    void setTopicOrder(subjectId, remaining);
+  }
   const [editSubjectName, setEditSubjectName] = useState('');
 
   const [addingTopicForSub, setAddingTopicForSub] = useState<string | null>(null);
@@ -1686,7 +1727,42 @@ export default function ProgressoEditalPage() {
                       const topicPdfs = parseTopicPdfs(topic.pdf_path, topic.pdf_name);
 
                       return (
-                      <div key={topic.id} id={`topic-row-${topic.id}`} className={`scroll-mt-24 ${isSub ? 'ml-5 sm:ml-9 relative' : ''}`}>
+                      <div
+                        key={topic.id}
+                        id={`topic-row-${topic.id}`}
+                        draggable={!selectMode}
+                        onDragStart={(e) => {
+                          e.stopPropagation();
+                          setDraggedTopic({ id: topic.id, subjectId: sub.id });
+                        }}
+                        onDragOver={(e) => {
+                          if (draggedTopic && draggedTopic.subjectId === sub.id) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (dragOverTopicId !== topic.id) setDragOverTopicId(topic.id);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          if (draggedTopic && draggedTopic.subjectId === sub.id) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleDropTopic(sub.id, draggedTopic.id, topic.id);
+                          }
+                          setDraggedTopic(null);
+                          setDragOverTopicId(null);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedTopic(null);
+                          setDragOverTopicId(null);
+                        }}
+                        className={`scroll-mt-24 ${isSub ? 'ml-5 sm:ml-9 relative' : ''} ${
+                          draggedTopic?.id === topic.id ? 'opacity-45' : ''
+                        } ${
+                          dragOverTopicId === topic.id && draggedTopic?.id !== topic.id
+                            ? 'ring-2 ring-teal-500 rounded-2xl'
+                            : ''
+                        }`}
+                      >
                         {isSub && (
                           <span className="absolute -left-3.5 top-5 w-2.5 h-2.5 border-l-2 border-b-2 border-teal-500/50 rounded-bl-sm" />
                         )}
@@ -1697,7 +1773,15 @@ export default function ProgressoEditalPage() {
                           borderColor: sc.border,
                         }}
                       >
-                        <div className="flex items-start gap-3.5 flex-1 min-w-0">
+                        <div className="flex items-start gap-3 flex-1 min-w-0">
+                          {!selectMode && (
+                            <span
+                              title="Arraste para reordenar este tópico"
+                              className="mt-1 text-muted-theme/60 hover:text-teal-500 cursor-grab active:cursor-grabbing shrink-0"
+                            >
+                              <GripVertical className="w-4 h-4" />
+                            </span>
+                          )}
                           {selectMode ? (
                             <button
                               type="button"

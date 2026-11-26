@@ -49,8 +49,7 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function toAccentInsensitivePattern(word: string): string {
-  const base = stripAccentsLower(word);
+function accentPattern(base: string): string {
   let out = '';
   for (const ch of base) {
     if (ch === 'a') out += '[aáàâãä]';
@@ -66,10 +65,68 @@ function toAccentInsensitivePattern(word: string): string {
   return out;
 }
 
+const VERB_SUFFIX_RE =
+  '(?:[aá]r|[eé]r|[ií]r|ou|ei|am|em|[aã]o|ava[ms]?|ia[ms]?|[aá]mos|[eé]mos|[ií]mos|ado[s]?|ada[s]?|ido[s]?|ida[s]?|ando|endo|indo|ar[aá]o?|er[aá]o?|ir[aá]o?|aram|eram|iram|asse[ms]?|esse[ms]?|isse[ms]?|aria[ms]?|eria[ms]?|iria[ms]?|a|e|i|o)';
+
+function getVerbStem(normWord: string): string | null {
+  if (/\s/.test(normWord) || normWord.length < 5) return null;
+  if (/(?:ar|er|ir)$/.test(normWord)) {
+    const stem = normWord.slice(0, -2);
+    return stem.length >= 3 ? stem : null;
+  }
+  return null;
+}
+
+function toAccentInsensitivePattern(word: string): string {
+  const base = stripAccentsLower(word);
+  const verbStem = getVerbStem(base);
+  if (verbStem) {
+    let stemPat = accentPattern(verbStem);
+    if (verbStem.endsWith('c')) {
+      stemPat = `${accentPattern(verbStem.slice(0, -1))}(?:c|qu)`;
+    } else if (verbStem.endsWith('g')) {
+      stemPat = `${accentPattern(verbStem.slice(0, -1))}(?:g|gu)`;
+    } else if (base.endsWith('car') || base.endsWith('gar')) {
+      // handled above
+    }
+    return `${stemPat}${VERB_SUFFIX_RE}`;
+  }
+  const pat = accentPattern(base);
+  if (!/\s/.test(base) && base.length >= 4 && !base.endsWith('s')) {
+    return `${pat}(?:e?s)?`;
+  }
+  return pat;
+}
+
 const LAW_ARTICLE_PATTERN =
-  '\\b(?:art(?:igo)?s?\\.?\\s*\\d+(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|al[íi]nea\\s+[\"“”\\x27]?[a-z][\"“”\\x27]?|[a-z]\\)))*(?:,?\\s*(?:d[aeo]|no|na)\\s+(?:(?:CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CPC(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Penal|C[óo]digo\\s+Penal|CP|C[óo]digo\\s+Civil|CC(?:\\/\\d{2,4})?|CDC|CTN|ECA|LGPD|LINDB|EC(?:\\s*n[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional(?:\\s*n[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?)\\b))?)';
+  '(?:\\b(?:art(?:igo)?s?\\.?\\s*\\d+(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|al[íi]nea\\s+[\"“”\\x27]?[a-z][\"“”\\x27]?|[a-z]\\)))*(?:,?\\s*(?:d[aeo]|no|na)\\s+(?:(?:CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CPC(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Penal|C[óo]digo\\s+Penal|CP|C[óo]digo\\s+Civil|CC(?:\\/\\d{2,4})?|CDC|CTN|ECA|LGPD|LINDB|EC(?:\\s*n[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional(?:\\s*n[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei(?:\\s*n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?)\\b))?)|\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ|Orienta[çc][ãa]o\\s+Jurisprudencial)\\s*(?:n[º°]?\\s*)?\\d+(?:\\s*,\\s*(?:item\\s+)?(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b)*(?:\\s*,?\\s*(?:d[aeo]|na|no)\\s+(?:SDI-?[12]|SBDI-?[12]|TST|STF|STJ|TSE|TNU))*(?:\\s*,?\\s*(?:d[aeo])\\s+(?:TST|STF|STJ|TSE|TNU))?\\b)';
 
 function parseLawCitation(raw: string): { article: string; lawHint: string } {
+  const sumMatch = raw.match(/\b(S[úu]mula(?:\s+Vinculante)?|OJ|Orienta[çc][ãa]o\s+Jurisprudencial)\s*(?:n[º°]?\s*)?(\d+)/i);
+  if (sumMatch) {
+    const kindRaw = sumMatch[1];
+    const num = sumMatch[2];
+    const isVinc = /vinculante/i.test(kindRaw);
+    const isOj = /^oj|orienta/i.test(kindRaw);
+    const article = isVinc ? `Súmula Vinculante ${num}` : isOj ? `OJ ${num}` : `Súmula ${num}`;
+    let court = '';
+    if (/\bTST\b/i.test(raw)) court = 'TST';
+    else if (/\bSTF\b/i.test(raw)) court = 'STF';
+    else if (/\bSTJ\b/i.test(raw)) court = 'STJ';
+    else if (/\bTSE\b/i.test(raw)) court = 'TSE';
+    else if (/\bTNU\b/i.test(raw)) court = 'TNU';
+    else if (isVinc) court = 'STF';
+    else if (isOj) court = 'TST';
+    const lawHint = isVinc
+      ? 'Súmulas Vinculantes STF'
+      : isOj
+      ? `OJs ${court || 'TST'}`
+      : court
+      ? `Súmulas ${court}`
+      : 'Súmulas';
+    return { article, lawHint };
+  }
+
   const numMatch = raw.match(/art(?:igo)?s?\.?\s*(\d+(?:[º°oª])?(?:-[A-Za-z]+)?)/i);
   const article = numMatch ? `Art. ${numMatch[1]}` : raw.trim();
 
@@ -119,19 +176,29 @@ function extractSingleArticleSnippet(rawText: string, artNum: string): string {
 interface DictIndex {
   regex: RegExp | null;
   map: Map<string, DictEntryLite>;
+  stemMatchers: Array<{ re: RegExp; entry: DictEntryLite }>;
 }
 
 function buildDictIndex(entries: DictEntryLite[]): DictIndex {
   const map = new Map<string, DictEntryLite>();
   const valid: DictEntryLite[] = [];
+  const stemMatchers: Array<{ re: RegExp; entry: DictEntryLite }> = [];
   for (const e of entries) {
     const key = stripAccentsLower(e.word || '').replace(/\s+/g, ' ');
     if (key.length >= 2 && e.meaning?.trim() && !map.has(key)) {
       map.set(key, e);
       valid.push(e);
+      try {
+        stemMatchers.push({
+          re: new RegExp(`^${toAccentInsensitivePattern(e.word)}$`, 'i'),
+          entry: e,
+        });
+      } catch {
+        // ignore
+      }
     }
   }
-  if (valid.length === 0) return { regex: null, map };
+  if (valid.length === 0) return { regex: null, map, stemMatchers };
 
   valid.sort((a, b) => b.word.length - a.word.length);
 
@@ -139,9 +206,9 @@ function buildDictIndex(entries: DictEntryLite[]): DictIndex {
   try {
     const wordChar = 'a-zA-Z0-9_áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ';
     const regex = new RegExp(`(^|[^${wordChar}])(${patterns.join('|')})(?=[^${wordChar}]|$)`, 'gi');
-    return { regex, map };
+    return { regex, map, stemMatchers };
   } catch {
-    return { regex: null, map };
+    return { regex: null, map, stemMatchers };
   }
 }
 
@@ -207,7 +274,7 @@ export function DictionaryText({
 }) {
   const router = useRouter();
   const { profile } = useProfile();
-  const { regex, map } = useDictionaryIndex();
+  const { regex, map, stemMatchers } = useDictionaryIndex();
   const [hovered, setHovered] = useState<{
     kind: 'dict' | 'law';
     title: string;
@@ -281,7 +348,9 @@ export function DictionaryText({
         }
 
         const norm = stripAccentsLower(matchedWord).replace(/\s+/g, ' ');
-        const entry = map.get(norm);
+        const entry =
+          map.get(norm) ||
+          stemMatchers.find((sm) => sm.re.test(matchedWord))?.entry;
         if (entry) {
           parts.push({ type: 'term', value: matchedWord, entry });
         } else {
@@ -298,7 +367,7 @@ export function DictionaryText({
 
     const anySpecial = parts.some((p) => p.type !== 'text');
     return anySpecial ? parts : null;
-  }, [text, regex, map]);
+  }, [text, regex, map, stemMatchers]);
 
   if (!text) return null;
   if (!segments) {
@@ -320,8 +389,11 @@ export function DictionaryText({
     setHovered(null);
     const numMatch = article.match(/\d+(?:-[A-Za-z]+)?/);
     const artNum = numMatch ? numMatch[0].toLowerCase() : '';
+    const isSumula = /^(?:s[úu]mula|oj)\b/i.test(article);
     const artRegex = artNum
-      ? new RegExp(`\\bArt\\.?\\s*${escapeRegExp(artNum)}[º°oª]?\\b`, 'i')
+      ? isSumula
+        ? new RegExp(`\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ)\\s*(?:n[º°]?\\s*)?${escapeRegExp(artNum)}\\b`, 'i')
+        : new RegExp(`\\bArt\\.?\\s*${escapeRegExp(artNum)}[º°oª]?\\b`, 'i')
       : null;
     const lawNorm = lawHint.toLowerCase().replace(/[^a-z0-9]/g, '');
 

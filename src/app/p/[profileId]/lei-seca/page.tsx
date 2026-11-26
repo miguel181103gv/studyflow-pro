@@ -78,6 +78,7 @@ const NORM_CATEGORIES = [
   { key: '__CAT:MP__', label: 'Medidas Provisórias (MP)' },
   { key: '__CAT:EC__', label: 'Emendas Constitucionais (EC)' },
   { key: '__CAT:DL__', label: 'Decretos-Leis' },
+  { key: '__CAT:SUM__', label: 'Súmulas & OJs' },
 ] as const;
 
 function classifyNormCategory(lawName: string, title = '', rawText = ''): string {
@@ -86,6 +87,7 @@ function classifyNormCategory(lawName: string, title = '', rawText = ''): string
   if (/\b(?:mp|medida\s+provis[óo]ria)\b/i.test(txt)) return '__CAT:MP__';
   if (/\b(?:ec|emenda\s+constitucional)\b/i.test(txt)) return '__CAT:EC__';
   if (/decreto[-\s]?lei|\b(?:clt|c[óo]digo\s+penal|c[óo]digo\s+de\s+processo\s+penal|2\.?848|5\.?452|3\.?689)\b/i.test(txt)) return '__CAT:DL__';
+  if (/\bs[úu]mula|\boj\s*\d+|orienta[çc][ãa]o\s+jurisprudencial/i.test(txt)) return '__CAT:SUM__';
   if (/\blei\b|8\.?429|8\.?112|14\.?133|9\.?784|8\.?078|10\.?406|13\.?105|13\.?709|8\.?069/i.test(txt)) return '__CAT:LO__';
   return '';
 }
@@ -95,6 +97,13 @@ function normalizeLawBucket(lawName: string, title = '', rawText = ''): string {
   const primary = lawName.trim();
   const target = primary || combined;
 
+  if (/s[úu]mula\s+vinculante/i.test(target)) return 'Súmulas Vinculantes STF';
+  if (/\bs[úu]mulas?\b|\boj\b/i.test(target)) {
+    if (/\btst\b/i.test(target)) return /\boj\b/i.test(target) ? 'OJs TST' : 'Súmulas TST';
+    if (/\bstf\b/i.test(target)) return 'Súmulas STF';
+    if (/\bstj\b/i.test(target)) return 'Súmulas STJ';
+    return 'Súmulas';
+  }
   if (/\bcf(?:\/88)?\b|constitui[çc][ãa]o\s+federal|\bcrfb\b/i.test(target)) return 'CF/88';
   if (/\bclt\b|5\.?452|consolida[çc][ãa]o\s+das\s+leis\s+do\s+trabalho/i.test(target)) return 'CLT';
   if (/\bcpc\b|13\.?105|processo\s+civil/i.test(target)) return 'CPC';

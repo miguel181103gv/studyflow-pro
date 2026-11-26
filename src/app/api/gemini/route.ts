@@ -800,7 +800,10 @@ JSON:
       }
       const artClean = String(article).trim();
       const lawClean = String(lawHint || '').trim();
-      const q = `${artClean} ${lawClean || 'Constituição Federal CLT'} site:planalto.gov.br OR texto oficial`.trim();
+      const isSumulaOrOj = /^(?:s[úu]mula|oj|orienta)/i.test(artClean);
+      const q = isSumulaOrOj
+        ? `${artClean} ${lawClean} texto oficial site:tst.jus.br OR site:stf.jus.br OR site:stj.jus.br`.trim()
+        : `${artClean} ${lawClean || 'Constituição Federal CLT'} site:planalto.gov.br OR texto oficial`.trim();
       const webHits = await searchDeepSeekWeb(q, true, 4);
 
       const prompt = `Você é um assistente jurídico brasileiro. Extraia/forneça o TEXTO OFICIAL LITERAL E COMPLETO do "${artClean}"${

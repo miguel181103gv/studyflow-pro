@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { getStudyMode } from '@/lib/studyModes';
@@ -88,6 +89,7 @@ interface DayNote {
 }
 
 interface StudyPlan {
+  blockOrderByDay?: Record<string, string[]>;
   id: string;
   name: string;
   subjectIds: string[];
@@ -193,7 +195,9 @@ function estimateFinishDate(
 type AgendaTab = 'aulas' | 'avaliacoes' | 'cronograma';
 
 export default function AgendaPage() {
+  const router = useRouter();
   const { profile, subjects, topics, reviews, studyLogs, startStopwatch, setSubjectOrder } = useProfile();
+  const [draggedAgendaBlock, setDraggedAgendaBlock] = useState<{ id: string; date: string } | null>(null);
   const { notify } = useGlobal();
 
   const studyMode = getStudyMode(profile);
@@ -678,11 +682,24 @@ export default function AgendaPage() {
       }
     }
 
-    return rawScheduledBlocks.map((b) => ({
+    const mapped = rawScheduledBlocks.map((b) => ({
       ...b,
       plannedTopics: plannedMap.get(b.id) || [],
     }));
-  }, [rawScheduledBlocks, topics, today]);
+    const orderMap = activePlan?.blockOrderByDay;
+    if (!orderMap) return mapped;
+    return [...mapped].sort((a, b) => {
+      if (a.date !== b.date) return 0;
+      const ord = orderMap[a.date];
+      if (!ord || ord.length === 0) return 0;
+      const ia = ord.indexOf(a.id);
+      const ib = ord.indexOf(b.id);
+      if (ia === -1 && ib === -1) return 0;
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
+    });
+  }, [rawScheduledBlocks, topics, today, activePlan?.blockOrderByDay]);
 
   const liveEstimatedInfo = useMemo(() => {
     if (!activePlan) return null;
@@ -816,6 +833,36 @@ export default function AgendaPage() {
           : [...p.completedBlockIds, blockId],
       };
     });
+  }
+
+  function reorderDayBlock(iso: string, fromId: string, toId: string) {
+    if (!activePlan || fromId === toId) return;
+    const dayIds = scheduledBlocks.filter((b) => b.date === iso).map((b) => b.id);
+    const fromIdx = dayIds.indexOf(fromId);
+    const toIdx = dayIds.indexOf(toId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const nextIds = [...dayIds];
+    const [moved] = nextIds.splice(fromIdx, 1);
+    nextIds.splice(toIdx, 0, moved);
+    updateActivePlan((p) => ({
+      ...p,
+      blockOrderByDay: { ...(p.blockOrderByDay || {}), [iso]: nextIds },
+    }));
+  }
+
+  function shiftDayBlock(iso: string, blockId: string, dir: -1 | 1) {
+    if (!activePlan) return;
+    const dayIds = scheduledBlocks.filter((b) => b.date === iso).map((b) => b.id);
+    const idx = dayIds.indexOf(blockId);
+    const targetIdx = idx + dir;
+    if (idx === -1 || targetIdx < 0 || targetIdx >= dayIds.length) return;
+    const nextIds = [...dayIds];
+    const [moved] = nextIds.splice(idx, 1);
+    nextIds.splice(targetIdx, 0, moved);
+    updateActivePlan((p) => ({
+      ...p,
+      blockOrderByDay: { ...(p.blockOrderByDay || {}), [iso]: nextIds },
+    }));
   }
 
   function confirmMoveBlock() {
@@ -1658,7 +1705,7 @@ export default function AgendaPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => startStopwatch(nextTodayBlock.subjectId)}
+                      onClick={() => { startStopwatch(nextTodayBlock.subjectId); if (profile?.id) router.push(`/p/${profile.id}/ciclo`); }}
                       className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0 self-start sm:self-auto"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
@@ -1768,11 +1815,30 @@ export default function AgendaPage() {
                           <p className="text-[11px] text-muted-theme text-center py-4">Descanso</p>
                         ) : (
                           <div className="space-y-2">
-                            {dayBlocks.map((b) => (
+                            {dayBlocks.map((b, bIdx) => (
                               <div
                                 key={b.id}
-                                className={`rounded-xl p-2.5 text-xs border-l-4 subtle-surface space-y-1.5 ${
+                                draggable={dayBlocks.length > 1}
+                                onDragStart={() => setDraggedAgendaBlock({ id: b.id, date: iso })}
+                                onDragOver={(e) => {
+                                  if (draggedAgendaBlock && draggedAgendaBlock.date === iso) {
+                                    e.preventDefault();
+                                  }
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  if (draggedAgendaBlock && draggedAgendaBlock.date === iso) {
+                                    reorderDayBlock(iso, draggedAgendaBlock.id, b.id);
+                                  }
+                                  setDraggedAgendaBlock(null);
+                                }}
+                                onDragEnd={() => setDraggedAgendaBlock(null)}
+                                className={`rounded-xl p-2.5 text-xs border-l-4 subtle-surface space-y-1.5 transition ${
                                   b.done ? 'opacity-55' : ''
+                                } ${
+                                  dayBlocks.length > 1 ? 'cursor-grab active:cursor-grabbing' : ''
+                                } ${
+                                  draggedAgendaBlock?.id === b.id ? 'opacity-40 ring-1 ring-teal-500' : ''
                                 }`}
                                 style={{ borderLeftColor: b.color }}
                               >
@@ -1834,12 +1900,38 @@ export default function AgendaPage() {
                                   </button>
                                   <button
                                     type="button"
-                                    onClick={() => startStopwatch(b.subjectId)}
-                                    title="Iniciar cronômetro"
+                                    onClick={() => {
+                                      startStopwatch(b.subjectId);
+                            if (profile?.id) router.push(`/p/${profile.id}/ciclo`);
+                                      if (profile?.id) router.push(`/p/${profile.id}/ciclo`);
+                                    }}
+                                    title="Iniciar cronômetro no Ciclo"
                                     className="p-1 rounded-lg card-surface hover:bg-teal-600 hover:text-white"
                                   >
                                     <Play className="w-3.5 h-3.5" />
                                   </button>
+                                  {dayBlocks.length > 1 && (
+                                    <div className="inline-flex items-center gap-0.5">
+                                      <button
+                                        type="button"
+                                        disabled={bIdx === 0}
+                                        onClick={() => shiftDayBlock(iso, b.id, -1)}
+                                        title="Subir na ordem do dia"
+                                        className="p-0.5 rounded card-surface hover:bg-teal-600 hover:text-white disabled:opacity-30"
+                                      >
+                                        <ArrowUp className="w-3 h-3" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={bIdx === dayBlocks.length - 1}
+                                        onClick={() => shiftDayBlock(iso, b.id, 1)}
+                                        title="Descer na ordem do dia"
+                                        className="p-0.5 rounded card-surface hover:bg-teal-600 hover:text-white disabled:opacity-30"
+                                      >
+                                        <ArrowDown className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => {
