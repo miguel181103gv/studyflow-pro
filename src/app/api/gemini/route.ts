@@ -856,7 +856,7 @@ Retorne SOMENTE JSON válido:
 Limpe e organize o texto legal abaixo para ficar visualmente perfeito e agradável de estudar:
 REGRAS RÍGIDAS:
 1. NUNCA resuma, parafraseie ou apague artigos, parágrafos, incisos ou alíneas — mantenha 100% do texto legal fiel.
-2. Remova apenas lixo de PDF (números de página isolados, cabeçalhos repetidos como 'Presidência da República / Casa Civil', hifens de quebra de linha no meio de palavras e quebras de linha no meio da frase).
+2. Remova lixo de PDF (números de página isolados, cabeçalhos repetidos como 'Consolidação das Leis do Trabalho', 'Presidência da República / Casa Civil'), junte palavras partidas por espaço de PDF (ex: 'Ma ranhão' -> 'Maranhão', 'Pernambu co' -> 'Pernambuco', 'originaria mente' -> 'originariamente'), junte quebras de linha no meio da frase e corrija ordinais quebrados (ex: '1a Região' / '2 a Região' -> '1ª Região' / '2ª Região', '1 o Grau' -> '1º Grau', 'Art. 5 o' -> 'Art. 5º').
 3. Respeite RIGOROSAMENTE a hierarquia da lei brasileira, colocando CADA elemento em sua própria linha:
    - 1. Caput: cada 'Art. Xº' em nova linha
    - 2. Parágrafos: cada '§ Xº' ou 'Parágrafo único.' em nova linha

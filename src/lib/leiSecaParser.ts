@@ -57,20 +57,31 @@ function extractAnnotations(text: string): { clean: string; annotations: string[
  * 4. Alíneas (a), b), c))
  * 5. Itens (1), 2), 3) ou 1., 2., 3.)
  */
+export function normalizeLegalOrdinalsAndSpaces(raw: string): string {
+  return (raw || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u00a0/g, ' ')
+    // Remove cabeçalhos/rodapés isolados comuns de PDFs do Planalto/Senado
+    .replace(/^\s*Consolidação das Leis do Trabalho\s*$/gim, '')
+    .replace(/^\s*Presidência da República\s*$/gim, '')
+    .replace(/^\s*Casa Civil\s*$/gim, '')
+    .replace(/^\s*(?:Senado Federal|Secretaria Especial de Editoração e Publicações|Subchefia para Assuntos Jurídicos|Constituição da República Federativa do Brasil)\s*$/gim, '')
+    // Junta ordinal quebrado em nova linha ou com espaço (ex: "2 a Região", "1a Região", "6\na\nRegião")
+    .replace(/(\d{1,2})\s*\n?\s*a\s*\n?\s*(?=Regi[ãa]o|Vara|Turma|Inst[âa]ncia|C[âa]mara|Se[çc][ãa]o|Subse[çc][ãa]o|Parte|S[ée]rie|Categoria|Classe|Etapa|Fase|Ordem|Zona|hip[óo]tese|vez)/gi, '$1ª ')
+    .replace(/(\d{1,2})\s*\n?\s*o\s*\n?\s*(?=Grau|Par[áa]grafo|Inciso|Artigo|Livro|T[íi]tulo|Cap[íi]tulo|Grupo|N[íi]vel|dia|m[êe]s|ano)/gi, '$1º ')
+    .replace(/\b(Art\.?\s*\d+)\s+[oº°]\b/gi, '$1º')
+    .replace(/\b(Art\.?\s*\d+)\s+[aª]\b/gi, '$1ª')
+    .replace(/(§\s*\d+)\s+[oº°]\b/gi, '$1º')
+    .replace(/(§\s*\d+)\s+[aª]\b/gi, '$1ª')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   if (!rawText.trim()) return [];
 
-  let normalized = rawText
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
-
-  // Remove cabeçalhos/rodapés isolados comuns de PDFs do Planalto/Senado
-  normalized = normalized
-    .replace(/^\s*Consolidação das Leis do Trabalho\s*$/gim, '')
-    .replace(/^\s*Presidência da República\s*$/gim, '')
-    .replace(/^\s*Casa Civil\s*$/gim, '');
+  let normalized = normalizeLegalOrdinalsAndSpaces(rawText);
 
   // Quebra antes de marcadores legais caso venham colados após ':', ';' ou '.'
   normalized = normalized
@@ -89,7 +100,7 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/i;
+  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/;
   const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
   const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
   const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
@@ -101,7 +112,15 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   for (const line of rawLines) {
     let matched: { kind: BlockKind; marker: string; body: string } | null = null;
 
-    const mArt = line.match(artRe);
+    const prevBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+    const prevEndedMidPhrase = Boolean(
+      prevBlock && prevBlock.body && !/[.;:!?]$/.test(prevBlock.body.trim())
+    );
+    const rawArtMatch = line.match(artRe);
+    const isCitationFollowing = Boolean(
+      rawArtMatch && /^[,)]|^\s*(?:d[aeo]s?|dest[ae]|dess[ae]|al[íi]nea|inciso|§|par[áa]grafo|caput)\b/i.test(rawArtMatch[2] || '')
+    );
+    const mArt = rawArtMatch && !prevEndedMidPhrase && !isCitationFollowing ? rawArtMatch : null;
     const mParU = !mArt ? line.match(parUnicoRe) : null;
     const mParN = !mArt && !mParU ? line.match(parNumRe) : null;
     const mInc = !mArt && !mParU && !mParN ? line.match(incisoRe) : null;

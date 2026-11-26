@@ -6,6 +6,7 @@ import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { useAiProviderName } from '@/lib/useAiProvider';
+import { normalizeLegalOrdinalsAndSpaces } from '@/lib/leiSecaParser';
 import {
   BookOpen,
   CheckCircle2,
@@ -188,11 +189,7 @@ function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   if (!rawText.trim()) return [];
 
   // Normaliza espaços e insere quebras antes de marcadores legais colados no meio da linha
-  let normalized = rawText
-    .replace(/\r\n/g, '\n')
-    .replace(/\u00a0/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
+  let normalized = normalizeLegalOrdinalsAndSpaces(rawText);
 
   // Quebra antes de Art. / Parágrafo único / § Xº se vierem após pontuação na mesma linha
   normalized = normalized
@@ -212,7 +209,7 @@ function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     .filter(Boolean);
 
   // Regex para detectar início de bloco legal
-  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/i;
+  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/;
   const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
   const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
   const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
@@ -224,7 +221,15 @@ function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   for (const line of rawLines) {
     let matched: { kind: BlockKind; marker: string; body: string } | null = null;
 
-    const mArt = line.match(artRe);
+    const prevBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
+    const prevEndedMidPhrase = Boolean(
+      prevBlock && prevBlock.body && !/[.;:!?]$/.test(prevBlock.body.trim())
+    );
+    const rawArtMatch = line.match(artRe);
+    const isCitationFollowing = Boolean(
+      rawArtMatch && /^[,)]|^\s*(?:d[aeo]s?|dest[ae]|dess[ae]|al[íi]nea|inciso|§|par[áa]grafo|caput)\b/i.test(rawArtMatch[2] || '')
+    );
+    const mArt = rawArtMatch && !prevEndedMidPhrase && !isCitationFollowing ? rawArtMatch : null;
     const mParU = !mArt ? line.match(parUnicoRe) : null;
     const mParN = !mArt && !mParU ? line.match(parNumRe) : null;
     const mInc = !mArt && !mParU && !mParN ? line.match(incisoRe) : null;
@@ -581,7 +586,7 @@ async function extractPdfTextInBrowser(
       const str = (item.str || '').replace(/\s+/g, ' ');
       if (!str.trim()) continue;
       const y = Array.isArray(item.transform) ? Math.round(item.transform[5] / 3) * 3 : null;
-      if (currentY !== null && y !== null && Math.abs(y - currentY) > 4) {
+      if (currentY !== null && y !== null && Math.abs(y - currentY) > 6) {
         if (currentLine.trim()) lines.push(currentLine.trim());
         currentLine = str;
         currentY = y;
@@ -595,12 +600,12 @@ async function extractPdfTextInBrowser(
     // Remove números de página isolados e cabeçalhos repetitivos comuns
     const cleaned = lines.filter((ln) => {
       if (/^\d{1,4}$/.test(ln)) return false;
-      if (/^(?:Presidência da República|Casa Civil|Subchefia para Assuntos Jurídicos)$/i.test(ln)) {
+      if (/^(?:Consolidação das Leis do Trabalho|Presidência da República|Casa Civil|Subchefia para Assuntos Jurídicos|Senado Federal)$/i.test(ln)) {
         return false;
       }
       return true;
     });
-    pagesText.push(cleaned.join('\n'));
+    pagesText.push(normalizeLegalOrdinalsAndSpaces(cleaned.join('\n')));
   }
 
   return pagesText.join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -1113,6 +1118,38 @@ export default function LeiSecaPage() {
     );
   }
 
+  function handleFormatAllLocal() {
+    if (articles.length === 0) return;
+    const now = new Date().toISOString();
+    let changedCount = 0;
+    const next = articles.map((a) => {
+      const blocks = parseLeiSecaBlocks(a.rawText);
+      const rebuilt = blocks
+        .map((b) => {
+          const ann = b.annotations.length > 0 ? ` (${b.annotations.join(') (')})` : '';
+          if (b.kind === 'artigo') return `${b.marker} ${b.body}${ann}`.trim();
+          if (b.kind === 'paragrafo') return `${b.marker} ${b.body}${ann}`.trim();
+          if (b.kind === 'inciso') return `${b.marker} - ${b.body}${ann}`.trim();
+          if (b.kind === 'alinea' || b.kind === 'item') return `${b.marker} ${b.body}${ann}`.trim();
+          return `${b.body}${ann}`.trim();
+        })
+        .filter(Boolean)
+        .join('\n');
+      if (rebuilt && rebuilt !== a.rawText.trim()) {
+        changedCount += 1;
+        return { ...a, rawText: rebuilt, updatedAt: now };
+      }
+      return a;
+    });
+    persist(next);
+    notify(
+      changedCount > 0
+        ? `${changedCount} ${changedCount === 1 ? 'bloco limpo e reorganizado' : 'blocos limpos e reorganizados'}!`
+        : 'Todos os artigos já estão limpos e formatados!',
+      'success'
+    );
+  }
+
   async function handleFilterByTheme(e: React.FormEvent) {
     e.preventDefault();
     const t = themeQuery.trim();
@@ -1258,6 +1295,17 @@ export default function LeiSecaPage() {
               }}
             />
           </label>
+          {articles.length > 0 && (
+            <button
+              type="button"
+              onClick={handleFormatAllLocal}
+              title="Limpa rodapés de PDF, corrige ordinais (1ª, 2ª, 1º) e junta quebras de linha em todos os artigos salvos"
+              className="px-4 py-3 rounded-2xl subtle-surface border border-theme hover:border-teal-500/50 text-sm font-bold inline-flex items-center gap-2"
+            >
+              <Sparkles className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+              Formatar Tudo
+            </button>
+          )}
           <button
             type="button"
             onClick={openNewForm}
