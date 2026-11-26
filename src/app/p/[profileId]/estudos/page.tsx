@@ -305,8 +305,14 @@ export default function ProgressoEditalPage() {
   const [dragOverSubId, setDragOverSubId] = useState<string | null>(null);
   const [draggedTopic, setDraggedTopic] = useState<{ id: string; subjectId: string } | null>(null);
   const [dragOverTopicId, setDragOverTopicId] = useState<string | null>(null);
+  const [dragDropMode, setDragDropMode] = useState<'before' | 'nest' | 'after'>('after');
 
-  function handleDropTopic(subjectId: string, fromId: string, toId: string) {
+  async function handleDropTopic(
+    subjectId: string,
+    fromId: string,
+    toId: string,
+    mode: 'before' | 'nest' | 'after'
+  ) {
     if (fromId === toId) return;
     const subList = topics.filter((t) => t.subject_id === subjectId);
     const ids = subList.map((t) => t.id);
@@ -314,9 +320,41 @@ export default function ProgressoEditalPage() {
     const toIdx = ids.indexOf(toId);
     if (fromIdx === -1 || toIdx === -1) return;
 
-    // Se arrastou um tópico pai com subtópicos (↳), move o grupo inteiro junto
+    const fromTopic = subList[fromIdx];
+    const toTopic = subList[toIdx];
+
+    if (mode === 'nest' && !isSubtopicTitle(toTopic.title)) {
+      // Transforma o tópico arrastado em subtópico do tópico alvo (só ao soltar o mouse)
+      const movingGroup = [fromId];
+      if (!isSubtopicTitle(fromTopic.title)) {
+        for (let k = fromIdx + 1; k < subList.length; k++) {
+          if (isSubtopicTitle(subList[k].title)) movingGroup.push(subList[k].id);
+          else break;
+        }
+      }
+      if (movingGroup.includes(toId)) return;
+
+      const remaining = ids.filter((id) => !movingGroup.includes(id));
+      let insertAt = remaining.indexOf(toId) + 1;
+      while (insertAt < remaining.length) {
+        const itemObj = subList.find((x) => x.id === remaining[insertAt]);
+        if (itemObj && isSubtopicTitle(itemObj.title)) insertAt++;
+        else break;
+      }
+      remaining.splice(insertAt, 0, ...movingGroup);
+
+      if (!isSubtopicTitle(fromTopic.title)) {
+        await updateTopicTitle(fromTopic.id, `↳ ${cleanSubtopicDisplay(fromTopic.title)}`);
+      }
+      await setTopicOrder(subjectId, remaining);
+      setExpandedParents((prev) => ({ ...prev, [toId]: true }));
+      notify(`"${cleanSubtopicDisplay(fromTopic.title)}" agora é subtópico de "${cleanSubtopicDisplay(toTopic.title)}"!`, 'success');
+      return;
+    }
+
+    // Reordenação normal (before / after)
     const movingGroup = [fromId];
-    if (!isSubtopicTitle(subList[fromIdx].title)) {
+    if (!isSubtopicTitle(fromTopic.title)) {
       for (let k = fromIdx + 1; k < subList.length; k++) {
         if (isSubtopicTitle(subList[k].title)) movingGroup.push(subList[k].id);
         else break;
@@ -327,11 +365,9 @@ export default function ProgressoEditalPage() {
     const remaining = ids.filter((id) => !movingGroup.includes(id));
     let insertAt = remaining.indexOf(toId);
     if (insertAt === -1) return;
-    if (fromIdx < toIdx) {
-      // Se arrastou para baixo e o alvo tem subtópicos, insere após o grupo do alvo
+    if (mode === 'after') {
       let afterTarget = insertAt + 1;
-      const targetSubIdx = ids.indexOf(toId);
-      if (targetSubIdx !== -1 && !isSubtopicTitle(subList[targetSubIdx].title)) {
+      if (!isSubtopicTitle(toTopic.title)) {
         while (afterTarget < remaining.length) {
           const itemObj = subList.find((x) => x.id === remaining[afterTarget]);
           if (itemObj && isSubtopicTitle(itemObj.title)) afterTarget++;
@@ -577,25 +613,100 @@ export default function ProgressoEditalPage() {
   ) {
     setDeletingBusy(true);
     try {
-      // Migrar textos locais (topicNotesMap) se houver destino
+      // Migrar TODOS os textos e resumos (items[]) + questões do banco se houver destino
       if (targetTopicId && topicIds.length > 0) {
-        const mergedTexts = topicIds
-          .map((id) => topicNotesMap[id]?.rawText?.trim())
-          .filter(Boolean);
-        if (mergedTexts.length > 0) {
-          const existingTarget = topicNotesMap[targetTopicId] || { rawText: '', formatted: null };
-          const combined = [existingTarget.rawText?.trim(), ...mergedTexts]
-            .filter(Boolean)
-            .join('\n\n---\n\n');
-          saveTopicNote(targetTopicId, {
-            rawText: combined,
-            formatted: existingTarget.formatted || null,
+        const getNoteItems = (rec: TopicNoteRecord | undefined): TopicNoteItem[] => {
+          if (!rec) return [];
+          if (Array.isArray(rec.items) && rec.items.length > 0) {
+            return rec.items.filter((it) => Boolean(it.rawText?.trim() || it.formatted));
+          }
+          if (rec.rawText?.trim() || rec.formatted) {
+            return [
+              {
+                id: `mig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                title: 'Texto migrado',
+                rawText: rec.rawText || '',
+                formatted: rec.formatted || null,
+              },
+            ];
+          }
+          return [];
+        };
+
+        const incomingItems: TopicNoteItem[] = [];
+        for (const id of topicIds) {
+          const srcTopicObj = topics.find((t) => t.id === id);
+          const itemsFromSrc = getNoteItems(topicNotesMap[id]);
+          itemsFromSrc.forEach((it, idx) => {
+            incomingItems.push({
+              ...it,
+              id: `mig-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${idx}`,
+              title:
+                it.title && it.title !== 'Texto 1'
+                  ? it.title
+                  : srcTopicObj
+                  ? cleanSubtopicDisplay(srcTopicObj.title).slice(0, 32)
+                  : `Texto migrado ${idx + 1}`,
+            });
           });
+        }
+
+        if (incomingItems.length > 0) {
+          const targetRec = topicNotesMap[targetTopicId];
+          const existingItems = getNoteItems(targetRec);
+          const nextItems = [...existingItems, ...incomingItems];
+          saveTopicNote(targetTopicId, {
+            rawText: nextItems[0]?.rawText || '',
+            formatted: nextItems[0]?.formatted || null,
+            items: nextItems,
+          });
+        }
+
+        // Migrar questões do Banco de Questões (localStorage) para o tópico de destino
+        try {
+          const qKey = `sf_question_bank_${profile?.id || 'default'}`;
+          const rawQ = localStorage.getItem(qKey);
+          if (rawQ) {
+            const parsedQ = JSON.parse(rawQ);
+            const targetObj = topics.find((t) => t.id === targetTopicId);
+            if (Array.isArray(parsedQ) && targetObj) {
+              const delSet = new Set(topicIds);
+              let qChanged = false;
+              const nextQ = parsedQ.map((qItem: { topic_id?: string | null; subject_id?: string }) => {
+                if (qItem.topic_id && delSet.has(qItem.topic_id)) {
+                  qChanged = true;
+                  return { ...qItem, topic_id: targetObj.id, subject_id: targetObj.subject_id };
+                }
+                return qItem;
+              });
+              if (qChanged) {
+                localStorage.setItem(qKey, JSON.stringify(nextQ));
+              }
+            }
+          }
+        } catch {
+          // ignore
         }
       }
 
+      const toPromote: { id: string; newTitle: string }[] = [];
       if (topicIds.length > 0) {
+        const deletedSet = new Set(topicIds);
+        for (const subItem of subjects) {
+          const subList = topics.filter((t) => t.subject_id === subItem.id);
+          let curParentDeleted = false;
+          for (const t of subList) {
+            if (!isSubtopicTitle(t.title)) {
+              curParentDeleted = deletedSet.has(t.id);
+            } else if (curParentDeleted && !deletedSet.has(t.id)) {
+              toPromote.push({ id: t.id, newTitle: cleanSubtopicDisplay(t.title) });
+            }
+          }
+        }
         await migrateAndDeleteTopics(topicIds, targetTopicId);
+        for (const item of toPromote) {
+          await updateTopicTitle(item.id, item.newTitle);
+        }
       }
       if (subjectIds.length > 0) {
         await deleteSubjectsBatch(subjectIds);
@@ -1737,17 +1848,26 @@ export default function ProgressoEditalPage() {
                           setDraggedTopic({ id: topic.id, subjectId: sub.id });
                         }}
                         onDragOver={(e) => {
-                          if (draggedTopic && draggedTopic.subjectId === sub.id) {
+                          if (draggedTopic && draggedTopic.subjectId === sub.id && draggedTopic.id !== topic.id) {
                             e.preventDefault();
                             e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const relY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+                            const nextMode: 'before' | 'nest' | 'after' =
+                              !isSub && relY > 0.25 && relY < 0.75
+                                ? 'nest'
+                                : relY <= 0.5
+                                ? 'before'
+                                : 'after';
                             if (dragOverTopicId !== topic.id) setDragOverTopicId(topic.id);
+                            if (dragDropMode !== nextMode) setDragDropMode(nextMode);
                           }
                         }}
                         onDrop={(e) => {
-                          if (draggedTopic && draggedTopic.subjectId === sub.id) {
+                          if (draggedTopic && draggedTopic.subjectId === sub.id && draggedTopic.id !== topic.id) {
                             e.preventDefault();
                             e.stopPropagation();
-                            handleDropTopic(sub.id, draggedTopic.id, topic.id);
+                            void handleDropTopic(sub.id, draggedTopic.id, topic.id, dragDropMode);
                           }
                           setDraggedTopic(null);
                           setDragOverTopicId(null);
@@ -1760,7 +1880,11 @@ export default function ProgressoEditalPage() {
                           draggedTopic?.id === topic.id ? 'opacity-45' : ''
                         } ${
                           dragOverTopicId === topic.id && draggedTopic?.id !== topic.id
-                            ? 'ring-2 ring-teal-500 rounded-2xl'
+                            ? dragDropMode === 'nest'
+                              ? 'ring-2 ring-indigo-500 bg-indigo-500/10 rounded-2xl'
+                              : dragDropMode === 'before'
+                              ? 'border-t-2 border-t-teal-500'
+                              : 'border-b-2 border-b-teal-500'
                             : ''
                         }`}
                       >
