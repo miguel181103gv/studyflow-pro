@@ -307,6 +307,23 @@ export default function ProgressoEditalPage() {
   const [dragOverTopicId, setDragOverTopicId] = useState<string | null>(null);
   const [dragDropMode, setDragDropMode] = useState<'before' | 'nest' | 'after'>('after');
 
+  useEffect(() => {
+    if (!draggedTopic && !draggedSubId) return;
+    const onDragOverScroll = (e: DragEvent) => {
+      const y = e.clientY;
+      const vh = window.innerHeight;
+      if (y > 0 && y < 130) {
+        const speed = Math.max(10, Math.round(((130 - y) / 130) * 32));
+        window.scrollBy(0, -speed);
+      } else if (y > vh - 130) {
+        const speed = Math.max(10, Math.round(((y - (vh - 130)) / 130) * 32));
+        window.scrollBy(0, speed);
+      }
+    };
+    window.addEventListener('dragover', onDragOverScroll);
+    return () => window.removeEventListener('dragover', onDragOverScroll);
+  }, [draggedTopic, draggedSubId]);
+
   async function handleDropTopic(
     subjectId: string,
     fromId: string,
@@ -1853,8 +1870,9 @@ export default function ProgressoEditalPage() {
                             e.stopPropagation();
                             const rect = e.currentTarget.getBoundingClientRect();
                             const relY = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5;
+                            const relX = rect.width > 0 ? (e.clientX - rect.left) / rect.width : 0.5;
                             const nextMode: 'before' | 'nest' | 'after' =
-                              !isSub && relY > 0.25 && relY < 0.75
+                              !isSub && relX > 0.68 && relY > 0.2 && relY < 0.8
                                 ? 'nest'
                                 : relY <= 0.5
                                 ? 'before'

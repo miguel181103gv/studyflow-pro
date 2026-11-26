@@ -66,19 +66,24 @@ export function normalizeLegalOrdinalsAndSpaces(raw: string): string {
     .replace(/^\s*Presidência da República\s*$/gim, '')
     .replace(/^\s*Casa Civil\s*$/gim, '')
     .replace(/^\s*(?:Senado Federal|Secretaria Especial de Editoração e Publicações|Subchefia para Assuntos Jurídicos|Constituição da República Federativa do Brasil)\s*$/gim, '')
+    // Junta "Art." separado do número por quebra de linha de PDF (ex: "Art.\n22.")
+    .replace(/\b(Art(?:igo)?\.?)\s*\n+\s*(\d)/gi, '$1 $2')
     // Junta ordinal quebrado em nova linha ou com espaço (ex: "2 a Região", "1a Região", "6\na\nRegião")
     .replace(/(\d{1,2})\s*\n?\s*a\s*\n?\s*(?=Regi[ãa]o|Vara|Turma|Inst[âa]ncia|C[âa]mara|Se[çc][ãa]o|Subse[çc][ãa]o|Parte|S[ée]rie|Categoria|Classe|Etapa|Fase|Ordem|Zona|hip[óo]tese|vez)/gi, '$1ª ')
     .replace(/(\d{1,2})\s*\n?\s*o\s*\n?\s*(?=Grau|Par[áa]grafo|Inciso|Artigo|Livro|T[íi]tulo|Cap[íi]tulo|Grupo|N[íi]vel|dia|m[êe]s|ano)/gi, '$1º ')
     .replace(/\bn\s+o\s+(?=\d)/gi, 'nº ')
     .replace(/\bn\s+a\s+(?=\d)/gi, 'nª ')
-    .replace(/\b(Art\.?\s*\d+)\s+[oº°]\b/gi, '$1º')
-    .replace(/\b(Art\.?\s*\d+)\s+[aª]\b/gi, '$1ª')
+    .replace(/\b(Art\.?\s*\d+(?:\.\d{3})*)\s+[oº°]\b/gi, '$1º')
+    .replace(/\b(Art\.?\s*\d+(?:\.\d{3})*)\s+[aª]\b/gi, '$1ª')
     .replace(/(§\s*\d+)\s+[oº°]\b/gi, '$1º')
     .replace(/(§\s*\d+)\s+[aª]\b/gi, '$1ª')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+const ABBREV_BEFORE_NUM_RE =
+  /(?:^|\b)(?:art|arts|artigo|artigos|n|ns|inc|par|al|p|fl|fls|v|ed|vol|cap|sec|t[íi]t|item|itens)\./i;
 
 export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
   if (!rawText.trim()) return [];
@@ -87,26 +92,38 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
 
   // Quebra antes de marcadores legais caso venham colados após ':', ';' ou '.'
   normalized = normalized
-    .replace(/([.;:])\s+(Art\.?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
+    .replace(/([.;:])\s+(Art\.?\s*\d+(?:\.\d{3})*[º°oª]?(?:-[A-Z0-9]+)?)/gi, '$1\n$2')
     .replace(/([.;:])\s+(Parágrafo\s+único\.?)/gi, '$1\n$2')
-    .replace(/([.;:])\s+(§§?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
+    .replace(/([.;:])\s+(§§?\s*\d+[º°oª]?(?:-[A-Z0-9]+)?)/gi, '$1\n$2')
     .replace(
       /([.;:])\s+((?:X{0,3}(?:IX|IV|V?I{0,3})|L(?:X{0,3}(?:IX|IV|V?I{0,3}))?|C)\s*[-–—])/g,
       '$1\n$2'
     )
-    .replace(/([.;:])\s+([a-z]\))/g, '$1\n$2')
-    .replace(/([.;:])\s+(\d{1,2}[.)])/g, '$1\n$2');
+    .replace(/([.;:])\s+([a-z]\))/g, (match, punct, alinea, offset, str) => {
+      if (punct === '.') {
+        const before = str.slice(Math.max(0, offset - 12), offset + 1);
+        if (ABBREV_BEFORE_NUM_RE.test(before)) return match;
+      }
+      return `${punct}\n${alinea}`;
+    })
+    .replace(/([.;:])\s+(\d{1,2}[.)])/g, (match, punct, num, offset, str) => {
+      if (punct === '.') {
+        const before = str.slice(Math.max(0, offset - 12), offset + 1);
+        if (ABBREV_BEFORE_NUM_RE.test(before)) return match;
+      }
+      return `${punct}\n${num}`;
+    });
 
   const rawLines = normalized
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
 
-  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/;
+  const artRe = /^(Art(?:igo)?\.?\s*\d+(?:\.\d{3})*[º°oª]?(?:-[A-Z0-9]+)?\.?)\s*(.*)$/;
   const ecHeaderRe = /^(Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°]?\s*)?\d+(?:[\/,][^\n]*)?)\s*(.*)$/i;
   const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
-  const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
-  const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
+  const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z0-9]+)?\.?)\s*[-–—]?\s*(.*)$/i;
+  const incisoRe = /^([IVXLCDM]{1,10})\s*[-–—.)]\s+(.*)$/;
   const alineaRe = /^([a-z])\)\s+(.*)$/;
   const itemRe = /^(\d{1,2})[.)]\s+(.*)$/;
 

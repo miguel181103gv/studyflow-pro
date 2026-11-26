@@ -157,6 +157,7 @@ export default function SimuladosPage() {
   const [examPdfFile, setExamPdfFile] = useState<File | null>(null);
   const [gabaritoPdfFile, setGabaritoPdfFile] = useState<File | null>(null);
   const [examDraftChoice, setExamDraftChoice] = useState<string>('');
+  const [examEliminatedByQ, setExamEliminatedByQ] = useState<Record<string, string[]>>({});
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchingExams, setSearchingExams] = useState(false);
@@ -2145,31 +2146,62 @@ export default function SimuladosPage() {
                 <div className="space-y-2">
                   {currentExamQ.options.map((opt) => {
                     const letter = opt.letter.trim().toUpperCase();
+                    const elimList = examEliminatedByQ[currentExamQ.id] || [];
+                    const isEliminated = elimList.includes(letter);
                     const isPicked = examDraftChoice === letter;
                     return (
-                      <button
-                        key={letter}
-                        type="button"
-                        onClick={() => setExamDraftChoice(letter)}
-                        className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${
-                          isPicked
-                            ? 'border-2 border-violet-600 bg-violet-600/10'
-                            : 'border-theme bg-[var(--bg-card)] hover:border-violet-500/50'
-                        }`}
-                      >
-                        <span
-                          className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                      <div key={letter} className="flex items-stretch gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isEliminated) {
+                              setExamEliminatedByQ((prev) => ({
+                                ...prev,
+                                [currentExamQ.id]: (prev[currentExamQ.id] || []).filter((l) => l !== letter),
+                              }));
+                            }
+                            setExamDraftChoice(letter);
+                          }}
+                          className={`flex-1 text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${
                             isPicked
-                              ? 'bg-violet-600 text-white'
-                              : 'subtle-surface border border-theme'
+                              ? 'border-2 border-violet-600 bg-violet-600/10'
+                              : 'border-theme bg-[var(--bg-card)] hover:border-violet-500/50'
+                          } ${isEliminated ? 'opacity-45' : ''}`}
+                        >
+                          <span
+                            className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${
+                              isPicked
+                                ? 'bg-violet-600 text-white'
+                                : 'subtle-surface border border-theme'
+                            }`}
+                          >
+                            {letter}
+                          </span>
+                          <span className={`text-sm leading-relaxed flex-1 ${isEliminated ? 'line-through' : ''}`}>
+                            <DictionaryText text={opt.text} />
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExamEliminatedByQ((prev) => {
+                              const cur = prev[currentExamQ.id] || [];
+                              const has = cur.includes(letter);
+                              const next = has ? cur.filter((l) => l !== letter) : [...cur, letter];
+                              if (!has && examDraftChoice === letter) setExamDraftChoice('');
+                              return { ...prev, [currentExamQ.id]: next };
+                            });
+                          }}
+                          title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
+                          className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
+                            isEliminated
+                              ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
+                              : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
                           }`}
                         >
-                          {letter}
-                        </span>
-                        <span className="text-sm leading-relaxed flex-1">
-                          <DictionaryText text={opt.text} />
-                        </span>
-                      </button>
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>

@@ -6,7 +6,13 @@ import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { useAiProviderName } from '@/lib/useAiProvider';
-import { normalizeLegalOrdinalsAndSpaces } from '@/lib/leiSecaParser';
+import {
+  normalizeLegalOrdinalsAndSpaces,
+  parseLeiSecaBlocks,
+  type BlockKind,
+  type HighlightTone,
+  type LegalBlock,
+} from '@/lib/leiSecaParser';
 import {
   BookOpen,
   CheckCircle2,
@@ -31,16 +37,6 @@ import {
   X,
 } from 'lucide-react';
 
-type BlockKind = 'artigo' | 'inciso' | 'paragrafo' | 'alinea' | 'item' | 'texto';
-type HighlightTone = 'none' | 'yellow' | 'green' | 'red';
-
-interface LegalBlock {
-  id: string;
-  kind: BlockKind;
-  marker: string;
-  body: string;
-  annotations: string[];
-}
 
 interface LeiSecaArticle {
   id: string;
@@ -180,20 +176,6 @@ function nextTone(current: HighlightTone | undefined): HighlightTone {
   return 'none';
 }
 
-function extractAnnotations(text: string): { clean: string; annotations: string[] } {
-  const annotations: string[] = [];
-  const regex =
-    /\((?:Redação dada|Incluíd[oa]|Revogad[oa]|Vide|Acrescid[oa]|Alterad[oa]|Vigência|Vetad[oa]|Regulamento|Produção de efeito)[^)]*\)/gi;
-  const clean = text
-    .replace(regex, (match) => {
-      annotations.push(match.slice(1, -1).trim());
-      return '';
-    })
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-  return { clean, annotations };
-}
-
 function detectArticleTitle(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
@@ -201,107 +183,6 @@ function detectArticleTitle(raw: string): string {
   if (m) return m[1].replace(/\s+/g, ' ').trim();
   const firstLine = trimmed.split(/\r?\n/)[0] || '';
   return firstLine.slice(0, 60).trim();
-}
-
-/**
- * Parser instantâneo (0ms) para textos de Lei Seca brasileira:
- * separa Caput (Art.), Incisos (I, II, III...), Parágrafos (§ 1º / Parágrafo único),
- * Alíneas (a), b), c)) e Itens (1., 2.), mesmo quando colados com quebras de PDF.
- */
-function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
-  if (!rawText.trim()) return [];
-
-  // Normaliza espaços e insere quebras antes de marcadores legais colados no meio da linha
-  let normalized = normalizeLegalOrdinalsAndSpaces(rawText);
-
-  // Quebra antes de Art. / Parágrafo único / § Xº se vierem após pontuação na mesma linha
-  normalized = normalized
-    .replace(/([.;:])\s+(Art\.?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
-    .replace(/([.;:])\s+(Parágrafo\s+único\.?)/gi, '$1\n$2')
-    .replace(/([.;:])\s+(§§?\s*\d+[º°oª]?(?:-[A-Z])?)/gi, '$1\n$2')
-    .replace(/([.;:])\s+([a-z]\))/g, '$1\n$2')
-    .replace(/([.;:])\s+(\d{1,2}[.)])/g, '$1\n$2')
-    .replace(
-      /([.;:])\s+((?:X{0,3}(?:IX|IV|V?I{0,3})|L(?:X{0,3}(?:IX|IV|V?I{0,3}))?|C)\s*[-–—])/g,
-      '$1\n$2'
-    );
-
-  const rawLines = normalized
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  // Regex para detectar início de bloco legal
-  const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/;
-  const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
-  const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
-  const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
-  const alineaRe = /^([a-z])\)\s+(.*)$/;
-  const itemRe = /^(\d{1,2})[.)]\s+(.*)$/;
-
-  const blocks: LegalBlock[] = [];
-
-  for (const line of rawLines) {
-    let matched: { kind: BlockKind; marker: string; body: string } | null = null;
-
-    const prevBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
-    const prevEndedMidPhrase = Boolean(
-      prevBlock && prevBlock.body && !/[.;:!?]$/.test(prevBlock.body.trim())
-    );
-    const rawArtMatch = line.match(artRe);
-    const isCitationFollowing = Boolean(
-      rawArtMatch && /^[,)]|^\s*(?:d[aeo]s?|dest[ae]|dess[ae]|al[íi]nea|inciso|§|par[áa]grafo|caput)\b/i.test(rawArtMatch[2] || '')
-    );
-    const mArt = rawArtMatch && !prevEndedMidPhrase && !isCitationFollowing ? rawArtMatch : null;
-    const mParU = !mArt ? line.match(parUnicoRe) : null;
-    const mParN = !mArt && !mParU ? line.match(parNumRe) : null;
-    const mInc = !mArt && !mParU && !mParN ? line.match(incisoRe) : null;
-    const mAli = !mArt && !mParU && !mParN && !mInc ? line.match(alineaRe) : null;
-    const mItem = !mArt && !mParU && !mParN && !mInc && !mAli ? line.match(itemRe) : null;
-
-    if (mArt) {
-      matched = { kind: 'artigo', marker: mArt[1].trim(), body: mArt[2].trim() };
-    } else if (mParU) {
-      matched = { kind: 'paragrafo', marker: 'Parágrafo único', body: mParU[2].trim() };
-    } else if (mParN) {
-      matched = { kind: 'paragrafo', marker: mParN[1].replace(/\s+/g, ' ').trim(), body: mParN[2].trim() };
-    } else if (mInc) {
-      matched = { kind: 'inciso', marker: mInc[1].trim(), body: mInc[2].trim() };
-    } else if (mAli) {
-      matched = { kind: 'alinea', marker: `${mAli[1]})`, body: mAli[2].trim() };
-    } else if (mItem) {
-      const punct = line.match(/^(\d{1,2}[.)])/)?.[1] || `${mItem[1]})`;
-      matched = { kind: 'item', marker: punct, body: mItem[2].trim() };
-    }
-
-    if (matched) {
-      const { clean, annotations } = extractAnnotations(matched.body);
-      blocks.push({
-        id: `b_${blocks.length}`,
-        kind: matched.kind,
-        marker: matched.marker,
-        body: clean,
-        annotations,
-      });
-    } else if (blocks.length > 0) {
-      // Continuação de linha quebrada de PDF -> junta no bloco anterior
-      const prev = blocks[blocks.length - 1];
-      const { clean, annotations } = extractAnnotations(line);
-      prev.body = [prev.body, clean].filter(Boolean).join(' ');
-      if (annotations.length > 0) prev.annotations.push(...annotations);
-    } else {
-      const { clean, annotations } = extractAnnotations(line);
-      blocks.push({
-        id: `b_${blocks.length}`,
-        kind: 'texto',
-        marker: '',
-        body: clean,
-        annotations,
-      });
-    }
-  }
-
-  return blocks;
 }
 
 function LegalBlocksView({
@@ -1600,6 +1481,42 @@ export default function LeiSecaPage() {
               >
                 <Edit3 className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
                 <span className="hidden sm:inline">Renomear</span>
+              </button>
+            )}
+            {selectedLaw !== 'ALL' && (
+              <button
+                type="button"
+                onClick={() => {
+                  const isCat = selectedLaw.startsWith('__CAT:');
+                  const targetIds = new Set(
+                    articles
+                      .filter((a) =>
+                        isCat
+                          ? classifyNormCategory(a.lawName, a.title, a.rawText) === selectedLaw
+                          : normalizeLawBucket(a.lawName, a.title, a.rawText) === selectedLaw
+                      )
+                      .map((a) => a.id)
+                  );
+                  if (targetIds.size === 0) return;
+                  const label = isCat
+                    ? NORM_CATEGORIES.find((c) => c.key === selectedLaw)?.label || selectedLaw
+                    : selectedLaw;
+                  if (
+                    !window.confirm(
+                      `Excluir todos os ${targetIds.size} bloco(s) de "${label}"? Essa ação não pode ser desfeita.`
+                    )
+                  ) {
+                    return;
+                  }
+                  persist(articles.filter((a) => !targetIds.has(a.id)));
+                  setSelectedLaw('ALL');
+                  notify(`${targetIds.size} bloco(s) de "${label}" excluídos.`, 'success');
+                }}
+                title="Excluir todos os blocos deste filtro"
+                className="px-2.5 py-2.5 rounded-2xl border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-xs font-bold inline-flex items-center gap-1"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Excluir</span>
               </button>
             )}
             <div className="relative">

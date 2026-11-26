@@ -855,18 +855,21 @@ Retorne SOMENTE JSON válido:
       if (!rawText || !String(rawText).trim()) {
         return NextResponse.json({ error: 'Envie o texto da lei para formatar.' }, { status: 400 });
       }
-      const prompt = `Você é um formatador jurídico de Lei Seca brasileira${lawName ? ` (${lawName})` : ''}.
-Limpe e organize o texto legal abaixo para ficar visualmente perfeito e agradável de estudar:
+      const prompt = `Você é um especialista em legislação brasileira e técnica legislativa (LC 95/1998)${lawName ? ` — norma: ${lawName}` : ''}.
+Use seu conhecimento jurídico e análise contextual para identificar, limpar e estruturar perfeitamente o texto legal abaixo:
 REGRAS RÍGIDAS:
-1. NUNCA resuma, parafraseie ou apague artigos, parágrafos, incisos ou alíneas — mantenha 100% do texto legal fiel.
-2. Remova lixo de PDF (números de página isolados, cabeçalhos repetidos como 'Consolidação das Leis do Trabalho', 'Presidência da República / Casa Civil'), junte palavras partidas por espaço de PDF (ex: 'Ma ranhão' -> 'Maranhão', 'Pernambu co' -> 'Pernambuco', 'originaria mente' -> 'originariamente'), junte quebras de linha no meio da frase e corrija ordinais quebrados (ex: '1a Região' / '2 a Região' -> '1ª Região' / '2ª Região', '1 o Grau' -> '1º Grau', 'Art. 5 o' -> 'Art. 5º').
-3. Respeite RIGOROSAMENTE a hierarquia da lei brasileira, colocando CADA elemento em sua própria linha:
-   - 1. Caput: cada 'Art. Xº' em nova linha
-   - 2. Parágrafos: cada '§ Xº' ou 'Parágrafo único.' em nova linha
-   - 3. Incisos (algarismos romanos): cada 'I -', 'II -', 'III -'... em nova linha
-   - 4. Alíneas (letras minúsculas): cada 'a)', 'b)', 'c)'... em nova linha
-   - 5. Itens (algarismos arábicos): cada '1)', '2)', '3)' ou '1.', '2.', '3.'... em nova linha (NUNCA junte itens dentro da alínea anterior e NUNCA confunda número de item com letra de alínea!)
-4. Retorne APENAS o texto legal formatado, sem comentários extras ou markdown.
+1. NUNCA resuma, parafraseie ou apague artigos, parágrafos, incisos, alíneas ou itens — mantenha 100% do texto legal fiel.
+2. Remova apenas lixo de PDF (números de página isolados, cabeçalhos repetidos como 'Consolidação das Leis do Trabalho', 'Presidência da República / Casa Civil', 'Senado Federal'), junte palavras partidas por espaço de PDF (ex: 'Ma ranhão' -> 'Maranhão', 'Pernambu co' -> 'Pernambuco', 'originaria mente' -> 'originariamente'), junte quebras de linha no meio da frase e corrija ordinais quebrados (ex: '1a Região' / '2 a Região' -> '1ª Região' / '2ª Região', '1 o Grau' -> '1º Grau', 'Art. 5 o' -> 'Art. 5º').
+3. Reconheça pelo contexto jurídico o que é INÍCIO REAL DE DISPOSITIVO vs CITAÇÃO DENTRO DA FRASE:
+   - Se o texto cita "nos termos do art. 5º, inciso II, alínea 'a'..." ou "a alínea 'c' do inciso I do § 4º do art. 12..." no meio de uma frase, NÃO quebre a linha nem transforme isso em bloco separado — mantenha fluindo dentro do dispositivo atual.
+   - Se for um artigo real (inclusive com ponto final ou milhar, ex: "Art. 10.", "Art. 22.", "Art. 1.015.", ou "Art." separado do número por quebra de linha), junte "Art. 22." em sua própria nova linha.
+4. Respeite RIGOROSAMENTE a hierarquia da lei brasileira, colocando CADA dispositivo real em sua própria linha:
+   - Caput: cada 'Art. Xº' / 'Art. X.' em nova linha
+   - Parágrafos: cada '§ Xº' ou 'Parágrafo único.' em nova linha
+   - Incisos (algarismos romanos): cada 'I -', 'II -', 'III -'... em nova linha
+   - Alíneas (letras minúsculas): cada 'a)', 'b)', 'c)'... em nova linha
+   - Itens (algarismos arábicos): cada '1)', '2)', '3)' ou '1.', '2.', '3.'... em nova linha (NUNCA confunda número de artigo 'Art. 22.' com item '22.')
+5. Retorne APENAS o texto legal formatado, sem comentários extras ou markdown.
 
 TEXTO:
 ${String(rawText).slice(0, 12000)}`;

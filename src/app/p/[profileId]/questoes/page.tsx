@@ -471,6 +471,7 @@ export default function QuestoesPage() {
   const [quizQueue, setQuizQueue] = useState<BankQuestion[]>([]);
   const [quizIdx, setQuizIdx] = useState(0);
   const [quizPicked, setQuizPicked] = useState('');
+  const [quizEliminated, setQuizEliminated] = useState<string[]>([]);
   const [quizAnswered, setQuizAnswered] = useState(false);
   const [quizShowPrevWrong, setQuizShowPrevWrong] = useState(false);
   const [quizHits, setQuizHits] = useState(0);
@@ -1007,6 +1008,7 @@ export default function QuestoesPage() {
     setQuizQueue(shuffled);
     setQuizIdx(0);
     setQuizPicked('');
+    setQuizEliminated([]);
     setQuizAnswered(false);
     setQuizShowPrevWrong(false);
     setQuizHits(0);
@@ -2152,34 +2154,66 @@ ${q.statement}`;
                       bdg = 'bg-teal-600 text-white border-teal-600';
                     }
 
+                    const isEliminated = !quizAnswered && quizEliminated.includes(letter);
                     return (
-                      <button
-                        key={letter}
-                        type="button"
-                        disabled={quizAnswered}
-                        onClick={() => setQuizPicked(letter)}
-                        className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${cls}`}
-                      >
-                        <span
-                          className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${bdg}`}
+                      <div key={letter} className="flex items-stretch gap-1.5">
+                        <button
+                          type="button"
+                          disabled={quizAnswered}
+                          onClick={() => {
+                            if (isEliminated) {
+                              setQuizEliminated((prev) => prev.filter((l) => l !== letter));
+                            }
+                            setQuizPicked(letter);
+                          }}
+                          className={`flex-1 text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${cls} ${
+                            isEliminated ? 'opacity-45' : ''
+                          }`}
                         >
-                          {letter}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm leading-relaxed"><DictionaryText text={opt.text} /></p>
-                          {quizShowPrevWrong && currentQ.prev_wrong_answer === letter && (
-                            <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
-                              Alternativa que você marcou errado antes
-                            </span>
+                          <span
+                            className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 ${bdg}`}
+                          >
+                            {letter}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm leading-relaxed ${isEliminated ? 'line-through' : ''}`}>
+                              <DictionaryText text={opt.text} />
+                            </p>
+                            {quizShowPrevWrong && currentQ.prev_wrong_answer === letter && (
+                              <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
+                                Alternativa que você marcou errado antes
+                              </span>
+                            )}
+                          </div>
+                          {isRight && (
+                            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                           )}
-                        </div>
-                        {isRight && (
-                          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                          {isWrong && (
+                            <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                          )}
+                        </button>
+                        {!quizAnswered && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuizEliminated((prev) => {
+                                const has = prev.includes(letter);
+                                const next = has ? prev.filter((l) => l !== letter) : [...prev, letter];
+                                if (!has && quizPicked === letter) setQuizPicked('');
+                                return next;
+                              });
+                            }}
+                            title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
+                            className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
+                              isEliminated
+                                ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
+                                : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
+                            }`}
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
                         )}
-                        {isWrong && (
-                          <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-                        )}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -2316,6 +2350,7 @@ ${q.statement}`;
                         } else {
                           setQuizIdx((i) => i + 1);
                           setQuizPicked('');
+                          setQuizEliminated([]);
                           setQuizAnswered(false);
                           setQuizShowPrevWrong(false);
                         }

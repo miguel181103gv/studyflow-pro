@@ -107,6 +107,7 @@ export default function CadernoErrosPage() {
   const [zoomUrl, setZoomUrl] = useState<string | null>(null);
 
   const [selectedByCard, setSelectedByCard] = useState<Record<string, string>>({});
+  const [eliminatedByCard, setEliminatedByCard] = useState<Record<string, string[]>>({});
   const [submittedByCard, setSubmittedByCard] = useState<Record<string, boolean>>({});
   const [showPrevWrongByCard, setShowPrevWrongByCard] = useState<Record<string, boolean>>({});
   const [showOriginalImgByCard, setShowOriginalImgByCard] = useState<Record<string, boolean>>({});
@@ -827,36 +828,77 @@ export default function CadernoErrosPage() {
                           badgeClass = 'bg-teal-600 text-white border-teal-600';
                         }
 
+                        const elimList = eliminatedByCard[entry.id] || [];
+                        const isEliminated = !submitted && elimList.includes(letter);
                         return (
-                          <button
-                            key={letter}
-                            type="button"
-                            disabled={submitted}
-                            onClick={() =>
-                              setSelectedByCard((prev) => ({ ...prev, [entry.id]: letter }))
-                            }
-                            className={`w-full text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${rowClass}`}
-                          >
-                            <span
-                              className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 mt-0.5 ${badgeClass}`}
+                          <div key={letter} className="flex items-stretch gap-1.5">
+                            <button
+                              type="button"
+                              disabled={submitted}
+                              onClick={() => {
+                                if (isEliminated) {
+                                  setEliminatedByCard((prev) => ({
+                                    ...prev,
+                                    [entry.id]: (prev[entry.id] || []).filter((l) => l !== letter),
+                                  }));
+                                }
+                                setSelectedByCard((prev) => ({ ...prev, [entry.id]: letter }));
+                              }}
+                              className={`flex-1 text-left rounded-2xl border p-3.5 flex items-start gap-3 transition ${rowClass} ${
+                                isEliminated ? 'opacity-45' : ''
+                              }`}
                             >
-                              {letter}
-                            </span>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm leading-relaxed"><DictionaryText text={opt.text} /></p>
-                              {isPrevWrongHighlight && (
-                                <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
-                                  Você marcou esta errado anteriormente
-                                </span>
+                              <span
+                                className={`w-7 h-7 rounded-full text-xs font-extrabold flex items-center justify-center shrink-0 mt-0.5 ${badgeClass}`}
+                              >
+                                {letter}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm leading-relaxed ${isEliminated ? 'line-through' : ''}`}>
+                                  <DictionaryText text={opt.text} />
+                                </p>
+                                {isPrevWrongHighlight && (
+                                  <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-600">
+                                    Você marcou esta errado anteriormente
+                                  </span>
+                                )}
+                              </div>
+                              {isRight && (
+                                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
                               )}
-                            </div>
-                            {isRight && (
-                              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                              {isWrongPick && (
+                                <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                              )}
+                            </button>
+                            {!submitted && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEliminatedByCard((prev) => {
+                                    const cur = prev[entry.id] || [];
+                                    const has = cur.includes(letter);
+                                    const next = has ? cur.filter((l) => l !== letter) : [...cur, letter];
+                                    if (!has && isSelected) {
+                                      setSelectedByCard((p) => {
+                                        const c = { ...p };
+                                        delete c[entry.id];
+                                        return c;
+                                      });
+                                    }
+                                    return { ...prev, [entry.id]: next };
+                                  });
+                                }}
+                                title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
+                                className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
+                                  isEliminated
+                                    ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
+                                    : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
+                                }`}
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
                             )}
-                            {isWrongPick && (
-                              <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-                            )}
-                          </button>
+                          </div>
                         );
                       })}
                     </div>
