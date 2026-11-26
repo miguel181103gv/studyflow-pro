@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { addDaysISO, formatDateBR, todayISO } from '@/lib/utils';
-import { CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X, Trash2, RefreshCw, ArrowLeft, ArrowRight, XCircle } from 'lucide-react';
+import { BookOpen, Layers, CheckCircle2, Sparkles, FileText, PlusCircle, Loader2, X, Trash2, RefreshCw, ArrowLeft, ArrowRight, XCircle } from 'lucide-react';
 
 interface QuizQuestion {
   statement: string;
@@ -425,12 +426,14 @@ ${q.statement}`;
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
-                    <span
-                      className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
+                    <Link
+                      href={`/p/${profile?.id}/estudos?subject=${encodeURIComponent(rev.subject_id)}&topic=${encodeURIComponent(rev.topic_id)}`}
+                      title="Abrir matéria e tópico no Edital Verticalizado"
+                      className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white hover:opacity-90 hover:underline transition"
                       style={{ backgroundColor: sub?.color || '#0d9488' }}
                     >
                       {sub?.name}
-                    </span>
+                    </Link>
                     <span className="text-[11px] px-2 py-0.5 rounded-full subtle-surface font-medium">
                       Revisão {rev.interval_days}d
                     </span>
@@ -438,7 +441,13 @@ ${q.statement}`;
                       Data: {formatDateBR(rev.due_date)}
                     </span>
                   </div>
-                  <p className="font-semibold text-sm">{topic?.title || 'Tópico'}</p>
+                  <Link
+                    href={`/p/${profile?.id}/estudos?subject=${encodeURIComponent(rev.subject_id)}&topic=${encodeURIComponent(rev.topic_id)}`}
+                    title="Abrir este tópico no Edital Verticalizado"
+                    className="font-semibold text-sm hover:text-teal-500 hover:underline transition inline-block"
+                  >
+                    {topic?.title || 'Tópico'}
+                  </Link>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap shrink-0">
@@ -449,12 +458,29 @@ ${q.statement}`;
                     <FileText className="w-3.5 h-3.5" />
                     Grifos ({hlCount})
                   </button>
+                  <Link
+                    href={`/p/${profile?.id}/flashcards?subject=${encodeURIComponent(rev.subject_id)}&topic=${encodeURIComponent(rev.topic_id)}`}
+                    title="Abrir Flashcards desta matéria"
+                    className="px-3 py-1.5 rounded-xl subtle-surface hover:border-teal-500/50 border border-transparent text-xs font-medium inline-flex items-center gap-1 transition"
+                  >
+                    <Layers className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                    Flashcards
+                  </Link>
+                  <Link
+                    href={`/p/${profile?.id}/questoes?subject=${encodeURIComponent(rev.subject_id)}&topic=${encodeURIComponent(rev.topic_id)}`}
+                    title="Ir para o Banco de Questões desta matéria"
+                    className="px-3 py-1.5 rounded-xl subtle-surface hover:border-teal-500/50 border border-transparent text-xs font-medium inline-flex items-center gap-1 transition"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                    Questões
+                  </Link>
                   <button
                     onClick={() => quickAddQuestions(rev.subject_id, rev.topic_id)}
-                    className="px-3 py-1.5 rounded-xl subtle-surface text-xs font-medium inline-flex items-center gap-1"
+                    title="Registrar quantidade de questões feitas manualmente"
+                    className="px-2.5 py-1.5 rounded-xl subtle-surface text-xs font-medium inline-flex items-center gap-1"
                   >
                     <PlusCircle className="w-3.5 h-3.5" />
-                    Questões
+                    + Qtd
                   </button>
                   <button
                     onClick={() =>

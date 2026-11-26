@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { DictionaryText } from '@/components/DictionaryText';
@@ -273,6 +274,21 @@ export default function ProgressoEditalPage() {
   const isDark = theme === 'obsidian' || theme === 'navy';
 
   const [openSubjects, setOpenSubjects] = useState<Record<string, boolean>>({});
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const subParam = searchParams.get('subject');
+    const topicParam = searchParams.get('topic');
+    if (subParam) {
+      setOpenSubjects((prev) => ({ ...prev, [subParam]: true }));
+    }
+    if (topicParam) {
+      setTimeout(() => {
+        const el = document.getElementById(`topic-row-${topicParam}`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 250);
+    }
+  }, [searchParams]);
   const [editalSearch, setEditalSearch] = useState('');
   const [difficultyMap, setDifficultyMap] = useState<Record<string, Difficulty>>({});
   const [pendingDifficultyTopic, setPendingDifficultyTopic] = useState<Topic | null>(null);
@@ -1670,7 +1686,7 @@ export default function ProgressoEditalPage() {
                       const topicPdfs = parseTopicPdfs(topic.pdf_path, topic.pdf_name);
 
                       return (
-                      <div key={topic.id} className={isSub ? 'ml-5 sm:ml-9 relative' : ''}>
+                      <div key={topic.id} id={`topic-row-${topic.id}`} className={`scroll-mt-24 ${isSub ? 'ml-5 sm:ml-9 relative' : ''}`}>
                         {isSub && (
                           <span className="absolute -left-3.5 top-5 w-2.5 h-2.5 border-l-2 border-b-2 border-teal-500/50 rounded-bl-sm" />
                         )}

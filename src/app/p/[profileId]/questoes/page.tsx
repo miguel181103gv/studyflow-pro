@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useProfile } from '@/components/ProfileProvider';
 import { useGlobal } from '@/components/GlobalProvider';
@@ -413,6 +414,20 @@ export default function QuestoesPage() {
   const storageKey = `sf_question_bank_${profile?.id || 'default'}`;
   const [questions, setQuestions] = useState<BankQuestion[]>([]);
   const [selectedScope, setSelectedScope] = useState<SelectedScope>(null);
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const subParam = searchParams.get('subject');
+    const topicParam = searchParams.get('topic');
+    if (subParam) {
+      setExpandedSubjects((prev) => ({ ...prev, [subParam]: true }));
+      setSelectedScope(
+        topicParam
+          ? { type: 'topic', subjectId: subParam, topicId: topicParam }
+          : { type: 'subject', subjectId: subParam }
+      );
+    }
+  }, [searchParams]);
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
   const [expandedTopicGroups, setExpandedTopicGroups] = useState<Record<string, boolean>>({});
   const [collapsedQ, setCollapsedQ] = useState<Record<string, boolean>>({});

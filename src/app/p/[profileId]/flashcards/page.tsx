@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useAiProviderName } from '@/lib/useAiProvider';
 import { useGlobal } from '@/components/GlobalProvider';
 import { useProfile } from '@/components/ProfileProvider';
@@ -92,6 +93,20 @@ export default function FlashcardsPage() {
   // Passo 1: Seleção limpa de baralho (Curso todo | Matéria | Tópico)
   const [selectedDeck, setSelectedDeck] = useState<SelectedDeck>(null);
   const [expandedSubjects, setExpandedSubjects] = useState<Record<string, boolean>>({});
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    const subParam = searchParams.get('subject');
+    const topicParam = searchParams.get('topic');
+    if (subParam) {
+      setExpandedSubjects((prev) => ({ ...prev, [subParam]: true }));
+      setSelectedDeck(
+        topicParam
+          ? { type: 'topic', subjectId: subParam, topicId: topicParam }
+          : { type: 'subject', subjectId: subParam }
+      );
+    }
+  }, [searchParams]);
 
   // Criar matéria / tópico discretamente na tela inicial
   const [showNewSubject, setShowNewSubject] = useState(false);
