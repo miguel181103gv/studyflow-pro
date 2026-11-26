@@ -660,6 +660,7 @@ export default function LeiSecaPage() {
   const [pdfProgress, setPdfProgress] = useState<string>('');
   const [aiFormatting, setAiFormatting] = useState(false);
   const [formattingCardId, setFormattingCardId] = useState<string | null>(null);
+  const [formattingAllProgress, setFormattingAllProgress] = useState<string>('');
   const storageKey = `sf_lei_seca_${profile?.id || 'default'}`;
 
   const [articles, setArticles] = useState<LeiSecaArticle[]>([]);
@@ -1118,36 +1119,61 @@ export default function LeiSecaPage() {
     );
   }
 
-  function handleFormatAllLocal() {
-    if (articles.length === 0) return;
-    const now = new Date().toISOString();
-    let changedCount = 0;
-    const next = articles.map((a) => {
-      const blocks = parseLeiSecaBlocks(a.rawText);
-      const rebuilt = blocks
-        .map((b) => {
-          const ann = b.annotations.length > 0 ? ` (${b.annotations.join(') (')})` : '';
-          if (b.kind === 'artigo') return `${b.marker} ${b.body}${ann}`.trim();
-          if (b.kind === 'paragrafo') return `${b.marker} ${b.body}${ann}`.trim();
-          if (b.kind === 'inciso') return `${b.marker} - ${b.body}${ann}`.trim();
-          if (b.kind === 'alinea' || b.kind === 'item') return `${b.marker} ${b.body}${ann}`.trim();
-          return `${b.body}${ann}`.trim();
-        })
-        .filter(Boolean)
-        .join('\n');
-      if (rebuilt && rebuilt !== a.rawText.trim()) {
-        changedCount += 1;
-        return { ...a, rawText: rebuilt, updatedAt: now };
+  async function handleFormatAllWithAi() {
+    if (articles.length === 0 || formattingAllProgress) return;
+    const targetList = filteredArticles.length > 0 ? filteredArticles : articles;
+    const total = targetList.length;
+    setFormattingAllProgress(`0/${total}`);
+    let current = [...articles];
+    let done = 0;
+    let updatedCount = 0;
+
+    try {
+      // Processa em lotes de 3 em paralelo com DeepSeek para ser rápido e confiável
+      const BATCH = 3;
+      for (let i = 0; i < targetList.length; i += BATCH) {
+        const slice = targetList.slice(i, i + BATCH);
+        await Promise.all(
+          slice.map(async (art) => {
+            try {
+              const preClean = normalizeLegalOrdinalsAndSpaces(art.rawText);
+              const formatted = await runAiFormatText(preClean, art.lawName);
+              if (formatted && formatted.trim()) {
+                const now = new Date().toISOString();
+                current = current.map((x) =>
+                  x.id === art.id ? { ...x, rawText: formatted.trim(), updatedAt: now } : x
+                );
+                updatedCount += 1;
+              }
+            } catch {
+              // Se um bloco falhar, aplica ao menos a limpeza local
+              const blocks = parseLeiSecaBlocks(art.rawText);
+              const rebuilt = blocks
+                .map((b) => {
+                  const ann = b.annotations.length > 0 ? ` (${b.annotations.join(') (')})` : '';
+                  if (b.kind === 'inciso') return `${b.marker} - ${b.body}${ann}`.trim();
+                  if (b.kind) return `${b.marker ? b.marker + ' ' : ''}${b.body}${ann}`.trim();
+                  return `${b.body}${ann}`.trim();
+                })
+                .filter(Boolean)
+                .join('\n');
+              if (rebuilt) {
+                current = current.map((x) =>
+                  x.id === art.id ? { ...x, rawText: rebuilt, updatedAt: new Date().toISOString() } : x
+                );
+              }
+            } finally {
+              done += 1;
+              setFormattingAllProgress(`${done}/${total}`);
+            }
+          })
+        );
+        persist(current);
       }
-      return a;
-    });
-    persist(next);
-    notify(
-      changedCount > 0
-        ? `${changedCount} ${changedCount === 1 ? 'bloco limpo e reorganizado' : 'blocos limpos e reorganizados'}!`
-        : 'Todos os artigos já estão limpos e formatados!',
-      'success'
-    );
+      notify(`${updatedCount} de ${total} blocos formatados com ${aiName}!`, 'success');
+    } finally {
+      setFormattingAllProgress('');
+    }
   }
 
   async function handleFilterByTheme(e: React.FormEvent) {
@@ -1298,12 +1324,19 @@ export default function LeiSecaPage() {
           {articles.length > 0 && (
             <button
               type="button"
-              onClick={handleFormatAllLocal}
-              title="Limpa rodapés de PDF, corrige ordinais (1ª, 2ª, 1º) e junta quebras de linha em todos os artigos salvos"
-              className="px-4 py-3 rounded-2xl subtle-surface border border-theme hover:border-teal-500/50 text-sm font-bold inline-flex items-center gap-2"
+              disabled={Boolean(formattingAllProgress)}
+              onClick={() => void handleFormatAllWithAi()}
+              title={`Formata todos os ${filteredArticles.length > 0 ? filteredArticles.length : articles.length} blocos visíveis com ${aiName} (junta palavras quebradas, corrige ordinais e remove rodapés)`}
+              className="px-4 py-3 rounded-2xl bg-violet-600/12 hover:bg-violet-600/20 border border-violet-500/35 text-violet-700 dark:text-violet-300 text-sm font-bold inline-flex items-center gap-2 disabled:opacity-60"
             >
-              <Sparkles className="w-4 h-4 text-teal-600 dark:text-teal-400" />
-              Formatar Tudo
+              {formattingAllProgress ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4" />
+              )}
+              {formattingAllProgress
+                ? `Formatando (${formattingAllProgress})...`
+                : `Formatar Tudo c/ ${aiName}`}
             </button>
           )}
           <button
