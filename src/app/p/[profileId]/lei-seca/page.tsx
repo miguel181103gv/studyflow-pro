@@ -86,7 +86,8 @@ const NORM_CATEGORIES = [
 
 function classifyNormCategory(lawName: string, title = '', rawText = ''): string {
   const txt = `${lawName} ${title} ${rawText.slice(0, 300)}`.trim();
-  if (/\b(?:ec|emenda\s+constitucional|emendas\s+constitucionais)\b/i.test(txt)) return '__CAT:EC__';
+  if (/decreto\s+legislativo|decretos\s+legislativos|\bdlg\b/i.test(txt)) return '__CAT:DLG__';
+  if (/\b(?:ec|ecr|emenda\s+constitucional|emendas\s+constitucionais)\b/i.test(txt)) return '__CAT:EC__';
   if (/\b(?:lc|lei\s+complementar)\b|101\/2000|responsabilidade\s+fiscal/i.test(txt)) return '__CAT:LC__';
   if (/\b(?:mp|medida\s+provis[óo]ria)\b/i.test(txt)) return '__CAT:MP__';
   if (/\bleis?\s+delegadas?\b|\bld\s*n[º°]?\s*\d/i.test(txt)) return '__CAT:LD__';
@@ -110,7 +111,9 @@ function normalizeLawBucket(lawName: string, title = '', rawText = ''): string {
     if (/\bstj\b/i.test(target)) return 'Súmulas STJ';
     return 'Súmulas';
   }
+  if (/^emendas\s+constitucionais\s+de\s+revis/i.test(primary)) return 'Emendas Constitucionais de Revisão';
   if (/^emendas\s+constitucionais/i.test(primary)) return 'Emendas Constitucionais';
+  if (/^decretos\s+legislativos/i.test(primary)) return 'Decretos Legislativos (Equiv. EC)';
   if (/^adct/i.test(primary)) return 'ADCT (CF/88)';
   if (/\blei\s+delegada\b/i.test(primary)) return primary;
   if (/\bdecreto\s+legislativo\b/i.test(primary)) return primary;
@@ -631,11 +634,32 @@ async function extractPdfTextInBrowser(
   return pagesText.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function stripIndexBeforeFirstArticle(rawText: string): string {
-  const clean = (rawText || '').trim();
+function stripEditorialAndBackIndex(rawText: string, isConstitution: boolean): string {
+  let clean = (rawText || '').trim();
   if (!clean) return clean;
 
-  // Procura ocorrências reais de "Art. 1º" (descartando linhas de Sumário com "...." ou número de página no fim)
+  // 7. Remove "Índice de Assuntos" / "Índice de Entidades" no final do PDF
+  const backIdxMatch = clean.match(
+    /(?:^|\n)\s*(?:ÍNDICE\s+DE\s+ASSUNTOS|Índice\s+de\s+Assuntos(?:\s+e\s+Entidades)?|ÍNDICE\s+TEMÁTICO|Índice\s+Alfabético)\b/i
+  );
+  if (backIdxMatch && backIdxMatch.index !== undefined && backIdxMatch.index > clean.length * 0.45) {
+    clean = clean.slice(0, backIdxMatch.index).trim();
+  }
+
+  // 1. Para CF/88, mantém o Preâmbulo (pula capa, ficha catalográfica e sumário)
+  if (isConstitution) {
+    const preMatches = Array.from(clean.matchAll(/(?:^|\n)\s*PRE[ÂA]MBULO\b/gi));
+    for (const pm of preMatches) {
+      if (pm.index !== undefined) {
+        const after = clean.slice(pm.index, pm.index + 2500);
+        if (/representantes\s+do\s+povo\s+brasileiro|\bArt\.?\s*1[º°o]?\b/i.test(after) && !/\.{3,}/.test(after.slice(0, 120))) {
+          return clean.slice(pm.index).trim();
+        }
+      }
+    }
+  }
+
+  // Para outras leis, pula sumário e vai para o 1º artigo real
   const art1Re = /^\s*Art(?:igo)?\.?\s*1[º°oª]?\b[^\n]*/gim;
   let m: RegExpExecArray | null;
   const candidates: number[] = [];
@@ -644,7 +668,6 @@ function stripIndexBeforeFirstArticle(rawText: string): string {
     if (/\.{3,}|\s+\d{1,3}\s*$/.test(line)) continue;
     candidates.push(m.index);
   }
-
   for (const idx of candidates) {
     const windowAfter = clean.slice(idx, idx + 5000);
     if (/\bArt(?:igo)?\.?\s*2[º°oª]?\b/i.test(windowAfter)) {
@@ -655,7 +678,6 @@ function stripIndexBeforeFirstArticle(rawText: string): string {
     return clean.slice(candidates[candidates.length - 1]).trim();
   }
 
-  // PDF parcial (sem Art. 1º): pula linhas de sumário e vai para o primeiro Art. X real
   const anyArtRe = /^\s*Art(?:igo)?\.?\s*\d+[º°oª]?\b[^\n]*/gim;
   while ((m = anyArtRe.exec(clean)) !== null) {
     const line = m[0];
@@ -665,60 +687,10 @@ function stripIndexBeforeFirstArticle(rawText: string): string {
   return clean;
 }
 
-function splitLawIntoSections(
-  rawText: string,
-  lawName: string
-): { title: string; text: string; lawNameOverride?: string }[] {
-  const cleanAll = rawText
-    .replace(/-\n([a-záàâãéêíóôõúç])/g, '$1')
-    .replace(/\n(?=Art\.\s*\d)/g, '\n\n')
-    .trim();
-
-  // Se for CF/88 (ou texto contendo Emendas Constitucionais ao final), separa as ECs para não misturar com Artigos
-  const ecStartMatch = cleanAll.match(
-    /(?:^|\n)\s*(?:Emendas\s+Constitucionais(?:\s+de\s+Revisão)?|Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*n[º°o]?\s*1\b)/i
-  );
-  if (ecStartMatch && ecStartMatch.index !== undefined && ecStartMatch.index > 500) {
-    const mainBody = cleanAll.slice(0, ecStartMatch.index).trim();
-    const ecBody = cleanAll.slice(ecStartMatch.index).trim();
-    const mainSections = splitArtBlocks(mainBody, lawName);
-
-    // Divide o bloco de ECs por cada "Emenda Constitucional (de Revisão) nº X"
-    const ecParts = ecBody
-      .split(/(?=(?:^|\n)\s*Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°o]?\s*)?\d+)/im)
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    const ecSections: { title: string; text: string; lawNameOverride?: string }[] = [];
-    const EC_GROUP = 5;
-    for (let i = 0; i < ecParts.length; i += EC_GROUP) {
-      const slice = ecParts.slice(i, i + EC_GROUP);
-      const firstLabel =
-        slice[0].match(/Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°o]?\s*)?\d+/i)?.[0] ||
-        `Parte ${ecSections.length + 1}`;
-      const lastLabel =
-        slice[slice.length - 1].match(/Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°o]?\s*)?\d+/i)?.[0] ||
-        '';
-      const shortFirst = firstLabel.replace(/Emenda\s+Constitucional\s+de\s+Revisão/i, 'ECR').replace(/Emenda\s+Constitucional/i, 'EC');
-      const shortLast = lastLabel.replace(/Emenda\s+Constitucional\s+de\s+Revisão/i, 'ECR').replace(/Emenda\s+Constitucional/i, 'EC');
-      ecSections.push({
-        title: shortLast && shortLast !== shortFirst ? `${shortFirst} a ${shortLast}` : shortFirst,
-        text: slice.join('\n\n'),
-        lawNameOverride: 'Emendas Constitucionais',
-      });
-    }
-    return [...mainSections, ...ecSections];
-  }
-
-  return splitArtBlocks(cleanAll, lawName);
-}
-
 function splitArtBlocks(
   clean: string,
   lawName: string
 ): { title: string; text: string; lawNameOverride?: string }[] {
-
-  // Divide por início de cada Artigo
   const parts = clean.split(/(?=^|\n\s*Art\.\s*\d+)/m).filter((p) => p.trim());
   const artBlocks: string[] = [];
   let buffer = '';
@@ -733,11 +705,11 @@ function splitArtBlocks(
   if (buffer.trim()) artBlocks.push(buffer.trim());
 
   if (artBlocks.length <= 15) {
-    return [{ title: '', text: clean }];
+    return [{ title: '', text: clean, lawNameOverride: lawName }];
   }
 
   const GROUP_SIZE = 20;
-  const sections: { title: string; text: string }[] = [];
+  const sections: { title: string; text: string; lawNameOverride?: string }[] = [];
   for (let i = 0; i < artBlocks.length; i += GROUP_SIZE) {
     const slice = artBlocks.slice(i, i + GROUP_SIZE);
     const firstArt = slice[0].match(/Art\.\s*\d+[º°o]?/i)?.[0] || `Parte ${sections.length + 1}`;
@@ -746,9 +718,110 @@ function splitArtBlocks(
     sections.push({
       title: lawName ? `${lawName} · ${rangeLabel}` : rangeLabel,
       text: slice.join('\n\n'),
+      lawNameOverride: lawName,
     });
   }
   return sections;
+}
+
+function splitLawIntoSections(
+  rawText: string,
+  lawName: string
+): { title: string; text: string; lawNameOverride?: string }[] {
+  const cleanAll = rawText
+    .replace(/-\n([a-záàâãéêíóôõúç])/g, '$1')
+    .replace(/\n(?=Art\.\s*\d)/g, '\n\n')
+    .trim();
+
+  // Detecta se é o PDF completo da Constituição Federal com suas seções estruturais
+  const isCf =
+    lawName === 'CF/88' ||
+    /Ato\s+das\s+Disposi[çc][õo]es\s+Constitucionais\s+Transit[óo]rias/i.test(cleanAll);
+
+  if (!isCf) {
+    return splitArtBlocks(cleanAll, lawName);
+  }
+
+  // Localiza marcos reais da Constituição (após o Preâmbulo)
+  const findFirstReal = (re: RegExp, minIdx = 200): number => {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(cleanAll)) !== null) {
+      if (m.index >= minIdx && !/\.{3,}/.test(m[0])) return m.index;
+    }
+    return -1;
+  };
+
+  const adctIdx = findFirstReal(/(?:^|\n)\s*ATO\s+DAS\s+DISPOSI[ÇC][ÕO]ES\s+CONSTITUCIONAIS\s+TRANSIT[ÓO]RIAS[^\n]*/gi, 500);
+  const ecrIdx = findFirstReal(/(?:^|\n)\s*(?:EMENDAS\s+CONSTITUCIONAIS\s+DE\s+REVIS[ÃA]O|Emenda\s+Constitucional\s+de\s+Revis[ãa]o\s+n[º°o]?\s*1\b)[^\n]*/gi, 500);
+  const ecIdx = findFirstReal(/(?:^|\n)\s*(?:EMENDAS\s+CONSTITUCIONAIS\s*$|Emenda\s+Constitucional\s+n[º°o]?\s*1\b)[^\n]*/gim, Math.max(500, ecrIdx + 10));
+  const dlIdx = findFirstReal(/(?:^|\n)\s*(?:DECRETOS\s+LEGISLATIVOS|Decreto\s+Legislativo\s+n[º°o]?\s*186\b)[^\n]*/gi, Math.max(500, ecIdx + 10));
+
+  const cuts: { idx: number; kind: 'CF' | 'ADCT' | 'ECR' | 'EC' | 'DLG' }[] = [{ idx: 0, kind: 'CF' }];
+  if (adctIdx > 0) cuts.push({ idx: adctIdx, kind: 'ADCT' });
+  if (ecrIdx > 0) cuts.push({ idx: ecrIdx, kind: 'ECR' });
+  if (ecIdx > 0) cuts.push({ idx: ecIdx, kind: 'EC' });
+  if (dlIdx > 0) cuts.push({ idx: dlIdx, kind: 'DLG' });
+  cuts.sort((a, b) => a.idx - b.idx);
+
+  const out: { title: string; text: string; lawNameOverride?: string }[] = [];
+
+  for (let c = 0; c < cuts.length; c++) {
+    const cur = cuts[c];
+    const nextIdx = c + 1 < cuts.length ? cuts[c + 1].idx : cleanAll.length;
+    const chunk = cleanAll.slice(cur.idx, nextIdx).trim();
+    if (!chunk) continue;
+
+    if (cur.kind === 'CF') {
+      out.push(...splitArtBlocks(chunk, 'CF/88'));
+    } else if (cur.kind === 'ADCT') {
+      out.push(...splitArtBlocks(chunk, 'ADCT (CF/88)'));
+    } else if (cur.kind === 'ECR') {
+      const ecrParts = chunk
+        .split(/(?=(?:^|\n)\s*Emenda\s+Constitucional\s+de\s+Revis[ãa]o\s*(?:n[º°o]?\s*)?\d+)/im)
+        .map((p) => p.trim())
+        .filter((p) => /Emenda\s+Constitucional\s+de\s+Revis[ãa]o/i.test(p));
+      if (ecrParts.length > 0) {
+        out.push({
+          title: `Emendas Constitucionais de Revisão (ECR nº 1 a ${ecrParts.length})`,
+          text: ecrParts.join('\n\n'),
+          lawNameOverride: 'Emendas Constitucionais de Revisão',
+        });
+      }
+    } else if (cur.kind === 'EC') {
+      const ecParts = chunk
+        .split(/(?=(?:^|\n)\s*Emenda\s+Constitucional\s*(?:n[º°o]?\s*)?\d+)/im)
+        .map((p) => p.trim())
+        .filter((p) => /^Emenda\s+Constitucional\s*(?:n[º°o]?\s*)?\d+/i.test(p));
+      const EC_GROUP = 5;
+      for (let i = 0; i < ecParts.length; i += EC_GROUP) {
+        const slice = ecParts.slice(i, i + EC_GROUP);
+        const fM = slice[0].match(/Emenda\s+Constitucional\s*(?:n[º°o]?\s*)?(\d+)/i)?.[1] || '';
+        const lM = slice[slice.length - 1].match(/Emenda\s+Constitucional\s*(?:n[º°o]?\s*)?(\d+)/i)?.[1] || '';
+        out.push({
+          title: fM && lM && fM !== lM ? `EC nº ${fM} a EC nº ${lM}` : fM ? `EC nº ${fM}` : `Emendas (${i + 1})`,
+          text: slice.join('\n\n'),
+          lawNameOverride: 'Emendas Constitucionais',
+        });
+      }
+    } else if (cur.kind === 'DLG') {
+      const dlParts = chunk
+        .split(/(?=(?:^|\n)\s*Decreto\s+Legislativo\s*(?:n[º°o]?\s*)?\d+)/im)
+        .map((p) => p.trim())
+        .filter((p) => /^Decreto\s+Legislativo\s*(?:n[º°o]?\s*)?\d+/i.test(p));
+      for (const dlp of dlParts) {
+        const dlTitle =
+          dlp.match(/Decreto\s+Legislativo\s*(?:n[º°o]?\s*)?\d+(?:\s*(?:,\s*de\s*\d{4}|\/\d{4}))?/i)?.[0] ||
+          'Decreto Legislativo';
+        out.push({
+          title: dlTitle.trim(),
+          text: dlp,
+          lawNameOverride: 'Decretos Legislativos (Equiv. EC)',
+        });
+      }
+    }
+  }
+
+  return out.length > 0 ? out : splitArtBlocks(cleanAll, lawName);
 }
 
 export default function LeiSecaPage() {
@@ -1155,8 +1228,6 @@ export default function LeiSecaPage() {
         return;
       }
 
-      const extracted = pdfSkipIndex ? stripIndexBeforeFirstArticle(rawExtracted) : rawExtracted;
-
       const chosenLaw =
         pdfTargetLaw === 'CUSTOM'
           ? pdfCustomLaw.trim()
@@ -1169,6 +1240,14 @@ export default function LeiSecaPage() {
         formLawName.trim() ||
         normalizeLawBucket('', file.name, rawExtracted.slice(0, 800)) ||
         file.name.replace(/\.pdf$/i, '').slice(0, 32);
+
+      const isConstitution =
+        inferredLaw === 'CF/88' ||
+        /Constitui[çc][ãa]o\s+da\s+Rep[úu]blica\s+Federativa\s+do\s+Brasil/i.test(rawExtracted.slice(0, 2000));
+
+      const extracted = pdfSkipIndex
+        ? stripEditorialAndBackIndex(rawExtracted, isConstitution)
+        : rawExtracted;
 
       const sections = splitLawIntoSections(extracted, inferredLaw);
 
