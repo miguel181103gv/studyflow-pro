@@ -69,6 +69,8 @@ export function normalizeLegalOrdinalsAndSpaces(raw: string): string {
     // Junta ordinal quebrado em nova linha ou com espaço (ex: "2 a Região", "1a Região", "6\na\nRegião")
     .replace(/(\d{1,2})\s*\n?\s*a\s*\n?\s*(?=Regi[ãa]o|Vara|Turma|Inst[âa]ncia|C[âa]mara|Se[çc][ãa]o|Subse[çc][ãa]o|Parte|S[ée]rie|Categoria|Classe|Etapa|Fase|Ordem|Zona|hip[óo]tese|vez)/gi, '$1ª ')
     .replace(/(\d{1,2})\s*\n?\s*o\s*\n?\s*(?=Grau|Par[áa]grafo|Inciso|Artigo|Livro|T[íi]tulo|Cap[íi]tulo|Grupo|N[íi]vel|dia|m[êe]s|ano)/gi, '$1º ')
+    .replace(/\bn\s+o\s+(?=\d)/gi, 'nº ')
+    .replace(/\bn\s+a\s+(?=\d)/gi, 'nª ')
     .replace(/\b(Art\.?\s*\d+)\s+[oº°]\b/gi, '$1º')
     .replace(/\b(Art\.?\s*\d+)\s+[aª]\b/gi, '$1ª')
     .replace(/(§\s*\d+)\s+[oº°]\b/gi, '$1º')
@@ -101,6 +103,7 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     .filter(Boolean);
 
   const artRe = /^(Art(?:igo)?\.?\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*(.*)$/;
+  const ecHeaderRe = /^(Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°]?\s*)?\d+(?:[\/,][^\n]*)?)\s*(.*)$/i;
   const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
   const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z])?\.?)\s*[-–—]?\s*(.*)$/i;
   const incisoRe = /^([IVXLCDM]{1,7})\s*[-–—.)]\s+(.*)$/;
@@ -127,8 +130,11 @@ export function parseLeiSecaBlocks(rawText: string): LegalBlock[] {
     const mAli = !mArt && !mParU && !mParN && !mInc ? line.match(alineaRe) : null;
     const mItem = !mArt && !mParU && !mParN && !mInc && !mAli ? line.match(itemRe) : null;
 
+    const mEc = !mArt ? line.match(ecHeaderRe) : null;
     if (mArt) {
       matched = { kind: 'artigo', marker: mArt[1].trim(), body: mArt[2].trim() };
+    } else if (mEc) {
+      matched = { kind: 'artigo', marker: mEc[1].trim(), body: mEc[2].trim() };
     } else if (mParU) {
       matched = { kind: 'paragrafo', marker: 'Parágrafo único', body: mParU[2].trim() };
     } else if (mParN) {

@@ -73,19 +73,25 @@ const LAW_PRESETS = [
 ];
 
 const NORM_CATEGORIES = [
+  { key: '__CAT:EC__', label: 'Emendas Constitucionais (EC)' },
   { key: '__CAT:LC__', label: 'Leis Complementares (LC)' },
   { key: '__CAT:LO__', label: 'Leis Ordinárias' },
   { key: '__CAT:MP__', label: 'Medidas Provisórias (MP)' },
-  { key: '__CAT:EC__', label: 'Emendas Constitucionais (EC)' },
+  { key: '__CAT:LD__', label: 'Leis Delegadas' },
+  { key: '__CAT:DLG__', label: 'Decretos Legislativos' },
+  { key: '__CAT:RES__', label: 'Resoluções' },
   { key: '__CAT:DL__', label: 'Decretos-Leis' },
   { key: '__CAT:SUM__', label: 'Súmulas & OJs' },
 ] as const;
 
 function classifyNormCategory(lawName: string, title = '', rawText = ''): string {
   const txt = `${lawName} ${title} ${rawText.slice(0, 300)}`.trim();
+  if (/\b(?:ec|emenda\s+constitucional|emendas\s+constitucionais)\b/i.test(txt)) return '__CAT:EC__';
   if (/\b(?:lc|lei\s+complementar)\b|101\/2000|responsabilidade\s+fiscal/i.test(txt)) return '__CAT:LC__';
   if (/\b(?:mp|medida\s+provis[óo]ria)\b/i.test(txt)) return '__CAT:MP__';
-  if (/\b(?:ec|emenda\s+constitucional)\b/i.test(txt)) return '__CAT:EC__';
+  if (/\bleis?\s+delegadas?\b|\bld\s*n[º°]?\s*\d/i.test(txt)) return '__CAT:LD__';
+  if (/\bdecretos?\s+legislativos?\b|\bdlg\b/i.test(txt)) return '__CAT:DLG__';
+  if (/\bresolu[çc][ãaõo]e?s?\b/i.test(txt)) return '__CAT:RES__';
   if (/decreto[-\s]?lei|\b(?:clt|c[óo]digo\s+penal|c[óo]digo\s+de\s+processo\s+penal|2\.?848|5\.?452|3\.?689)\b/i.test(txt)) return '__CAT:DL__';
   if (/\bs[úu]mula|\boj\s*\d+|orienta[çc][ãa]o\s+jurisprudencial/i.test(txt)) return '__CAT:SUM__';
   if (/\blei\b|8\.?429|8\.?112|14\.?133|9\.?784|8\.?078|10\.?406|13\.?105|13\.?709|8\.?069/i.test(txt)) return '__CAT:LO__';
@@ -104,6 +110,11 @@ function normalizeLawBucket(lawName: string, title = '', rawText = ''): string {
     if (/\bstj\b/i.test(target)) return 'Súmulas STJ';
     return 'Súmulas';
   }
+  if (/^emendas\s+constitucionais/i.test(primary)) return 'Emendas Constitucionais';
+  if (/^adct/i.test(primary)) return 'ADCT (CF/88)';
+  if (/\blei\s+delegada\b/i.test(primary)) return primary;
+  if (/\bdecreto\s+legislativo\b/i.test(primary)) return primary;
+  if (/\bresolu[çc][ãa]o\b/i.test(primary)) return primary;
   if (/\bcf(?:\/88)?\b|constitui[çc][ãa]o\s+federal|\bcrfb\b/i.test(target)) return 'CF/88';
   if (/\bclt\b|5\.?452|consolida[çc][ãa]o\s+das\s+leis\s+do\s+trabalho/i.test(target)) return 'CLT';
   if (/\bcpc\b|13\.?105|processo\s+civil/i.test(target)) return 'CPC';
@@ -657,11 +668,55 @@ function stripIndexBeforeFirstArticle(rawText: string): string {
 function splitLawIntoSections(
   rawText: string,
   lawName: string
-): { title: string; text: string }[] {
-  const clean = rawText
+): { title: string; text: string; lawNameOverride?: string }[] {
+  const cleanAll = rawText
     .replace(/-\n([a-záàâãéêíóôõúç])/g, '$1')
     .replace(/\n(?=Art\.\s*\d)/g, '\n\n')
     .trim();
+
+  // Se for CF/88 (ou texto contendo Emendas Constitucionais ao final), separa as ECs para não misturar com Artigos
+  const ecStartMatch = cleanAll.match(
+    /(?:^|\n)\s*(?:Emendas\s+Constitucionais(?:\s+de\s+Revisão)?|Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*n[º°o]?\s*1\b)/i
+  );
+  if (ecStartMatch && ecStartMatch.index !== undefined && ecStartMatch.index > 500) {
+    const mainBody = cleanAll.slice(0, ecStartMatch.index).trim();
+    const ecBody = cleanAll.slice(ecStartMatch.index).trim();
+    const mainSections = splitArtBlocks(mainBody, lawName);
+
+    // Divide o bloco de ECs por cada "Emenda Constitucional (de Revisão) nº X"
+    const ecParts = ecBody
+      .split(/(?=(?:^|\n)\s*Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°o]?\s*)?\d+)/im)
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const ecSections: { title: string; text: string; lawNameOverride?: string }[] = [];
+    const EC_GROUP = 5;
+    for (let i = 0; i < ecParts.length; i += EC_GROUP) {
+      const slice = ecParts.slice(i, i + EC_GROUP);
+      const firstLabel =
+        slice[0].match(/Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°o]?\s*)?\d+/i)?.[0] ||
+        `Parte ${ecSections.length + 1}`;
+      const lastLabel =
+        slice[slice.length - 1].match(/Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°o]?\s*)?\d+/i)?.[0] ||
+        '';
+      const shortFirst = firstLabel.replace(/Emenda\s+Constitucional\s+de\s+Revisão/i, 'ECR').replace(/Emenda\s+Constitucional/i, 'EC');
+      const shortLast = lastLabel.replace(/Emenda\s+Constitucional\s+de\s+Revisão/i, 'ECR').replace(/Emenda\s+Constitucional/i, 'EC');
+      ecSections.push({
+        title: shortLast && shortLast !== shortFirst ? `${shortFirst} a ${shortLast}` : shortFirst,
+        text: slice.join('\n\n'),
+        lawNameOverride: 'Emendas Constitucionais',
+      });
+    }
+    return [...mainSections, ...ecSections];
+  }
+
+  return splitArtBlocks(cleanAll, lawName);
+}
+
+function splitArtBlocks(
+  clean: string,
+  lawName: string
+): { title: string; text: string; lawNameOverride?: string }[] {
 
   // Divide por início de cada Artigo
   const parts = clean.split(/(?=^|\n\s*Art\.\s*\d+)/m).filter((p) => p.trim());
@@ -1134,7 +1189,7 @@ export default function LeiSecaPage() {
         const created: LeiSecaArticle[] = sections.map((sec, idx) => ({
           id: `ls-pdf-${now}-${idx}`,
           subjectId: formSubjectId || '',
-          lawName: inferredLaw,
+          lawName: sec.lawNameOverride || inferredLaw,
           title: sec.title,
           rawText: sec.text,
           note: '',
