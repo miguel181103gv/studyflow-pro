@@ -151,26 +151,55 @@ function parseLawCitation(raw: string): { article: string; lawHint: string } {
 }
 
 /**
+ * Verifica se um match de "Art. X" é realmente a definição do artigo (caput) e não uma citação (ex: "art. 37, § 4º").
+ */
+function isArticleDefinitionTail(tail: string): boolean {
+  const t = (tail || '').trimStart();
+  if (!t) return false;
+  if (/^[,)]/.test(t)) return false;
+  if (/^(?:d[aeo]s?|dest[ae]|dess[ae]|n[ao]s?|al[íi]nea|inciso|§|par[áa]grafo|caput)\b/i.test(t)) {
+    return false;
+  }
+  return true;
+}
+
+/**
  * Extrai apenas o trecho do artigo específico quando o registro salvo contém um bloco de 20 artigos.
  */
-function extractSingleArticleSnippet(rawText: string, artNum: string): string {
+function extractSingleArticleSnippet(rawText: string, artNum: string): string | null {
   const clean = (rawText || '').trim();
-  if (!clean || !artNum) return clean;
+  if (!clean || !artNum) return clean || null;
   const escaped = escapeRegExp(artNum);
-  const startRe = new RegExp(`(?:^|\\n)\\s*(Art\\.?\\s*${escaped}[º°oª]?\\b[\\s\\S]*)`, 'i');
-  const m = clean.match(startRe);
-  if (!m) {
-    // Tenta localizar no meio da linha
-    const inlineRe = new RegExp(`(Art\\.?\\s*${escaped}[º°oª]?\\b[\\s\\S]*)`, 'i');
-    const m2 = clean.match(inlineRe);
-    if (!m2) return clean;
-    const sliced = m2[1];
-    const nextArt = sliced.slice(8).search(/\n\s*Art\.?\s*\d+/i);
-    return (nextArt > 0 ? sliced.slice(0, nextArt + 8) : sliced).trim();
+  const lineRe = new RegExp(
+    `(?:^|\\n)\\s*(Art\\.?\\s*${escaped}[º°oª]?\\.?\\s*([^\\n]*))`,
+    'gi'
+  );
+  let startIdx = -1;
+  let match: RegExpExecArray | null;
+  while ((match = lineRe.exec(clean)) !== null) {
+    if (isArticleDefinitionTail(match[2] || '')) {
+      startIdx = match.index + (clean[match.index] === '\n' ? 1 : 0);
+      break;
+    }
   }
-  const rest = m[1];
-  const nextArtIdx = rest.slice(8).search(/\n\s*Art\.?\s*\d+/i);
-  return (nextArtIdx > 0 ? rest.slice(0, nextArtIdx + 8) : rest).trim();
+  if (startIdx < 0) return null;
+
+  const rest = clean.slice(startIdx).trimStart();
+  // Procura o início real do próximo artigo (ignorando citações)
+  const nextRe = /\n\s*Art\.?\s*\d+(?:\.\d{3})*[º°oª]?(?:-[A-Za-z0-9]+)?\.?\s*([^\n]*)/gi;
+  nextRe.lastIndex = 8;
+  let nextArtIdx = -1;
+  let nm: RegExpExecArray | null;
+  while ((nm = nextRe.exec(rest)) !== null) {
+    if (isArticleDefinitionTail(nm[1] || '')) {
+      nextArtIdx = nm.index;
+      break;
+    }
+  }
+  const sliced = (nextArtIdx > 0 ? rest.slice(0, nextArtIdx) : rest).trim();
+  // Evita retornar apenas um título solto ou citação curta
+  if (sliced.length < 25) return null;
+  return sliced;
 }
 
 interface DictIndex {
@@ -407,20 +436,37 @@ export function DictionaryText({
       stored = [];
     }
 
-    const existing = stored.find((a) => {
+    let existing: LeiSecaStored | undefined;
+    let existingSnippet: string | null = null;
+
+    for (const a of stored) {
       const lawNameStr = (a.lawName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
       const lawOk =
         !lawNorm ||
         (Boolean(lawNameStr) && (lawNameStr.includes(lawNorm) || lawNorm.includes(lawNameStr)));
-      if (!lawOk) return false;
-      if (artRegex) {
-        return artRegex.test(a.title || '') || artRegex.test(a.rawText || '');
-      }
-      return (a.title || '').toLowerCase().includes(article.toLowerCase());
-    });
+      if (!lawOk || !a.rawText) continue;
 
-    if (existing && existing.rawText) {
-      const snippet = extractSingleArticleSnippet(existing.rawText, artNum);
+      if (isSumula) {
+        if (artRegex && (artRegex.test(a.title || '') || artRegex.test(a.rawText || ''))) {
+          existing = a;
+          existingSnippet = a.rawText.trim();
+          break;
+        }
+      } else if (artNum) {
+        const snippet = extractSingleArticleSnippet(a.rawText, artNum);
+        if (snippet) {
+          existing = a;
+          existingSnippet = snippet;
+          break;
+        }
+      } else if ((a.title || '').toLowerCase().includes(article.toLowerCase())) {
+        existing = a;
+        existingSnippet = a.rawText.trim();
+        break;
+      }
+    }
+
+    if (existing && existingSnippet) {
       setModal({
         kind: 'law',
         article,
@@ -428,7 +474,7 @@ export function DictionaryText({
         loading: false,
         title: article,
         lawName: existing.lawName || lawHint,
-        text: snippet,
+        text: existingSnippet,
         savedId: existing.id,
         downloadedFromWeb: false,
       });

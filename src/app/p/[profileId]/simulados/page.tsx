@@ -2154,6 +2154,26 @@ export default function SimuladosPage() {
                         <button
                           type="button"
                           onClick={() => {
+                            setExamEliminatedByQ((prev) => {
+                              const cur = prev[currentExamQ.id] || [];
+                              const has = cur.includes(letter);
+                              const next = has ? cur.filter((l) => l !== letter) : [...cur, letter];
+                              if (!has && examDraftChoice === letter) setExamDraftChoice('');
+                              return { ...prev, [currentExamQ.id]: next };
+                            });
+                          }}
+                          title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
+                          className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
+                            isEliminated
+                              ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
+                              : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
+                          }`}
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
                             if (isEliminated) {
                               setExamEliminatedByQ((prev) => ({
                                 ...prev,
@@ -2180,26 +2200,6 @@ export default function SimuladosPage() {
                           <span className={`text-sm leading-relaxed flex-1 ${isEliminated ? 'line-through' : ''}`}>
                             <DictionaryText text={opt.text} />
                           </span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setExamEliminatedByQ((prev) => {
-                              const cur = prev[currentExamQ.id] || [];
-                              const has = cur.includes(letter);
-                              const next = has ? cur.filter((l) => l !== letter) : [...cur, letter];
-                              if (!has && examDraftChoice === letter) setExamDraftChoice('');
-                              return { ...prev, [currentExamQ.id]: next };
-                            });
-                          }}
-                          title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
-                          className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
-                            isEliminated
-                              ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
-                              : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
-                          }`}
-                        >
-                          <X className="w-4 h-4" />
                         </button>
                       </div>
                     );

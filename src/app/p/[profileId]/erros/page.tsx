@@ -832,6 +832,34 @@ export default function CadernoErrosPage() {
                         const isEliminated = !submitted && elimList.includes(letter);
                         return (
                           <div key={letter} className="flex items-stretch gap-1.5">
+                            {!submitted && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEliminatedByCard((prev) => {
+                                    const cur = prev[entry.id] || [];
+                                    const has = cur.includes(letter);
+                                    const next = has ? cur.filter((l) => l !== letter) : [...cur, letter];
+                                    if (!has && isSelected) {
+                                      setSelectedByCard((p) => {
+                                        const c = { ...p };
+                                        delete c[entry.id];
+                                        return c;
+                                      });
+                                    }
+                                    return { ...prev, [entry.id]: next };
+                                  });
+                                }}
+                                title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
+                                className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
+                                  isEliminated
+                                    ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
+                                    : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
+                                }`}
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            )}
                             <button
                               type="button"
                               disabled={submitted}
@@ -870,34 +898,6 @@ export default function CadernoErrosPage() {
                                 <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                               )}
                             </button>
-                            {!submitted && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setEliminatedByCard((prev) => {
-                                    const cur = prev[entry.id] || [];
-                                    const has = cur.includes(letter);
-                                    const next = has ? cur.filter((l) => l !== letter) : [...cur, letter];
-                                    if (!has && isSelected) {
-                                      setSelectedByCard((p) => {
-                                        const c = { ...p };
-                                        delete c[entry.id];
-                                        return c;
-                                      });
-                                    }
-                                    return { ...prev, [entry.id]: next };
-                                  });
-                                }}
-                                title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
-                                className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
-                                  isEliminated
-                                    ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
-                                    : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
-                                }`}
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                            )}
                           </div>
                         );
                       })}

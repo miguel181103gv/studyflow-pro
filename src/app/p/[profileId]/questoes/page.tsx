@@ -2157,6 +2157,27 @@ ${q.statement}`;
                     const isEliminated = !quizAnswered && quizEliminated.includes(letter);
                     return (
                       <div key={letter} className="flex items-stretch gap-1.5">
+                        {!quizAnswered && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setQuizEliminated((prev) => {
+                                const has = prev.includes(letter);
+                                const next = has ? prev.filter((l) => l !== letter) : [...prev, letter];
+                                if (!has && quizPicked === letter) setQuizPicked('');
+                                return next;
+                              });
+                            }}
+                            title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
+                            className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
+                              isEliminated
+                                ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
+                                : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
+                            }`}
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={quizAnswered}
@@ -2192,27 +2213,6 @@ ${q.statement}`;
                             <XCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                           )}
                         </button>
-                        {!quizAnswered && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setQuizEliminated((prev) => {
-                                const has = prev.includes(letter);
-                                const next = has ? prev.filter((l) => l !== letter) : [...prev, letter];
-                                if (!has && quizPicked === letter) setQuizPicked('');
-                                return next;
-                              });
-                            }}
-                            title={isEliminated ? 'Restaurar alternativa' : 'Eliminar alternativa'}
-                            className={`px-2.5 rounded-2xl border transition shrink-0 flex items-center justify-center ${
-                              isEliminated
-                                ? 'border-rose-500/50 bg-rose-500/15 text-rose-500'
-                                : 'border-theme subtle-surface text-muted-theme hover:text-rose-500 hover:border-rose-500/40'
-                            }`}
-                          >
-                            <X className="w-4 h-4" />
-                          </button>
-                        )}
                       </div>
                     );
                   })}
