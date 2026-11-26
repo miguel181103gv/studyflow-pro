@@ -407,7 +407,7 @@ function parseJsonQuestionsPayload(raw: unknown): ParsedLocalQuestion[] {
 }
 
 export default function QuestoesPage() {
-  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, addStudyLog, adjustQuestionStatOnDelete } = useProfile();
+  const { profile, subjects, topics, errors, addErrorEntry, updateErrorEntry, deleteErrorEntry, addStudyLog, adjustQuestionStatOnDelete } = useProfile();
   const aiName = useAiProviderName();
   const { notify, aiJobs, runAiJob, updateAiJobProgress } = useGlobal();
 
@@ -546,6 +546,10 @@ export default function QuestoesPage() {
   }
 
   async function handleDeleteQuestion(q: BankQuestion) {
+    if (q.id.startsWith('err-')) {
+      const errId = q.id.slice(4);
+      await deleteErrorEntry(errId);
+    }
     saveBank(questions.filter((x) => x.id !== q.id));
     const wasSolved = solvedMap[q.id];
     if (wasSolved) {
