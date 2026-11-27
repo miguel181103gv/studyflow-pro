@@ -93,42 +93,62 @@ interface FoundVideo {
 const HIGHLIGHT_PRIORITIES = [
   {
     label: 'Baixa',
+    icon: '●',
     bg: '#dcfce7',
-    border: '#16a34a',
-    text: '#14532d',
-    dot: '#16a34a',
+    border: '#4ADE80',
+    dot: '#4ADE80',
+    cardClass: 'bg-emerald-500/[0.06]',
+    badgeClass: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-200 border border-emerald-500/25',
+    btnClass: 'bg-emerald-500/15 border-emerald-500/40 text-emerald-700 dark:text-emerald-200',
   },
   {
     label: 'Média',
+    icon: '▲',
     bg: '#fef3c7',
-    border: '#d97706',
-    text: '#78350f',
-    dot: '#d97706',
+    border: '#FBBF24',
+    dot: '#FBBF24',
+    cardClass: 'bg-amber-500/[0.06]',
+    badgeClass: 'bg-amber-500/15 text-amber-800 dark:text-amber-200 border border-amber-500/25',
+    btnClass: 'bg-amber-500/15 border-amber-500/40 text-amber-800 dark:text-amber-200',
   },
   {
     label: 'Alta',
+    icon: '🔥',
     bg: '#fee2e2',
-    border: '#dc2626',
-    text: '#7f1d1d',
-    dot: '#dc2626',
+    border: '#F87171',
+    dot: '#F87171',
+    cardClass: 'bg-rose-500/[0.06]',
+    badgeClass: 'bg-rose-500/15 text-rose-700 dark:text-rose-200 border border-rose-500/30',
+    btnClass: 'bg-rose-500/15 border-rose-500/40 text-rose-700 dark:text-rose-200',
   },
 ] as const;
 
+const HIGHLIGHT_INFO_STYLE = {
+  label: 'Informativa',
+  icon: 'ℹ',
+  bg: '#dbeafe',
+  border: '#60A5FA',
+  dot: '#60A5FA',
+  cardClass: 'bg-blue-500/[0.06]',
+  badgeClass: 'bg-blue-500/15 text-blue-700 dark:text-blue-200 border border-blue-500/25',
+  btnClass: 'bg-blue-500/15 border-blue-500/40 text-blue-700 dark:text-blue-200',
+};
+
 function getHighlightStyle(color: string) {
-  const found = HIGHLIGHT_PRIORITIES.find(
-    (p) => p.bg.toLowerCase() === (color || '').toLowerCase()
-  );
-  if (found) return found;
-  if (color === '#bbf7d0') return HIGHLIGHT_PRIORITIES[0];
-  if (color === '#fef08a') return HIGHLIGHT_PRIORITIES[1];
-  if (color === '#fbcfe8') return HIGHLIGHT_PRIORITIES[2];
-  return {
-    label: 'Nota',
-    bg: color || '#fef3c7',
-    border: '#d97706',
-    text: '#0f172a',
-    dot: '#d97706',
-  };
+  const c = (color || '').toLowerCase().trim();
+  if (c === '#dcfce7' || c === '#bbf7d0' || c === 'green' || c.includes('emerald') || c === '#00ff00') {
+    return HIGHLIGHT_PRIORITIES[0];
+  }
+  if (c === '#fef3c7' || c === '#fef08a' || c === 'yellow' || c === 'amber' || c === '#ffff00') {
+    return HIGHLIGHT_PRIORITIES[1];
+  }
+  if (c === '#fee2e2' || c === '#fbcfe8' || c === 'pink' || c === 'red' || c === 'rose') {
+    return HIGHLIGHT_PRIORITIES[2];
+  }
+  if (c === 'blue' || c === '#dbeafe' || c === '#0000ff' || c.includes('blue')) {
+    return HIGHLIGHT_INFO_STYLE;
+  }
+  return HIGHLIGHT_PRIORITIES[1];
 }
 
 function isSubtopicTitle(title: string): boolean {
@@ -1099,6 +1119,16 @@ export default function ProgressoEditalPage() {
   }
 
   const activeTopic = topics.find((t) => t.id === activeTopicId);
+
+  useEffect(() => {
+    try {
+      const subId = activeTopic?.subject_id || '';
+      if (subId) sessionStorage.setItem('sf_active_subject_id', subId);
+      if (activeTopicId) sessionStorage.setItem('sf_active_topic_id', activeTopicId);
+    } catch {
+      // ignore
+    }
+  }, [activeTopic?.subject_id, activeTopicId]);
   const activeTopicSub = subjects.find((s) => s.id === activeTopic?.subject_id);
   const activeHighlights = highlights.filter((h) => h.topic_id === activeTopicId);
   const embedUrl = getYouTubeEmbedUrl(activeTopic?.video_url || videoInput);
@@ -2958,16 +2988,11 @@ export default function ProgressoEditalPage() {
                             key={prio.bg}
                             type="button"
                             onClick={() => setHlColor(prio.bg)}
-                            className={`px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1.5 border transition ${
+                            className={`px-2.5 py-1 rounded-full text-[11px] font-bold inline-flex items-center gap-1.5 border transition ${prio.btnClass} ${
                               selected
                                 ? 'ring-2 ring-offset-1 ring-slate-700 dark:ring-slate-300'
-                                : 'opacity-80 hover:opacity-100'
+                                : 'opacity-75 hover:opacity-100'
                             }`}
-                            style={{
-                              backgroundColor: prio.bg,
-                              borderColor: prio.border,
-                              color: prio.text,
-                            }}
                           >
                             <span
                               className="w-2 h-2 rounded-full"
@@ -2993,28 +3018,26 @@ export default function ProgressoEditalPage() {
                     return (
                       <div
                         key={h.id}
-                        className="rounded-xl p-3 text-xs relative group border-l-4"
+                        className={`rounded-xl p-3.5 text-xs relative group border border-theme border-l-4 subtle-surface text-[var(--text-main)] ${st.cardClass}`}
                         style={{
-                          backgroundColor: st.bg,
                           borderLeftColor: st.border,
-                          color: st.text,
                         }}
                       >
                         <button
                           onClick={() => deleteHighlight(h.id)}
                           aria-label="Excluir grifo"
-                          className="opacity-0 group-hover:opacity-100 absolute top-2 right-2 p-1 rounded bg-black/10 hover:bg-rose-600 hover:text-white transition"
+                          className="opacity-0 group-hover:opacity-100 absolute top-2.5 right-2.5 p-1 rounded subtle-surface hover:bg-rose-600 hover:text-white transition"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
                         <span
-                          className="inline-block text-[10px] font-extrabold uppercase tracking-wider mb-1 px-1.5 py-0.5 rounded"
-                          style={{ backgroundColor: 'rgba(255,255,255,0.6)', color: st.text }}
+                          className={`inline-flex items-center gap-1 text-[10px] font-extrabold uppercase tracking-wider mb-1.5 px-2 py-0.5 rounded-md ${st.badgeClass}`}
                         >
-                          Prioridade {st.label}
+                          <span>{st.icon}</span>
+                          <span>Prioridade {st.label}</span>
                         </span>
-                        <p className="font-semibold pr-5 leading-relaxed whitespace-pre-wrap"><DictionaryText text={h.text} /></p>
-                        <p className="mt-1 text-[10px] font-bold opacity-80 whitespace-pre-wrap">
+                        <p className="font-medium pr-5 leading-relaxed whitespace-pre-wrap"><DictionaryText text={h.text} /></p>
+                        <p className="mt-1.5 text-[10px] font-semibold text-muted-theme whitespace-pre-wrap">
                           Pág. {h.page_number || 1}
                           {h.note ? ` · ${h.note}` : ''}
                         </p>

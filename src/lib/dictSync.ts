@@ -8,6 +8,7 @@ export interface SyncedDictEntry {
   word: string;
   meaning: string;
   example?: string;
+  aliases?: string[];
   subject_id?: string;
   created_at: string;
 }

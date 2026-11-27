@@ -252,6 +252,16 @@ export default function SimuladosPage() {
     return () => window.removeEventListener(CLOUD_SYNC_EVENT, onSync);
   }, [genStorageKey]);
 
+  useEffect(() => {
+    try {
+      const q = activeSim?.questions?.[examIdx];
+      if (q?.subject_id) sessionStorage.setItem('sf_active_subject_id', q.subject_id);
+      if (q?.topic_id) sessionStorage.setItem('sf_active_topic_id', q.topic_id);
+    } catch {
+      // ignore
+    }
+  }, [activeSim, examIdx]);
+
   function saveGeneratedList(next: GeneratedSimulado[]) {
     const nextIds = new Set(next.map((x) => x.id));
     const removedIds = generatedList.filter((x) => !nextIds.has(x.id)).map((x) => x.id);

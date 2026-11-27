@@ -29,6 +29,7 @@ import {
 interface DictEntry {
   id: string;
   word: string;
+  aliases?: string[];
   meaning: string;
   example?: string;
   subject_id?: string;
@@ -290,6 +291,41 @@ export default function DicionarioPage() {
       finalWord.toLowerCase() !== typedWord.toLowerCase()
         ? `"${typedWord}" corrigida para "${finalWord}" e salva no Dicionário!`
         : `"${item.word}" adicionado ao Dicionário!`,
+      'success'
+    );
+  }
+
+  function handleMergeManualDict(targetId: string) {
+    const newTerm = word.trim();
+    if (!newTerm) return;
+    let mergedTargetWord = '';
+    const next = entries.map((entry) => {
+      if (entry.id !== targetId) return entry;
+      mergedTargetWord = entry.word;
+      const existingAliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+      const allLower = new Set(
+        [entry.word, ...existingAliases].map((x) => (x || '').trim().toLowerCase())
+      );
+      const nextAliases = allLower.has(newTerm.toLowerCase())
+        ? existingAliases
+        : [...existingAliases, newTerm];
+      const extraMeaning = meaning.trim();
+      const updatedMeaning =
+        extraMeaning && !entry.meaning.toLowerCase().includes(extraMeaning.toLowerCase())
+          ? `${entry.meaning}
+
+• ${newTerm}: ${extraMeaning}`
+          : entry.meaning;
+      return { ...entry, aliases: nextAliases, meaning: updatedMeaning };
+    });
+    saveEntries(next);
+    setWord('');
+    setMeaning('');
+    setExample('');
+    setConfirmDupManual(false);
+    setShowAdd(false);
+    notify(
+      `"${newTerm}" mesclado com "${mergedTargetWord}"! Ambas as formas serão destacadas.`,
       'success'
     );
   }
@@ -594,6 +630,7 @@ export default function DicionarioPage() {
                   pendingConfirm={confirmDupManual}
                   onConfirmAnyway={() => void saveManualConfirmed()}
                   onCancelConfirm={() => setConfirmDupManual(false)}
+                  onMergeItem={(targetId) => handleMergeManualDict(targetId)}
                 />
               )}
               <div>

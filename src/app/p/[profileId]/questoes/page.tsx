@@ -1138,6 +1138,23 @@ export default function QuestoesPage() {
   }
 
   const currentQ = quizQueue[quizIdx];
+
+  useEffect(() => {
+    try {
+      const qSub =
+        currentQ?.subject_id ||
+        (selectedScope?.type === 'topic' || selectedScope?.type === 'subject'
+          ? selectedScope.subjectId
+          : '');
+      const qTop =
+        currentQ?.topic_id ||
+        (selectedScope?.type === 'topic' ? selectedScope.topicId : '');
+      if (qSub) sessionStorage.setItem('sf_active_subject_id', qSub);
+      if (qTop) sessionStorage.setItem('sf_active_topic_id', qTop);
+    } catch {
+      // ignore
+    }
+  }, [currentQ?.subject_id, currentQ?.topic_id, selectedScope]);
   const currentQSub = currentQ ? subjects.find((s) => s.id === currentQ.subject_id) : undefined;
   const currentQTopic = currentQ?.topic_id ? topics.find((t) => t.id === currentQ.topic_id) : undefined;
   const currentQCorrect = (currentQ?.correct_answer || '').trim().toUpperCase();

@@ -302,13 +302,39 @@ export function AppShell({
     };
   }, []);
 
+  function getContextSubjectAndTopic(): { subId: string; topicId: string } {
+    let ctxSub = '';
+    let ctxTop = '';
+    try {
+      ctxSub = sessionStorage.getItem('sf_active_subject_id') || '';
+      ctxTop = sessionStorage.getItem('sf_active_topic_id') || '';
+    } catch {
+      // ignore
+    }
+    if (!ctxSub && typeof window !== 'undefined') {
+      const sp = new URLSearchParams(window.location.search);
+      ctxSub = sp.get('subject') || '';
+      ctxTop = ctxTop || sp.get('topic') || '';
+    }
+    const validSub = subjects.some((s) => s.id === ctxSub)
+      ? ctxSub
+      : stopwatch.subjectId && subjects.some((s) => s.id === stopwatch.subjectId)
+      ? stopwatch.subjectId
+      : '';
+    const validTop = topics.some((t) => t.id === ctxTop && (!validSub || t.subject_id === validSub))
+      ? ctxTop
+      : stopwatch.topicId || '';
+    return { subId: validSub, topicId: validTop };
+  }
+
   function openQuickHighlightModal(selectedText: string) {
     setSelDictMenu(null);
-    const defaultSubId = stopwatch.subjectId || subjects[0]?.id || '';
+    const ctx = getContextSubjectAndTopic();
+    const defaultSubId = ctx.subId || subjects[0]?.id || '';
     const subTopics = topics.filter((t) => t.subject_id === defaultSubId);
     const defaultTopicId =
-      (stopwatch.topicId && subTopics.some((t) => t.id === stopwatch.topicId)
-        ? stopwatch.topicId
+      (ctx.topicId && subTopics.some((t) => t.id === ctx.topicId)
+        ? ctx.topicId
         : subTopics[0]?.id) || '';
     setQuickHlText(selectedText);
     setQuickHlNote('');
@@ -347,7 +373,8 @@ export function AppShell({
     setQuickDictWord(selectedText);
     setQuickDictMeaning('');
     setQuickDictExample('');
-    setQuickDictSubjectId('');
+    const ctx = getContextSubjectAndTopic();
+    setQuickDictSubjectId(ctx.subId || '');
     setQuickDictConfirmDup(false);
     try {
       const dictKey = `sf_dictionary_${profile?.id || 'default'}`;
@@ -439,6 +466,50 @@ export function AppShell({
       notify(`"${finalWord}" adicionado ao Dicionário!`, 'success');
     } catch {
       notify('Não foi possível salvar no Dicionário.', 'error');
+    }
+  }
+
+  function handleMergeQuickDict(targetId: string) {
+    const newTerm = quickDictWord.trim();
+    if (!newTerm || !profile?.id) return;
+    const dictKey = `sf_dictionary_${profile.id}`;
+    try {
+      const raw = localStorage.getItem(dictKey);
+      const prev = raw ? JSON.parse(raw) : [];
+      const arr = Array.isArray(prev) ? prev : [];
+      let mergedTargetWord = '';
+      const next = arr.map((entry: { id: string; word: string; aliases?: string[]; meaning: string; created_at: string }) => {
+        if (entry.id !== targetId) return entry;
+        mergedTargetWord = entry.word;
+        const existingAliases = Array.isArray(entry.aliases) ? entry.aliases : [];
+        const allLower = new Set(
+          [entry.word, ...existingAliases].map((x) => (x || '').trim().toLowerCase())
+        );
+        const nextAliases = allLower.has(newTerm.toLowerCase())
+          ? existingAliases
+          : [...existingAliases, newTerm];
+        const extraMeaning = quickDictMeaning.trim();
+        const updatedMeaning =
+          extraMeaning && !entry.meaning.toLowerCase().includes(extraMeaning.toLowerCase())
+            ? `${entry.meaning}
+
+• ${newTerm}: ${extraMeaning}`
+            : entry.meaning;
+        return { ...entry, aliases: nextAliases, meaning: updatedMeaning };
+      });
+      localStorage.setItem(dictKey, JSON.stringify(next));
+      dispatchDictionaryUpdated();
+      if (userId && profile?.id) {
+        void syncDictionaryToCloud(userId, profile.id, next);
+      }
+      setQuickDictConfirmDup(false);
+      setQuickDictOpen(false);
+      notify(
+        `"${newTerm}" mesclado com "${mergedTargetWord}"! Ambas as formas serão destacadas.`,
+        'success'
+      );
+    } catch {
+      notify('Não foi possível mesclar no Dicionário.', 'error');
     }
   }
 
@@ -1342,6 +1413,7 @@ export function AppShell({
                   pendingConfirm={quickDictConfirmDup}
                   onConfirmAnyway={() => void saveQuickDictConfirmed()}
                   onCancelConfirm={() => setQuickDictConfirmDup(false)}
+                  onMergeItem={(targetId) => handleMergeQuickDict(targetId)}
                 />
               )}
 

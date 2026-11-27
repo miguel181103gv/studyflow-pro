@@ -16,12 +16,14 @@ export function DuplicateWarningBanner({
   pendingConfirm,
   onConfirmAnyway,
   onCancelConfirm,
+  onMergeItem,
 }: {
   title: string;
   items: DuplicatePreviewItem[];
   pendingConfirm?: boolean;
   onConfirmAnyway?: () => void;
   onCancelConfirm?: () => void;
+  onMergeItem?: (id: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -46,6 +48,15 @@ export function DuplicateWarningBanner({
             <span className="font-semibold">{it.label}</span>
             {it.detail && (
               <span className="text-muted-theme"> — {it.detail}</span>
+            )}
+            {onMergeItem && (
+              <button
+                type="button"
+                onClick={() => onMergeItem(it.id)}
+                className="ml-2 inline-flex items-center px-2 py-0.5 rounded-md bg-teal-600 hover:bg-teal-500 text-white text-[10px] font-bold transition"
+              >
+                Mesclar
+              </button>
             )}
           </li>
         ))}

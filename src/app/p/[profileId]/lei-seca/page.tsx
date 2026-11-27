@@ -1858,20 +1858,51 @@ export default function LeiSecaPage() {
           )}
         </div>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-2.5">
           {filteredArticles.map((art) => {
             const sub = subjectMap.get(art.subjectId);
-            const blocks = parseLeiSecaBlocks(art.rawText);
+            const blocks = parseLeiSecaBlocks(art.rawText, art.lawName || 'LEI');
             const isCollapsed = Boolean(collapsedIds[art.id]);
+            const artBlocks = blocks.filter((b) => b.kind === 'artigo' && /^Art\./i.test(b.marker));
             const incisoCount = blocks.filter((b) => b.kind === 'inciso').length;
             const parCount = blocks.filter((b) => b.kind === 'paragrafo').length;
             const readCount = getReadCount(art);
+
+            // Extrai faixa de artigos (ex: "Art. 5º" ou "Art. 6º a 11") para ficar sempre visível
+            let rawTitleClean = (art.title || '').trim();
+            if (art.lawName && rawTitleClean.toLowerCase().startsWith(art.lawName.toLowerCase())) {
+              rawTitleClean = rawTitleClean.slice(art.lawName.length).replace(/^[\s·\-–—:]+/, '').trim();
+            }
+            rawTitleClean = rawTitleClean.replace(/^CF\/88\s*[·\-–—:]\s*/i, '').trim();
+
+            let rangeBadge = '';
+            const rangeInTitle = rawTitleClean.match(/\((Art\.[^)]+)\)\s*$/i);
+            if (rangeInTitle) {
+              rangeBadge = rangeInTitle[1]
+                .replace(/\ba\s+Art\./i, 'a')
+                .replace(/\.$/, '')
+                .trim();
+              rawTitleClean = rawTitleClean.slice(0, rangeInTitle.index).trim();
+            } else if (artBlocks.length > 0) {
+              const firstM = artBlocks[0].marker.replace(/\.$/, '').trim();
+              const lastM = artBlocks[artBlocks.length - 1].marker.replace(/\.$/, '').trim();
+              rangeBadge =
+                firstM === lastM ? firstM : `${firstM} a ${lastM.replace(/^Art\.?\s*/i, '')}`;
+            }
+
+            const titleSegments = rawTitleClean.split(/\s*·\s*/).filter(Boolean);
+            const mainHeading =
+              titleSegments.length > 1
+                ? titleSegments[titleSegments.length - 1]
+                : rawTitleClean || art.title;
+            const parentBreadcrumb =
+              titleSegments.length > 1 ? titleSegments.slice(0, -1).join(' › ') : '';
 
             return (
               <div
                 key={art.id}
                 id={`ls-art-${art.id}`}
-                className={`card-surface rounded-3xl border transition ${
+                className={`card-surface rounded-2xl border transition ${
                   highlightedArticleId === art.id
                     ? 'border-indigo-500 ring-2 ring-indigo-500/40'
                     : art.studied
@@ -1880,8 +1911,8 @@ export default function LeiSecaPage() {
                 }`}
               >
                 {/* Cabeçalho do Artigo */}
-                <div className="p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     <button
                       type="button"
                       onClick={() => handleToggleStudied(art.id)}
@@ -1909,17 +1940,27 @@ export default function LeiSecaPage() {
                       />
                     </button>
 
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
+                      {parentBreadcrumb && (
+                        <p className="text-[11px] text-muted-theme truncate mb-0.5">
+                          {parentBreadcrumb}
+                        </p>
+                      )}
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <h2 className="font-extrabold text-base truncate">{art.title}</h2>
+                        {rangeBadge && (
+                          <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-lg bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 shrink-0">
+                            {rangeBadge}
+                          </span>
+                        )}
+                        <h2 className="font-extrabold text-sm leading-snug">{mainHeading}</h2>
                         {art.lawName && (
-                          <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-teal-500/15 text-teal-700 dark:text-teal-300">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-500/15 text-teal-700 dark:text-teal-300 shrink-0">
                             {art.lawName}
                           </span>
                         )}
                         {sub && (
                           <span
-                            className="text-[11px] font-bold px-2.5 py-0.5 rounded-full text-white"
+                            className="text-[10px] font-bold px-2 py-0.5 rounded-full text-white shrink-0"
                             style={{ backgroundColor: sub.color }}
                           >
                             {sub.name}
@@ -1927,7 +1968,10 @@ export default function LeiSecaPage() {
                         )}
                       </div>
                       <p className="text-[11px] text-muted-theme mt-0.5">
-                        {incisoCount > 0 ? `${incisoCount} ${incisoCount === 1 ? 'inciso' : 'incisos'}` : 'Texto corrido'}
+                        {artBlocks.length > 0
+                          ? `${artBlocks.length} ${artBlocks.length === 1 ? 'artigo' : 'artigos'}`
+                          : 'Texto corrido'}
+                        {incisoCount > 0 ? ` · ${incisoCount} ${incisoCount === 1 ? 'inciso' : 'incisos'}` : ''}
                         {parCount > 0 ? ` · ${parCount} ${parCount === 1 ? 'parágrafo' : 'parágrafos'}` : ''}
                         {readCount > 0 ? ` · Relido ${readCount}x` : ''}
                       </p>

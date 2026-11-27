@@ -64,7 +64,7 @@ function romanToInt(roman: string): number {
 function extractAnnotations(text: string): { clean: string; annotations: string[] } {
   const annotations: string[] = [];
   const parenRe =
-    /\((?:Redação dada|Incluíd[oa]|Revogad[oa]|Vide|Acrescid[oa]|Alterad[oa]|Vigência|Vetad[oa]|Regulamento|Produção de efeito|Execução suspensa|Declarad[oa])[^)]*\)/gi;
+    /\((?:(?:(?:Artigo|Par[áa]grafo|Inciso|Al[íi]nea|Item|Caput)\s+com\s+)?Reda[çc][ãa]o\s+dada|Incluíd[oa]|Revogad[oa]|Vide|Acrescid[oa]|Alterad[oa]|Vigência|Vetad[oa]|Regulamento|Produção de efeito|Execução suspensa|Declarad[oa])[^)]*\)/gi;
   let clean = text.replace(parenRe, (match) => {
     annotations.push(match.slice(1, -1).trim());
     return '';

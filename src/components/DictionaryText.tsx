@@ -48,6 +48,7 @@ export interface DictEntryLite {
   id: string;
   word: string;
   meaning: string;
+  aliases?: string[];
   example?: string;
   subject_id?: string;
 }
@@ -136,7 +137,7 @@ function toAccentInsensitivePattern(word: string): string {
 }
 
 const LAW_ARTICLE_PATTERN =
-  '(?:\\b(?:(?:(?:(?:[ao]s?)\\s+)?(?:al[íi]neas?\\s+["“”\\x27]?[a-z]["“”\\x27]?|incisos?\\s+(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|§§?\\s*\\d+[º°oª]?|par[áa]grafos?\\s+[úu]nicos?)(?:\\s*(?:,|e|d[aeo]s?|n[ao]s?)\\s+)+)*art(?:igo)?s?\\.?\\s*\\d+(?:\\.\\d{3})*(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|al[íi]nea\\s+["“”\\x27]?[a-z]["“”\\x27]?|[a-z]\\)))*(?:,?\\s*(?:d[aeo]|no|na)\\s+(?:(?:ADCT|Ato\\s+das\\s+Disposi[çc][õo]es\\s+Constitucionais\\s+Transit[óo]rias|CRFB(?:\\/\\d{2,4})?|CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CPC(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Penal|C[óo]digo\\s+Penal|CP|C[óo]digo\\s+Civil|CC(?:\\/\\d{2,4})?|CDC|CTN|ECA|LGPD|LINDB|EC\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|DL\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Resolu[çc][ãa]o\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Portaria\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?)\\b))?)|\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ|Orienta[çc][ãa]o\\s+Jurisprudencial)\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\s*,\\s*(?:item\\s+)?(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b)*(?:\\s*,?\\s*(?:d[aeo]|na|no)\\s+(?:SDI-?[12]|SBDI-?[12]|TST|STF|STJ|TSE|TNU))*(?:\\s*,?\\s*(?:d[aeo])\\s+(?:TST|STF|STJ|TSE|TNU))?\\b)';
+  '(?:\\b(?:(?:(?:(?:[ao]s?)\\s+)?(?:al[íi]neas?\\s+["“”\\x27]?[a-z]["“”\\x27]?|incisos?\\s+(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|§§?\\s*\\d+[º°oª]?|par[áa]grafos?\\s+[úu]nicos?)(?:\\s*(?:,|e|d[aeo]s?|n[ao]s?)\\s+)+)*art(?:igo)?s?\\.?\\s*\\d+(?:\\.\\d{3})*(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|al[íi]nea\\s+["“”\\x27]?[a-z]["“”\\x27]?|[a-z]\\)))*(?:,?\\s*(?:d[aeo]|no|na)\\s+(?:(?:ADCT|Ato\\s+das\\s+Disposi[çc][õo]es\\s+Constitucionais\\s+Transit[óo]rias|CRFB(?:\\/\\d{2,4})?|CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CPC(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Penal|C[óo]digo\\s+Penal|CP|C[óo]digo\\s+Civil|CC(?:\\/\\d{2,4})?|CDC|CTN|ECA|LGPD|LINDB|EC\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|DL\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Resolu[çc][ãa]o\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Portaria\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?)\\b))?)|\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ|Orienta[çc][ãa]o\\s+Jurisprudencial)\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\s*,\\s*(?:item\\s+)?(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b)*(?:\\s*,?\\s*(?:d[aeo]|na|no)\\s+(?:SDI-?[12]|SBDI-?[12]|TST|STF|STJ|TSE|TNU))*(?:\\s*,?\\s*(?:d[aeo])\\s+(?:TST|STF|STJ|TSE|TNU))?\\b|\\b(?:Emenda\\s+Constitucional(?:\\s+de\\s+Revis[ãa]o)?|EC)\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\s*,?\\s*de\\s+\\d{4}|\\/\\d{2,4})?\\b)';
 
 function parseLawCitation(raw: string): { article: string; lawHint: string } {
   const sumMatch = raw.match(/\b(S[úu]mula(?:\s+Vinculante)?|OJ|Orienta[çc][ãa]o\s+Jurisprudencial)\s*(?:n[º°]?\s*)?(\d+)/i);
@@ -164,8 +165,30 @@ function parseLawCitation(raw: string): { article: string; lawHint: string } {
     return { article, lawHint };
   }
 
-  const numMatch = raw.match(/art(?:igo)?s?\.?\s*(\d+(?:[º°oª])?(?:-[A-Za-z]+)?)/i);
-  const article = numMatch ? `Art. ${numMatch[1]}` : raw.trim();
+  const ecStandaloneMatch = !/\bart(?:igo)?s?\b/i.test(raw)
+    ? raw.match(/\b(Emenda\s+Constitucional(?:\s+de\s+Revis[ãa]o)?|EC)\s*(?:n\.?[º°]?\s*)?(\d+)/i)
+    : null;
+  if (ecStandaloneMatch) {
+    const isRev = /revis[ãa]o/i.test(ecStandaloneMatch[1]);
+    const ecNum = ecStandaloneMatch[2];
+    return {
+      article: isRev ? `Emenda Constitucional de Revisão nº ${ecNum}` : `Emenda Constitucional nº ${ecNum}`,
+      lawHint: isRev ? 'Emendas Constitucionais de Revisão' : 'Emendas Constitucionais',
+    };
+  }
+
+  const numMatch = raw.match(/art(?:igo)?s?\.?\s*(\d+(?:\.\d{3})*(?:[º°oª])?(?:-[A-Za-z]+)?)/i);
+  const parMatch = raw.match(/(?:§\s*(\d+[º°oª]?)|par[áa]grafo\s+[úu]nico)/i);
+  const incMatch = raw.match(/(?:,\s*|inc(?:iso)?\.?\s*)(?!(?:d[aeo]|no|na)\b)([IVXLCDM]{1,8}(?:-[A-Z])?)\b/);
+  const alMatch = raw.match(/(?:al[íi]nea\s+["“”\x27]?([a-z])["“”\x27]?|,\s*([a-z])\))/i);
+  const subParts = [
+    parMatch ? (parMatch[1] ? `§ ${parMatch[1]}` : 'Parágrafo único') : '',
+    incMatch ? incMatch[1] : '',
+    alMatch ? `${(alMatch[1] || alMatch[2]).toLowerCase()})` : '',
+  ].filter(Boolean);
+  const article = numMatch
+    ? `Art. ${numMatch[1]}${subParts.length ? `, ${subParts.join(', ')}` : ''}`
+    : raw.trim();
 
   let lawHint = '';
   if (/\bADCT\b|Ato\s+das\s+Disposi[çc][õo]es\s+Constitucionais\s+Transit[óo]rias/i.test(raw)) lawHint = 'ADCT';
@@ -248,28 +271,33 @@ interface DictIndex {
 
 function buildDictIndex(entries: DictEntryLite[]): DictIndex {
   const map = new Map<string, DictEntryLite>();
-  const valid: DictEntryLite[] = [];
+  const terms: Array<{ term: string; entry: DictEntryLite }> = [];
   const stemMatchers: Array<{ re: RegExp; entry: DictEntryLite }> = [];
+
   for (const e of entries) {
-    const key = stripAccentsLower(e.word || '').replace(/\s+/g, ' ');
-    if (key.length >= 2 && e.meaning?.trim() && !map.has(key)) {
-      map.set(key, e);
-      valid.push(e);
-      try {
-        stemMatchers.push({
-          re: new RegExp(`^${toAccentInsensitivePattern(e.word)}$`, 'i'),
-          entry: e,
-        });
-      } catch {
-        // ignore
+    if (!e.meaning?.trim()) continue;
+    const allForms = [e.word, ...(Array.isArray(e.aliases) ? e.aliases : [])];
+    for (const form of allForms) {
+      const key = stripAccentsLower(form || '').replace(/\s+/g, ' ');
+      if (key.length >= 2 && !map.has(key)) {
+        map.set(key, e);
+        terms.push({ term: form.trim(), entry: e });
+        try {
+          stemMatchers.push({
+            re: new RegExp(`^${toAccentInsensitivePattern(form)}$`, 'i'),
+            entry: e,
+          });
+        } catch {
+          // ignore
+        }
       }
     }
   }
-  if (valid.length === 0) return { regex: null, map, stemMatchers };
+  if (terms.length === 0) return { regex: null, map, stemMatchers };
 
-  valid.sort((a, b) => b.word.length - a.word.length);
+  terms.sort((a, b) => b.term.length - a.term.length);
 
-  const patterns = valid.slice(0, 400).map((e) => toAccentInsensitivePattern(e.word));
+  const patterns = terms.slice(0, 500).map((t) => toAccentInsensitivePattern(t.term));
   try {
     const wordChar = 'a-zA-Z0-9_áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ';
     const regex = new RegExp(`(^|[^${wordChar}])(${patterns.join('|')})(?=[^${wordChar}]|$)`, 'gi');
@@ -569,6 +597,7 @@ export function DictionaryText({
     const numMatch = effectiveArticle.match(/\d+(?:\.\d{3})*(?:-[A-Za-z]+)?/);
     const artNum = numMatch ? numMatch[0].toLowerCase() : '';
     const isSumula = /^(?:s[úu]mula|oj)\b/i.test(effectiveArticle);
+    const isEcStandalone = /^Emenda\s+Constitucional/i.test(effectiveArticle);
     const artRegex = artNum
       ? isSumula
         ? new RegExp(`\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ)\\s*(?:n[º°]?\\s*)?${escapeRegExp(artNum)}\\b`, 'i')
@@ -587,7 +616,23 @@ export function DictionaryText({
           (Boolean(lawNameStr) && (lawNameStr.includes(lawNorm) || lawNorm.includes(lawNameStr)));
         if (!lawOk || !a.rawText) continue;
 
-        if (isSumula) {
+        if (isEcStandalone && artNum) {
+          const isRev = /revis[ãa]o/i.test(effectiveArticle);
+          const ecStartRe = new RegExp(
+            isRev
+              ? `(?:^|\\n)\\s*(Emenda\\s+Constitucional\\s+de\\s+Revis[ãa]o\\s*(?:n\\.?[º°o]?\\s*)?${escapeRegExp(artNum)}\\b[\\s\\S]*)`
+              : `(?:^|\\n)\\s*(Emenda\\s+Constitucional\\s*(?:n\\.?[º°o]?\\s*)?${escapeRegExp(artNum)}\\b[\\s\\S]*)`,
+            'i'
+          );
+          const mEc = a.rawText.match(ecStartRe);
+          if (mEc) {
+            const restEc = mEc[1];
+            const nextEcIdx = restEc.slice(15).search(/\n\s*Emenda\s+Constitucional(?:\s+de\s+Revis[ãa]o)?\s*(?:n\.?[º°o]?\s*)?\d+/i);
+            existing = a;
+            existingSnippet = (nextEcIdx > 0 ? restEc.slice(0, nextEcIdx + 15) : restEc).trim();
+            break;
+          }
+        } else if (isSumula) {
           if (artRegex && (artRegex.test(a.title || '') || artRegex.test(a.rawText || ''))) {
             existing = a;
             existingSnippet = a.rawText.trim();
@@ -1090,8 +1135,24 @@ export function DictionaryText({
                 </div>
               ) : (
                 <LegalBlocksView
-                  blocks={parseLeiSecaBlocks(modal.text || '')}
+                  blocks={parseLeiSecaBlocks(modal.text || '', modal.lawName || modal.lawHint || 'LEI')}
                   interactive={false}
+                  targetArtNum={
+                    (modal.article || '').match(/\d+(?:\.\d{3})*(?:-[A-Za-z]+)?/)?.[0]?.toLowerCase()
+                  }
+                  targetSub={(() => {
+                    const src = `${modal.rawMatched || ''} ${modal.article || ''}`;
+                    const pM = src.match(/§\s*(\d+)/i);
+                    const pU = /par[áa]grafo\s+[úu]nico/i.test(src);
+                    const iM = src.match(/(?:,\s*|inc(?:iso)?\.?\s*)(?!(?:d[aeo]|no|na)\b)([IVXLCDM]{1,8}(?:-[A-Z])?)\b/);
+                    const aM = src.match(/(?:al[íi]nea\s+["“”\x27]?([a-z])["“”\x27]?|,\s*([a-z])\))/i);
+                    if (!pM && !pU && !iM && !aM) return undefined;
+                    return {
+                      paragrafo: pU ? 'unico' : pM?.[1],
+                      inciso: iM?.[1],
+                      alinea: aM ? (aM[1] || aM[2]).toLowerCase() : undefined,
+                    };
+                  })()}
                 />
               )}
             </div>

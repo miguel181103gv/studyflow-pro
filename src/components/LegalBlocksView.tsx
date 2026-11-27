@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Highlighter } from 'lucide-react';
 import { HIGHLIGHT_STYLES, HighlightTone, LegalBlock } from '@/lib/leiSecaParser';
 import { DictionaryText } from './DictionaryText';
@@ -12,6 +12,7 @@ export function LegalBlocksView({
   interactive = true,
   articleId,
   targetArtNum,
+  targetSub,
 }: {
   blocks: LegalBlock[];
   highlights?: Record<string, HighlightTone>;
@@ -19,7 +20,63 @@ export function LegalBlocksView({
   interactive?: boolean;
   articleId?: string;
   targetArtNum?: string;
+  targetSub?: { inciso?: string; paragrafo?: string; alinea?: string };
 }) {
+  const targetRef = useRef<HTMLDivElement | null>(null);
+
+  // Determina qual bloco específico deve receber foco e scroll
+  const targetBlockId = React.useMemo(() => {
+    if (!targetSub && !targetArtNum) return '';
+    let inTargetArt = !targetArtNum;
+    let inTargetPar = !targetSub?.paragrafo;
+    let inTargetInc = !targetSub?.inciso;
+    let bestId = '';
+
+    for (const b of blocks) {
+      if (b.kind === 'artigo') {
+        const bNum = b.marker.match(/\d+(?:-[A-Za-z]+)?/)?.[0]?.toLowerCase() || '';
+        inTargetArt = !targetArtNum || bNum === targetArtNum.toLowerCase();
+        inTargetPar = !targetSub?.paragrafo;
+        inTargetInc = !targetSub?.inciso;
+        if (inTargetArt && !targetSub?.paragrafo && !targetSub?.inciso && !targetSub?.alinea) {
+          return b.id;
+        }
+        if (inTargetArt && !bestId) bestId = b.id;
+      } else if (!inTargetArt) {
+        continue;
+      } else if (b.kind === 'paragrafo' && targetSub?.paragrafo) {
+        const want = targetSub.paragrafo.toLowerCase();
+        const isUnico = want === 'unico' && /único/i.test(b.marker);
+        const pNum = b.marker.match(/\d+(?:-[A-Za-z]+)?/)?.[0]?.toLowerCase() || '';
+        inTargetPar = isUnico || pNum === want;
+        inTargetInc = !targetSub?.inciso;
+        if (inTargetPar && !targetSub?.inciso && !targetSub?.alinea) return b.id;
+        if (inTargetPar) bestId = b.id;
+      } else if (b.kind === 'inciso' && inTargetPar && targetSub?.inciso) {
+        if (b.marker.trim().toUpperCase() === targetSub.inciso.trim().toUpperCase()) {
+          inTargetInc = true;
+          if (!targetSub?.alinea) return b.id;
+          bestId = b.id;
+        } else {
+          inTargetInc = false;
+        }
+      } else if (b.kind === 'alinea' && inTargetPar && inTargetInc && targetSub?.alinea) {
+        const alLetter = b.marker.replace(/[^a-z]/gi, '').toLowerCase();
+        if (alLetter === targetSub.alinea.toLowerCase()) {
+          return b.id;
+        }
+      }
+    }
+    return bestId;
+  }, [blocks, targetArtNum, targetSub]);
+
+  useEffect(() => {
+    if (!targetBlockId) return;
+    const t = setTimeout(() => {
+      targetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+    return () => clearTimeout(t);
+  }, [targetBlockId]);
   if (blocks.length === 0) return null;
 
   return (
@@ -30,10 +87,11 @@ export function LegalBlocksView({
 
         if (b.kind === 'artigo') {
           const blockArtNum = b.marker.match(/\d+(?:-[A-Za-z]+)?/)?.[0]?.toLowerCase() || '';
-          const isTargetBlock = Boolean(targetArtNum && blockArtNum && blockArtNum === targetArtNum);
+          const isTargetBlock = b.id === targetBlockId || Boolean(!targetBlockId && targetArtNum && blockArtNum && blockArtNum === targetArtNum);
           return (
             <div
               key={b.id}
+              ref={isTargetBlock ? targetRef : undefined}
               id={articleId && blockArtNum ? `${articleId}-art-${blockArtNum}` : undefined}
               className={`group scroll-mt-24 rounded-2xl p-3.5 border ${
                 isTargetBlock
@@ -72,7 +130,7 @@ export function LegalBlocksView({
                       key={i}
                       className="text-[10px] italic px-2 py-0.5 rounded-full subtle-surface border border-theme text-muted-theme"
                     >
-                      {ann}
+                      <DictionaryText text={ann} />
                     </span>
                   ))}
                 </div>
@@ -82,11 +140,15 @@ export function LegalBlocksView({
         }
 
         if (b.kind === 'inciso') {
+          const isTargetInc = b.id === targetBlockId;
           return (
             <div
               key={b.id}
-              className={`group ml-2 sm:ml-4 rounded-2xl px-3.5 py-2.5 border border-theme flex items-start justify-between gap-2.5 transition ${
-                tone !== 'none' ? `${style.bg} ${style.border}` : 'subtle-surface border-l-4 border-l-teal-500/50'
+              ref={isTargetInc ? targetRef : undefined}
+              className={`group ml-2 sm:ml-4 rounded-2xl px-3.5 py-2.5 border flex items-start justify-between gap-2.5 transition ${
+                isTargetInc
+                  ? 'border-indigo-500 ring-2 ring-indigo-500/60 bg-indigo-500/12'
+                  : `border-theme ${tone !== 'none' ? `${style.bg} ${style.border}` : 'subtle-surface border-l-4 border-l-teal-500/50'}`
               }`}
             >
               <div className="flex items-start gap-2.5 min-w-0">
@@ -104,7 +166,7 @@ export function LegalBlocksView({
                           key={i}
                           className="text-[10px] italic px-2 py-0.5 rounded-full bg-black/5 dark:bg-white/5 text-muted-theme"
                         >
-                          {ann}
+                          <DictionaryText text={ann} />
                         </span>
                       ))}
                     </div>
@@ -153,7 +215,7 @@ export function LegalBlocksView({
                         key={i}
                         className="text-[10px] italic px-2 py-0.5 rounded-full subtle-surface border border-theme text-muted-theme"
                       >
-                        {ann}
+                        <DictionaryText text={ann} />
                       </span>
                     ))}
                   </div>
@@ -202,7 +264,7 @@ export function LegalBlocksView({
                           key={i}
                           className="text-[10px] italic px-1.5 py-0.5 rounded-full bg-black/5 dark:bg-white/5 text-muted-theme"
                         >
-                          {ann}
+                          <DictionaryText text={ann} />
                         </span>
                       ))}
                     </div>
