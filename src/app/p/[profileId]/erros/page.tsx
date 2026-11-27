@@ -596,8 +596,8 @@ export default function CadernoErrosPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-4">
-          {visibleErrors.map((entry) => {
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {visibleErrors.map((entry, errIdx) => {
             const sub = subjects.find((s) => s.id === entry.subject_id);
             const topicObj = topics.find((t) => t.id === entry.topic_id);
             const isEditingTopic = editingTopicEntryId === entry.id;
@@ -616,9 +616,19 @@ export default function CadernoErrosPage() {
             const boardLabel = dq?.header ? dq.header.split('·')[0].trim() : '';
 
             return (
-              <div key={entry.id} className="card-surface rounded-2xl p-4 sm:p-5 border border-theme space-y-3">
-                <div className={`flex items-center justify-between gap-3 ${isCollapsed ? '' : 'border-b border-theme/60 pb-3'}`}>
-                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+              <div
+                key={entry.id}
+                className={`card-surface rounded-2xl border border-theme transition ${
+                  isCollapsed
+                    ? 'p-4 flex flex-col justify-between gap-2.5 hover:border-teal-500/45'
+                    : 'md:col-span-2 lg:col-span-3 p-4 sm:p-5 space-y-3'
+                }`}
+              >
+                <div className={`flex items-center justify-between gap-2 ${isCollapsed ? '' : 'border-b border-theme/60 pb-3'}`}>
+                  <div className="flex items-center gap-1.5 flex-wrap min-w-0">
+                    <span className="text-[11px] font-extrabold px-1.5 py-0.5 rounded-md subtle-surface text-muted-theme shrink-0">
+                      #{errIdx + 1}
+                    </span>
                     {boardLabel && (
                       <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg bg-slate-500/12 text-[var(--text-main)] shrink-0">
                         {boardLabel}
@@ -770,14 +780,30 @@ export default function CadernoErrosPage() {
                 )}
 
                 {isCollapsed ? (
-                  <p
-                    onClick={() =>
-                      setCollapsedByCard((prev) => ({ ...prev, [entry.id]: false }))
-                    }
-                    className="text-xs text-muted-theme truncate cursor-pointer hover:text-[var(--text-main)]"
-                  >
-                    {dq?.statement || entry.question_text || 'Questão em imagem (clique para expandir)'}
-                  </p>
+                  <>
+                    <p
+                      onClick={() =>
+                        setCollapsedByCard((prev) => ({ ...prev, [entry.id]: false }))
+                      }
+                      className="text-xs text-[var(--text-main)]/90 line-clamp-3 leading-relaxed cursor-pointer hover:text-teal-500 transition flex-1"
+                    >
+                      {dq?.statement || entry.question_text || 'Questão em imagem (clique para expandir)'}
+                    </p>
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-theme/60">
+                      <span className="text-[11px] text-muted-theme">
+                        {dq?.options?.length ? `${dq.options.length} alt.` : imgUrl ? 'Imagem' : 'Texto'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setCollapsedByCard((prev) => ({ ...prev, [entry.id]: false }))
+                        }
+                        className="px-3 py-1 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-bold"
+                      >
+                        Refazer
+                      </button>
+                    </div>
+                  </>
                 ) : (
                 <>
                 {imgUrl && (!dq || showOriginalImg) && (
