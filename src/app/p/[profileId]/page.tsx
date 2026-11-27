@@ -38,6 +38,9 @@ import {
   YAxis,
   Tooltip,
   CartesianGrid,
+  PieChart,
+  Pie,
+  Cell,
 } from 'recharts';
 
 export default function DashboardPage() {
@@ -62,7 +65,7 @@ export default function DashboardPage() {
   const [showRaioX, setShowRaioX] = useState(false);
   const [showConsistency, setShowConsistency] = useState(false);
   const [chartSubjectFilter, setChartSubjectFilter] = useState('');
-  const [chartDaysFilter, setChartDaysFilter] = useState<number>(7);
+  const [chartDaysFilter, setChartDaysFilter] = useState<number | 'ALL'>(7);
   const [selectedDayISO, setSelectedDayISO] = useState<string | null>(null);
   const [agendaItems, setAgendaItems] = useState<
     { id: string; date: string; text: string; done: boolean; kind?: string }[]
@@ -348,52 +351,145 @@ export default function DashboardPage() {
     : undefined;
 
   // Tendência por período (com filtro por data e matéria)
-  const last7Days = Array.from({ length: chartDaysFilter }, (_, i) => {
-    const iso = addDaysISO(today, i - (chartDaysFilter - 1));
-    const dayLogs = studyLogs.filter(
-      (l) =>
-        l.study_date === iso && (!chartSubjectFilter || l.subject_id === chartSubjectFilter)
-    );
-    const qTotal = dayLogs.reduce((a, b) => a + b.questions_total, 0);
-    const qCorrect = dayLogs.reduce((a, b) => a + b.questions_correct, 0);
-    const secs = dayLogs.reduce((a, b) => a + b.duration_seconds, 0);
-    return {
-      iso,
-      day: formatDateBR(iso).slice(0, 5),
-      Acertos: qCorrect,
-      Erros: Math.max(0, qTotal - qCorrect),
-      total: qTotal,
-      secs,
-    };
-  });
+  const subjectFilteredLogs = studyLogs.filter(
+    (l) => !chartSubjectFilter || l.subject_id === chartSubjectFilter
+  );
+
+  const chartData = (() => {
+    if (chartDaysFilter === 'ALL') {
+      const dateSet = Array.from(
+        new Set(
+          subjectFilteredLogs
+            .filter((l) => l.questions_total > 0)
+            .map((l) => l.study_date)
+        )
+      ).sort();
+
+      if (dateSet.length === 0) {
+        return [
+          {
+            iso: today,
+            day: formatDateBR(today).slice(0, 5),
+            fullLabel: `Dia ${formatDateBR(today)}`,
+            Acertos: 0,
+            Erros: 0,
+            total: 0,
+            secs: 0,
+          },
+        ];
+      }
+
+      if (dateSet.length > 31) {
+        const months = Array.from(new Set(dateSet.map((d) => d.slice(0, 7)))).sort();
+        return months.map((ym) => {
+          const monthLogs = subjectFilteredLogs.filter((l) => l.study_date.startsWith(ym));
+          const qTotal = monthLogs.reduce((a, b) => a + b.questions_total, 0);
+          const qCorrect = monthLogs.reduce((a, b) => a + b.questions_correct, 0);
+          const secs = monthLogs.reduce((a, b) => a + b.duration_seconds, 0);
+          const [y, m] = ym.split('-');
+          return {
+            iso: ym,
+            day: `${m}/${y.slice(2)}`,
+            fullLabel: `Mês ${m}/${y}`,
+            Acertos: qCorrect,
+            Erros: Math.max(0, qTotal - qCorrect),
+            total: qTotal,
+            secs,
+          };
+        });
+      }
+
+      return dateSet.map((iso) => {
+        const dayLogs = subjectFilteredLogs.filter((l) => l.study_date === iso);
+        const qTotal = dayLogs.reduce((a, b) => a + b.questions_total, 0);
+        const qCorrect = dayLogs.reduce((a, b) => a + b.questions_correct, 0);
+        const secs = dayLogs.reduce((a, b) => a + b.duration_seconds, 0);
+        return {
+          iso,
+          day: formatDateBR(iso).slice(0, 5),
+          fullLabel: `Dia ${formatDateBR(iso)}`,
+          Acertos: qCorrect,
+          Erros: Math.max(0, qTotal - qCorrect),
+          total: qTotal,
+          secs,
+        };
+      });
+    }
+
+    return Array.from({ length: chartDaysFilter }, (_, i) => {
+      const iso = addDaysISO(today, i - (chartDaysFilter - 1));
+      const dayLogs = subjectFilteredLogs.filter((l) => l.study_date === iso);
+      const qTotal = dayLogs.reduce((a, b) => a + b.questions_total, 0);
+      const qCorrect = dayLogs.reduce((a, b) => a + b.questions_correct, 0);
+      const secs = dayLogs.reduce((a, b) => a + b.duration_seconds, 0);
+      return {
+        iso,
+        day: formatDateBR(iso).slice(0, 5),
+        fullLabel: `Dia ${formatDateBR(iso)}`,
+        Acertos: qCorrect,
+        Erros: Math.max(0, qTotal - qCorrect),
+        total: qTotal,
+        secs,
+      };
+    });
+  })();
 
   const inspectedDay = selectedDayISO
-    ? last7Days.find((d) => d.iso === selectedDayISO)
+    ? chartData.find((d) => d.iso === selectedDayISO)
     : null;
 
-  const periodTotals = last7Days.reduce(
-    (acc, d) => ({
-      correct: acc.correct + d.Acertos,
-      wrong: acc.wrong + d.Erros,
-      total: acc.total + d.total,
-      secs: acc.secs + d.secs,
-    }),
-    { correct: 0, wrong: 0, total: 0, secs: 0 }
-  );
+  const periodTotals =
+    chartDaysFilter === 'ALL'
+      ? subjectFilteredLogs.reduce(
+          (acc, l) => {
+            const qCorrect = l.questions_correct;
+            const qWrong = Math.max(0, l.questions_total - l.questions_correct);
+            return {
+              correct: acc.correct + qCorrect,
+              wrong: acc.wrong + qWrong,
+              total: acc.total + l.questions_total,
+              secs: acc.secs + l.duration_seconds,
+            };
+          },
+          { correct: 0, wrong: 0, total: 0, secs: 0 }
+        )
+      : chartData.reduce(
+          (acc, d) => ({
+            correct: acc.correct + d.Acertos,
+            wrong: acc.wrong + d.Erros,
+            total: acc.total + d.total,
+            secs: acc.secs + d.secs,
+          }),
+          { correct: 0, wrong: 0, total: 0, secs: 0 }
+        );
+
   const summaryStats = inspectedDay
     ? {
         correct: inspectedDay.Acertos,
         wrong: inspectedDay.Erros,
         total: inspectedDay.total,
         secs: inspectedDay.secs,
-        label: `Dia ${formatDateBR(inspectedDay.iso)}`,
+        label: inspectedDay.fullLabel,
       }
     : {
         ...periodTotals,
-        label: chartDaysFilter === 1 ? 'Hoje' : `Últimos ${chartDaysFilter} dias`,
+        label:
+          chartDaysFilter === 'ALL'
+            ? 'Todo o período'
+            : chartDaysFilter === 1
+              ? 'Hoje'
+              : `Últimos ${chartDaysFilter} dias`,
       };
   const summaryAccuracy =
     summaryStats.total > 0 ? calcAccuracy(summaryStats.correct, summaryStats.total) : 0;
+
+  const donutData =
+    summaryStats.total > 0
+      ? [
+          { name: 'Acertos', value: summaryStats.correct, color: '#0d9488' },
+          { name: 'Erradas', value: summaryStats.wrong, color: '#f43f5e' },
+        ]
+      : [{ name: 'Sem questões', value: 1, color: 'rgba(148, 163, 184, 0.2)' }];
 
   // Prioridades explicadas ("O que está mais em risco?")
   const targetAcc = profile?.target_accuracy || 80;
@@ -902,13 +998,15 @@ export default function DashboardPage() {
 
       {/* 5. TENDÊNCIA RECENTE (7 DIAS) + O QUE ESTÁ MAIS EM RISCO */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 card-surface rounded-3xl p-6 space-y-4">
+        <div className="lg:col-span-2 card-surface rounded-3xl p-6 space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h2 className="font-bold text-base">
-                {chartDaysFilter === 1
-                  ? 'Desempenho Hoje'
-                  : `Desempenho nos Últimos ${chartDaysFilter} Dias`}
+                {chartDaysFilter === 'ALL'
+                  ? 'Desempenho Geral'
+                  : chartDaysFilter === 1
+                    ? 'Desempenho Hoje'
+                    : `Desempenho nos Últimos ${chartDaysFilter} Dias`}
               </h2>
               <div className="flex items-center gap-4 text-xs text-muted-theme mt-1">
                 <span className="inline-flex items-center gap-1.5 font-semibold text-teal-700 dark:text-teal-300">
@@ -924,7 +1022,8 @@ export default function DashboardPage() {
               <select
                 value={chartDaysFilter}
                 onChange={(e) => {
-                  setChartDaysFilter(Number(e.target.value));
+                  const val = e.target.value;
+                  setChartDaysFilter(val === 'ALL' ? 'ALL' : Number(val));
                   setSelectedDayISO(null);
                 }}
                 className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
@@ -933,10 +1032,14 @@ export default function DashboardPage() {
                 <option value={7}>Últimos 7 dias</option>
                 <option value={15}>Últimos 15 dias</option>
                 <option value={30}>Últimos 30 dias</option>
+                <option value="ALL">Todo o período</option>
               </select>
               <select
                 value={chartSubjectFilter}
-                onChange={(e) => setChartSubjectFilter(e.target.value)}
+                onChange={(e) => {
+                  setChartSubjectFilter(e.target.value);
+                  setSelectedDayISO(null);
+                }}
                 className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold max-w-[200px]"
               >
                 <option value="">Todas as matérias</option>
@@ -949,41 +1052,8 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="h-56 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={last7Days}
-                onClick={(state) => {
-                  const payload = state?.activePayload?.[0]?.payload as
-                    | { iso?: string }
-                    | undefined;
-                  if (payload?.iso) setSelectedDayISO(payload.iso);
-                }}
-              >
-                <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.18} />
-                <XAxis dataKey="day" fontSize={12} axisLine={false} tickLine={false} />
-                <YAxis fontSize={12} allowDecimals={false} axisLine={false} tickLine={false} />
-                <Tooltip
-                  cursor={{ fill: 'rgba(13, 148, 136, 0.08)' }}
-                  contentStyle={{
-                    backgroundColor: 'rgba(15, 23, 42, 0.94)',
-                    border: '1px solid rgba(255, 255, 255, 0.12)',
-                    borderRadius: '14px',
-                    color: '#f8fafc',
-                    fontSize: '12px',
-                    boxShadow: '0 10px 25px -5px rgba(0,0,0,0.35)',
-                    padding: '10px 14px',
-                  }}
-                  itemStyle={{ color: '#f1f5f9', fontWeight: 600 }}
-                  labelStyle={{ color: '#94a3b8', fontWeight: 700, marginBottom: '4px' }}
-                />
-                <Bar dataKey="Acertos" stackId="a" fill="#0d9488" radius={[0, 0, 6, 6]} />
-                <Bar dataKey="Erros" stackId="a" fill="#f43f5e" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div className="pt-2 border-t border-theme/60 space-y-2.5">
+          {/* Informações resumidas em cima dos gráficos */}
+          <div className="space-y-2.5">
             <div className="flex items-center justify-between text-[11px] text-muted-theme">
               <span>
                 Resumo: <strong className="text-[var(--text-main)]">{summaryStats.label}</strong>
@@ -1040,6 +1110,101 @@ export default function DashboardPage() {
                 >
                   {summaryStats.total > 0 ? `${summaryAccuracy}%` : '—'}
                 </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Gráficos: Evolução por data + Percentual em rosca */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center pt-1">
+            <div className="md:col-span-2 h-56 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={chartData}
+                  onClick={(state) => {
+                    const payload = state?.activePayload?.[0]?.payload as
+                      | { iso?: string }
+                      | undefined;
+                    if (payload?.iso) setSelectedDayISO(payload.iso);
+                  }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.18} />
+                  <XAxis dataKey="day" fontSize={12} axisLine={false} tickLine={false} />
+                  <YAxis fontSize={12} allowDecimals={false} axisLine={false} tickLine={false} />
+                  <Tooltip
+                    cursor={{ fill: 'rgba(13, 148, 136, 0.08)' }}
+                    contentStyle={{
+                      backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                      border: '1px solid rgba(255, 255, 255, 0.12)',
+                      borderRadius: '14px',
+                      color: '#f8fafc',
+                      fontSize: '12px',
+                      boxShadow: '0 10px 25px -5px rgba(0,0,0,0.35)',
+                      padding: '10px 14px',
+                    }}
+                    itemStyle={{ color: '#f1f5f9', fontWeight: 600 }}
+                    labelStyle={{ color: '#94a3b8', fontWeight: 700, marginBottom: '4px' }}
+                  />
+                  <Bar dataKey="Acertos" stackId="a" fill="#0d9488" radius={[0, 0, 6, 6]} />
+                  <Bar dataKey="Erros" stackId="a" fill="#f43f5e" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="md:col-span-1 subtle-surface rounded-2xl border border-theme p-3 h-56 flex flex-col items-center justify-center relative">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-theme mb-1">
+                Taxa de Acerto
+              </p>
+              <div className="w-full h-40 relative">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={donutData}
+                      dataKey="value"
+                      nameKey="name"
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={48}
+                      outerRadius={66}
+                      paddingAngle={summaryStats.total > 0 && summaryStats.correct > 0 && summaryStats.wrong > 0 ? 3 : 0}
+                      startAngle={90}
+                      endAngle={-270}
+                      stroke="none"
+                    >
+                      {donutData.map((entry, idx) => (
+                        <Cell key={`cell-${idx}`} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    {summaryStats.total > 0 && (
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                          border: '1px solid rgba(255, 255, 255, 0.12)',
+                          borderRadius: '12px',
+                          color: '#f8fafc',
+                          fontSize: '12px',
+                          padding: '8px 12px',
+                        }}
+                        itemStyle={{ color: '#f1f5f9', fontWeight: 600 }}
+                      />
+                    )}
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  <span
+                    className={`text-2xl font-extrabold leading-none ${
+                      summaryStats.total === 0
+                        ? 'text-muted-theme'
+                        : summaryAccuracy >= targetAcc
+                          ? 'text-teal-500 dark:text-teal-300'
+                          : 'text-amber-500'
+                    }`}
+                  >
+                    {summaryStats.total > 0 ? `${summaryAccuracy}%` : '—'}
+                  </span>
+                  <span className="text-[10px] font-semibold text-muted-theme mt-1">
+                    Meta {targetAcc}%
+                  </span>
+                </div>
               </div>
             </div>
           </div>
