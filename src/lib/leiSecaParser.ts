@@ -95,10 +95,39 @@ function extractRefs(text: string): string[] {
  * - junta palavras hifenizadas no fim da linha (com-\ntinua -> continua)
  * - normaliza ordinais (1o -> 1º, 1a -> 1ª, Art. 5 o -> Art. 5º)
  */
+/**
+ * Remove cabeçalhos/rodapés correntes: linhas "146   Título do livro" ou "Seção   141"
+ * que se repetem várias vezes, com ou sem número de página colado.
+ */
+export function stripRunningHeaders(raw: string): string {
+  const lines = (raw || '').split('\n');
+  const key = (l: string) =>
+    l.trim().replace(/^\d{1,4}\s{2,}/, '').replace(/\s{2,}\d{1,4}$/, '').replace(/\s+/g, ' ').toLowerCase();
+  const hasPageNum = (l: string) => /^\s*\d{1,4}\s{2,}\S/.test(l) || /\S\s{2,}\d{1,4}\s*$/.test(l);
+  const freq = new Map<string, number>();
+  for (const l of lines) {
+    if (!hasPageNum(l)) continue;
+    const k = key(l);
+    if (k.length > 0 && k.length < 100 && !MARKER_START_RE.test(k)) freq.set(k, (freq.get(k) || 0) + 1);
+  }
+  return lines
+    .filter((l) => {
+      if (!hasPageNum(l)) return true;
+      const k = key(l);
+      return !((freq.get(k) || 0) >= 3);
+    })
+    .join('\n');
+}
+
 export function normalizeLegalOrdinalsAndSpaces(raw: string): string {
-  return (raw || '')
+  return stripRunningHeaders(raw || '')
     .replace(/\r\n/g, '\n')
     .replace(/\u00a0/g, ' ')
+    // Remove marcas de nota de rodapé: linha só com * ou * colado no fim da frase
+    .replace(/^\s*\*+\s*$/gm, '')
+    // Ordinal solto em linha própria (superscript deslocado pelo PDF)
+    .replace(/^\s*[oaºª]\s*$/gm, '')
+    .replace(/([.;:!?)”])\s*\*+[ \t]*$/gm, '$1')
     // Remove caracteres de controle invisíveis (ex: \x08) mantendo \n e \t
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
     // Remove cabeçalhos/rodapés isolados comuns de PDFs do Planalto/Senado
@@ -137,7 +166,12 @@ export function normalizeLegalOrdinalsAndSpaces(raw: string): string {
 }
 
 const STRUCTURAL_HEADING_RE =
-  /^(?:T[ÍI]TULO|CAP[ÍI]TULO|SE[ÇC][ÃA]O|SUBSE[ÇC][ÃA]O|LIVRO|PARTE|PRE[ÂA]MBULO|ATO\s+DAS\s+DISPOSI[ÇC][ÕO]ES)\b/i;
+  /^(?:(?:T[ÍI]TULO|CAP[ÍI]TULO|SE[ÇC][ÃA]O|SUBSE[ÇC][ÃA]O|LIVRO|PARTE)\s+(?:[IVXLCDM]{1,8}|[ÚU]NIC[OA]|GERAL|ESPECIAL|\d{1,3})(?:-[A-Z])?\s*(?:[–—-].*)?$|PRE[ÂA]MBULO\s*$)/i;
+
+const ATO_HEADING_RE = /^ATO\s+DAS\s+DISPOSI[ÇC][ÕO]ES\b/;
+function isStructuralHeading(line: string): boolean {
+  return STRUCTURAL_HEADING_RE.test(line) || ATO_HEADING_RE.test(line);
+}
 
 const MARKER_START_RE =
   /^(?:Art\.\s*\d|Par[áa]grafo\s+[úu]nico|§\s*\d|[IVXLCDM]{1,10}\s*[–—-]\s|[a-z]\)\s|\d{1,3}[.)]\s|Emenda\s+Constitucional)/;
@@ -153,9 +187,9 @@ function joinWrappedParagraphLines(lines: string[]): string[] {
       continue;
     }
     const prev = joined[joined.length - 1];
-    const prevTerminated = /[.;:!?…”"]$/.test(prev.trim());
-    const curIsMarker = MARKER_START_RE.test(line) || STRUCTURAL_HEADING_RE.test(line);
-    const prevIsHeading = STRUCTURAL_HEADING_RE.test(prev);
+    const prevTerminated = /[.;:!?…”")]$/.test(prev.trim());
+    const curIsMarker = MARKER_START_RE.test(line) || isStructuralHeading(line);
+    const prevIsHeading = isStructuralHeading(prev);
     if (!prevTerminated && !curIsMarker && !prevIsHeading) {
       joined[joined.length - 1] = `${prev} ${line}`;
     } else {
@@ -226,7 +260,7 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
     /^(Emenda\s+Constitucional(?:\s+de\s+Revisão)?\s*(?:n[º°]?\s*)?\d+(?:[\/,][^\n]*)?)\s*(.*)$/i;
   const parUnicoRe = /^(Parágrafo\s+único\.?)\s*[-–—]?\s*(.*)$/i;
   const parNumRe = /^(§\s*\d+[º°oª]?(?:-[A-Z0-9]+)?\.?)\s*[-–—]?\s*(.*)$/i;
-  const incisoRe = /^([IVXLCDM]{1,10})\s*[-–—]\s+(.*)$/;
+  const incisoRe = /^([IVXLCDM]{1,10}(?:-[A-Z]{1,2})?)\s*[-–—]\s+(.*)$/;
   const alineaRe = /^([a-z])\)\s+(.*)$/;
   const itemRe = /^(\d{1,3})[.)]\s+(.*)$/;
 
@@ -245,6 +279,8 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
   let curSubsecao = '';
   let curArtTag = '';
   let curIncTag = '';
+  let signed = false;
+  let headingTarget: 'titulo' | 'capitulo' | 'secao' | 'subsecao' | null = null;
 
   const getContextPath = () =>
     [curTitulo, curCapitulo, curSecao, curSubsecao].filter(Boolean).join(' · ');
@@ -260,23 +296,75 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
   };
 
   for (const line of rawLines) {
+    // Após a data/assinatura o texto normativo acabou, a menos que comece uma nova Emenda Constitucional no mesmo bloco
+    if (signed) {
+      if (/^Emenda\s+Constitucional(?:\s+de\s+Revis[ãa]o)?\s*(?:n[º°]?\s*)?\d+/i.test(line)) {
+        signed = false;
+      } else {
+        const last = blocks[blocks.length - 1];
+        if (last) last.body = [last.body, line].filter(Boolean).join(' ');
+        continue;
+      }
+    }
     // 1. Cabeçalhos estruturais -> atualizam contextPath sem virar corpo do artigo anterior
-    if (openQuotes === 0 && STRUCTURAL_HEADING_RE.test(line) && !/^Art\./i.test(line)) {
-      if (/^T[ÍI]TULO\b/i.test(line)) {
-        curTitulo = line;
-        curCapitulo = '';
-        curSecao = '';
+    if (openQuotes === 0 && isStructuralHeading(line) && !/^Art\./i.test(line)) {
+      if (/^PRE[ÂA]MBULO/i.test(line)) {
+        blocks.push({
+          id: `b_${blocks.length}`,
+          stableId: `${prefixSlug}-preambulo`,
+          kind: 'texto',
+          marker: 'Preâmbulo',
+          body: '',
+          annotations: [],
+        });
+        continue;
+      } else if (/^SUBSE[ÇC][ÃA]O\b/i.test(line)) {
+        curSubsecao = line;
+        headingTarget = 'subsecao';
+      } else if (/^SE[ÇC][ÃA]O\b/i.test(line)) {
+        curSecao = line;
         curSubsecao = '';
+        headingTarget = 'secao';
       } else if (/^CAP[ÍI]TULO\b/i.test(line)) {
         curCapitulo = line;
         curSecao = '';
         curSubsecao = '';
-      } else if (/^SE[ÇC][ÃA]O\b/i.test(line)) {
-        curSecao = line;
+        headingTarget = 'capitulo';
+      } else {
+        // TÍTULO, LIVRO, PARTE, PREÂMBULO, ATO DAS DISPOSIÇÕES...
+        curTitulo = line;
+        curCapitulo = '';
+        curSecao = '';
         curSubsecao = '';
-      } else if (/^SUBSE[ÇC][ÃA]O\b/i.test(line)) {
-        curSubsecao = line;
+        headingTarget = 'titulo';
       }
+      continue;
+    }
+    // 1b. Linha seguinte ao cabeçalho = nome (ex.: "Dos Princípios Fundamentais")
+    if (headingTarget && openQuotes === 0 && !MARKER_START_RE.test(line)) {
+      const add = (v: string) => `${v} – ${line}`;
+      if (headingTarget === 'titulo') curTitulo = add(curTitulo);
+      else if (headingTarget === 'capitulo') curCapitulo = add(curCapitulo);
+      else if (headingTarget === 'secao') curSecao = add(curSecao);
+      else curSubsecao = add(curSubsecao);
+      headingTarget = null;
+      continue;
+    }
+    headingTarget = null;
+
+    if (openQuotes === 0 && /^Bras[íi]lia,\s*(?:em\s+)?\d{1,2}(?:º|o)?\s+de\s+\w+\s+de\s+\d{4}/.test(line)) {
+      curArtTag = 'assinaturas';
+      blocks.push({
+        id: `b_${blocks.length}`,
+        stableId: `${prefixSlug}-assinaturas`,
+        kind: 'texto',
+        marker: 'Promulgação',
+        body: line,
+        annotations: [],
+        contextPath: getContextPath() || undefined,
+      });
+      signed = true;
+      updateQuotes(line);
       continue;
     }
 
@@ -284,7 +372,7 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
 
     const prevBlock = blocks.length > 0 ? blocks[blocks.length - 1] : null;
     const prevEndedMidPhrase = Boolean(
-      prevBlock && prevBlock.body && !/[.;:!?…”"]$/.test(prevBlock.body.trim())
+      prevBlock && prevBlock.kind !== 'texto' && prevBlock.body && !/[.;:!?…”")]$/.test(prevBlock.body.trim())
     );
 
     const rawArtMatch = openQuotes === 0 ? line.match(artRe) : null;
@@ -311,7 +399,8 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
       rawArtMatch && !prevEndedMidPhrase && !isCitationFollowing && isSequentialArt
         ? rawArtMatch
         : null;
-    const mEc = !mArt && openQuotes === 0 ? line.match(ecHeaderRe) : null;
+    const rawEc = !mArt && openQuotes === 0 && !prevEndedMidPhrase ? line.match(ecHeaderRe) : null;
+    const mEc = rawEc && (!rawEc[2] || /^\(/.test(rawEc[2])) && line.length < 120 ? rawEc : null;
     const mParU = !mArt && !mEc && openQuotes === 0 ? line.match(parUnicoRe) : null;
     const mParN = !mArt && !mEc && !mParU && openQuotes === 0 ? line.match(parNumRe) : null;
 
@@ -319,8 +408,8 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
     const rawInc = !mArt && !mEc && !mParU && !mParN && openQuotes === 0 ? line.match(incisoRe) : null;
     let mInc: RegExpMatchArray | null = null;
     if (rawInc) {
-      const rVal = romanToInt(rawInc[1]);
-      if (rVal > 0 && (rVal === lastIncisoNum + 1 || rVal === 1 || (rVal > lastIncisoNum && rVal <= lastIncisoNum + 3))) {
+      const rVal = romanToInt(rawInc[1].split('-')[0]);
+      if (rVal > 0 && (rVal === lastIncisoNum && rawInc[1].includes('-')) || rVal > 0 && (rVal === lastIncisoNum + 1 || rVal === 1 || (rVal > lastIncisoNum && rVal <= lastIncisoNum + 3))) {
         mInc = rawInc;
       }
     }
@@ -358,7 +447,7 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
       curIncTag = '';
       matched = {
         kind: 'artigo',
-        marker: mArt[1].trim(),
+        marker: mArt[1].trim().replace(/(\d)o\b/, '$1º'),
         body: mArt[2].trim(),
         stableId: `${prefixSlug}-${curArtTag}`,
       };
@@ -391,7 +480,7 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
       lastAlineaCode = 0;
       lastItemNum = 0;
       curIncTag = '';
-      const pMarker = mParN[1].replace(/\s+/g, ' ').trim();
+      const pMarker = mParN[1].replace(/\s+/g, ' ').trim().replace(/(\d)o\b/, '$1º');
       const pNum = pMarker.match(/\d+(?:-[A-Z0-9]+)?/i)?.[0] || String(blocks.length);
       matched = {
         kind: 'paragrafo',
@@ -400,7 +489,7 @@ export function parseLeiSecaBlocks(rawText: string, lawPrefix = 'LEI'): LegalBlo
         stableId: `${prefixSlug}-${curArtTag || 'top'}-par${pNum}`,
       };
     } else if (mInc) {
-      const rVal = romanToInt(mInc[1]);
+      const rVal = romanToInt(mInc[1].split('-')[0]);
       lastIncisoNum = rVal;
       lastAlineaCode = 0;
       lastItemNum = 0;
@@ -513,7 +602,7 @@ export function validateParsedLaw(blocks: LegalBlock[]): LawValidationReport {
     } else if (b.kind === 'paragrafo') {
       prevInc = 0;
     } else if (b.kind === 'inciso') {
-      const r = romanToInt(b.marker);
+      const r = romanToInt(b.marker.split('-')[0]);
       if (prevInc > 0 && r > 0 && r <= prevInc) {
         outOfOrder.push(`Inciso ${b.marker} fora de ordem`);
       }

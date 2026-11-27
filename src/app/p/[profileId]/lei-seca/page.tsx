@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useProfile } from '@/components/ProfileProvider';
 import { CLOUD_SYNC_EVENT, pushLeiSecaToCloud } from '@/lib/cloudSync';
+import { extractDocxLawText, extractHtmlLawText } from '@/lib/docExtract';
 import { DictionaryText } from '@/components/DictionaryText';
 import { useGlobal } from '@/components/GlobalProvider';
 import { useAiProviderName } from '@/lib/useAiProvider';
@@ -1251,12 +1252,25 @@ export default function LeiSecaPage() {
 
   async function handleImportLawPdf(file: File) {
     try {
-      setPdfProgress('Abrindo PDF...');
-      const rawExtracted = await extractPdfTextInBrowser(file, (p, total) => {
-        setPdfProgress(`Lendo página ${p} de ${total}...`);
-      });
+      const lowerName = (file.name || '').toLowerCase();
+      let rawExtracted = '';
+      if (lowerName.endsWith('.html') || lowerName.endsWith('.htm')) {
+        setPdfProgress('Lendo arquivo HTML...');
+        rawExtracted = await extractHtmlLawText(file);
+      } else if (lowerName.endsWith('.docx')) {
+        setPdfProgress('Lendo arquivo DOCX...');
+        rawExtracted = await extractDocxLawText(file);
+      } else if (lowerName.endsWith('.txt') || lowerName.endsWith('.md')) {
+        setPdfProgress('Lendo arquivo de texto...');
+        rawExtracted = await file.text();
+      } else {
+        setPdfProgress('Abrindo PDF...');
+        rawExtracted = await extractPdfTextInBrowser(file, (p, total) => {
+          setPdfProgress(`Lendo página ${p} de ${total}...`);
+        });
+      }
       if (!rawExtracted.trim()) {
-        notify('Não foi possível extrair texto desse PDF (pode ser imagem escaneada).', 'error');
+        notify('Não foi possível extrair texto desse arquivo.', 'error');
         return;
       }
 
@@ -1539,7 +1553,7 @@ export default function LeiSecaPage() {
             ) : (
               <FileUp className="w-4 h-4" />
             )}
-            {pdfProgress || 'Importar PDF (CLT/Lei)'}
+            {pdfProgress || 'Importar Lei (PDF/HTML/DOCX)'}
           </button>
           {articles.length > 0 && (
             <button
@@ -2216,7 +2230,7 @@ export default function LeiSecaPage() {
             <div className="flex items-center justify-between">
               <h2 className="font-bold text-base flex items-center gap-2">
                 <FileUp className="w-5 h-5 text-violet-500" />
-                Importar PDF de Lei
+                Importar Lei (PDF / HTML / DOCX)
               </h2>
               <button
                 type="button"
@@ -2289,10 +2303,10 @@ export default function LeiSecaPage() {
                 ) : (
                   <FileUp className="w-3.5 h-3.5" />
                 )}
-                {pdfProgress || 'Escolher arquivo PDF'}
+                {pdfProgress || 'Escolher arquivo'}
                 <input
                   type="file"
-                  accept="application/pdf"
+                  accept=".pdf,.html,.htm,.docx,.txt,application/pdf,text/html,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
                   disabled={Boolean(pdfProgress)}
                   className="hidden"
                   onChange={(e) => {
