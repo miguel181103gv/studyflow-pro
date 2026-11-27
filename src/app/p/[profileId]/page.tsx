@@ -62,6 +62,7 @@ export default function DashboardPage() {
   const [showRaioX, setShowRaioX] = useState(false);
   const [showConsistency, setShowConsistency] = useState(false);
   const [chartSubjectFilter, setChartSubjectFilter] = useState('');
+  const [chartDaysFilter, setChartDaysFilter] = useState<number>(7);
   const [selectedDayISO, setSelectedDayISO] = useState<string | null>(null);
   const [agendaItems, setAgendaItems] = useState<
     { id: string; date: string; text: string; done: boolean; kind?: string }[]
@@ -346,9 +347,9 @@ export default function DashboardPage() {
     ? studyLogs.find((l) => l.subject_id === nextStudySubject.id)
     : undefined;
 
-  // Tendência dos últimos 7 dias (com filtro opcional por matéria)
-  const last7Days = Array.from({ length: 7 }, (_, i) => {
-    const iso = addDaysISO(today, i - 6);
+  // Tendência por período (com filtro por data e matéria)
+  const last7Days = Array.from({ length: chartDaysFilter }, (_, i) => {
+    const iso = addDaysISO(today, i - (chartDaysFilter - 1));
     const dayLogs = studyLogs.filter(
       (l) =>
         l.study_date === iso && (!chartSubjectFilter || l.subject_id === chartSubjectFilter)
@@ -369,6 +370,30 @@ export default function DashboardPage() {
   const inspectedDay = selectedDayISO
     ? last7Days.find((d) => d.iso === selectedDayISO)
     : null;
+
+  const periodTotals = last7Days.reduce(
+    (acc, d) => ({
+      correct: acc.correct + d.Acertos,
+      wrong: acc.wrong + d.Erros,
+      total: acc.total + d.total,
+      secs: acc.secs + d.secs,
+    }),
+    { correct: 0, wrong: 0, total: 0, secs: 0 }
+  );
+  const summaryStats = inspectedDay
+    ? {
+        correct: inspectedDay.Acertos,
+        wrong: inspectedDay.Erros,
+        total: inspectedDay.total,
+        secs: inspectedDay.secs,
+        label: `Dia ${formatDateBR(inspectedDay.iso)}`,
+      }
+    : {
+        ...periodTotals,
+        label: chartDaysFilter === 1 ? 'Hoje' : `Últimos ${chartDaysFilter} dias`,
+      };
+  const summaryAccuracy =
+    summaryStats.total > 0 ? calcAccuracy(summaryStats.correct, summaryStats.total) : 0;
 
   // Prioridades explicadas ("O que está mais em risco?")
   const targetAcc = profile?.target_accuracy || 80;
@@ -880,7 +905,11 @@ export default function DashboardPage() {
         <div className="lg:col-span-2 card-surface rounded-3xl p-6 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h2 className="font-bold text-base">Desempenho nos Últimos 7 Dias</h2>
+              <h2 className="font-bold text-base">
+                {chartDaysFilter === 1
+                  ? 'Desempenho Hoje'
+                  : `Desempenho nos Últimos ${chartDaysFilter} Dias`}
+              </h2>
               <div className="flex items-center gap-4 text-xs text-muted-theme mt-1">
                 <span className="inline-flex items-center gap-1.5 font-semibold text-teal-700 dark:text-teal-300">
                   <span className="w-2.5 h-2.5 rounded-sm bg-teal-600 inline-block" /> ✓ Acertos
@@ -891,18 +920,33 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <select
-              value={chartSubjectFilter}
-              onChange={(e) => setChartSubjectFilter(e.target.value)}
-              className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
-            >
-              <option value="">Todas as matérias</option>
-              {subjects.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={chartDaysFilter}
+                onChange={(e) => {
+                  setChartDaysFilter(Number(e.target.value));
+                  setSelectedDayISO(null);
+                }}
+                className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+              >
+                <option value={1}>Hoje</option>
+                <option value={7}>Últimos 7 dias</option>
+                <option value={15}>Últimos 15 dias</option>
+                <option value={30}>Últimos 30 dias</option>
+              </select>
+              <select
+                value={chartSubjectFilter}
+                onChange={(e) => setChartSubjectFilter(e.target.value)}
+                className="rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold max-w-[200px]"
+              >
+                <option value="">Todas as matérias</option>
+                {subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="h-56 w-full">
@@ -939,22 +983,66 @@ export default function DashboardPage() {
             </ResponsiveContainer>
           </div>
 
-          {inspectedDay && (
-            <div className="subtle-surface rounded-2xl px-4 py-2.5 flex items-center justify-between text-xs">
+          <div className="pt-2 border-t border-theme/60 space-y-2.5">
+            <div className="flex items-center justify-between text-[11px] text-muted-theme">
               <span>
-                <strong>Dia {formatDateBR(inspectedDay.iso)}:</strong>{' '}
-                {inspectedDay.Acertos} acertos de {inspectedDay.total} questões (
-                {calcAccuracy(inspectedDay.Acertos, inspectedDay.total)}%) ·{' '}
-                {formatDurationHM(inspectedDay.secs)} estudados
+                Resumo: <strong className="text-[var(--text-main)]">{summaryStats.label}</strong>
+                {chartSubjectFilter
+                  ? ` · ${subjects.find((s) => s.id === chartSubjectFilter)?.name || ''}`
+                  : ' · Todas as matérias'}
               </span>
-              <button
-                onClick={() => setSelectedDayISO(null)}
-                className="font-bold text-muted-theme hover:underline"
-              >
-                Fechar
-              </button>
+              {inspectedDay && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedDayISO(null)}
+                  className="font-bold text-teal-600 dark:text-teal-400 hover:underline"
+                >
+                  Ver período todo
+                </button>
+              )}
             </div>
-          )}
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="subtle-surface rounded-2xl px-3.5 py-2.5 border border-theme">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-theme">
+                  Feitas
+                </p>
+                <p className="text-lg font-extrabold mt-0.5">{summaryStats.total}</p>
+              </div>
+              <div className="rounded-2xl px-3.5 py-2.5 border border-emerald-500/30 bg-emerald-500/10">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-300">
+                  ✓ Certas
+                </p>
+                <p className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  {summaryStats.correct}
+                </p>
+              </div>
+              <div className="rounded-2xl px-3.5 py-2.5 border border-rose-500/30 bg-rose-500/10">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-300">
+                  ✕ Erradas
+                </p>
+                <p className="text-lg font-extrabold text-rose-600 dark:text-rose-400 mt-0.5">
+                  {summaryStats.wrong}
+                </p>
+              </div>
+              <div className="rounded-2xl px-3.5 py-2.5 border border-teal-500/30 bg-teal-500/10">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
+                  % Acerto
+                </p>
+                <p
+                  className={`text-lg font-extrabold mt-0.5 ${
+                    summaryStats.total === 0
+                      ? 'text-muted-theme'
+                      : summaryAccuracy >= targetAcc
+                        ? 'text-teal-600 dark:text-teal-300'
+                        : 'text-amber-500'
+                  }`}
+                >
+                  {summaryStats.total > 0 ? `${summaryAccuracy}%` : '—'}
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Prioridades com Motivo Explícito */}

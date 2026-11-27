@@ -1718,7 +1718,7 @@ export default function AgendaPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => { startStopwatch(nextTodayBlock.subjectId); if (profile?.id) router.push(`/p/${profile.id}/ciclo`); }}
+                      onClick={() => { const firstTitle = nextTodayBlock.plannedTopics?.[0]; const firstTp = firstTitle ? topics.find((t) => t.subject_id === nextTodayBlock.subjectId && t.title === firstTitle) : undefined; startStopwatch(nextTodayBlock.subjectId, firstTp?.id || null); if (profile?.id) router.push(`/p/${profile.id}/ciclo`); }}
                       className="px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 shrink-0 self-start sm:self-auto"
                     >
                       <Play className="w-3.5 h-3.5 fill-current" />
@@ -1888,13 +1888,19 @@ export default function AgendaPage() {
                                 {!b.done && b.plannedTopics && b.plannedTopics.length > 0 && (
                                   <div className="space-y-0.5 pt-0.5 border-t border-theme/50">
                                     {b.plannedTopics.map((tp, tIdx) => (
-                                      <p
+                                      <button
                                         key={tIdx}
-                                        title={tp}
-                                        className="text-[10px] leading-tight text-muted-theme line-clamp-1"
+                                        type="button"
+                                        onClick={() => {
+                                          const tpObj = topics.find((t) => t.subject_id === b.subjectId && t.title === tp);
+                                          startStopwatch(b.subjectId, tpObj?.id || null);
+                                          if (profile?.id) router.push(`/p/${profile.id}/ciclo`);
+                                        }}
+                                        title={`Iniciar estudo de: ${tp}`}
+                                        className="block w-full text-left text-[10px] leading-tight text-muted-theme hover:text-teal-500 line-clamp-1 transition"
                                       >
-                                        • {tp}
-                                      </p>
+                                        ▶ {tp}
+                                      </button>
                                     ))}
                                   </div>
                                 )}
@@ -1914,8 +1920,11 @@ export default function AgendaPage() {
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      startStopwatch(b.subjectId);
-                            if (profile?.id) router.push(`/p/${profile.id}/ciclo`);
+                                      const firstTitle = b.plannedTopics?.[0];
+                                      const firstTp = firstTitle
+                                        ? topics.find((t) => t.subject_id === b.subjectId && t.title === firstTitle)
+                                        : undefined;
+                                      startStopwatch(b.subjectId, firstTp?.id || null);
                                       if (profile?.id) router.push(`/p/${profile.id}/ciclo`);
                                     }}
                                     title="Iniciar cronômetro no Ciclo"
@@ -2493,7 +2502,7 @@ export default function AgendaPage() {
                         <button
                           type="button"
                           onClick={() => {
-                            startStopwatch(b.subjectId);
+                            const firstTitle = b.plannedTopics?.[0]; const firstTp = firstTitle ? topics.find((t) => t.subject_id === b.subjectId && t.title === firstTitle) : undefined; startStopwatch(b.subjectId, firstTp?.id || null);
                             setInspectDayIso(null);
                           }}
                           className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5"

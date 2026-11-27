@@ -167,7 +167,13 @@ export default function CicloPage() {
   function openRegisterModal(prefillSubjectId?: string, useStopwatch = false) {
     const subId = prefillSubjectId || stopwatch.subjectId || subjects[0]?.id || '';
     setModalSubjectId(subId);
-    setModalSelectedTopicIds([]);
+    const subTopicsList = topics.filter((t) => t.subject_id === subId);
+    const swTopicValid =
+      stopwatch.topicId && subTopicsList.some((t) => t.id === stopwatch.topicId)
+        ? stopwatch.topicId
+        : '';
+    const firstPending = subTopicsList.find((t) => !t.studied)?.id || '';
+    setModalSelectedTopicIds(swTopicValid ? [swTopicValid] : firstPending ? [firstPending] : []);
     setMarkTopicsDone(true);
     if (useStopwatch && stopwatch.elapsedSeconds > 0) {
       const h = Math.floor(stopwatch.elapsedSeconds / 3600);
@@ -186,28 +192,57 @@ export default function CicloPage() {
   async function handleSaveStudy(e: React.FormEvent) {
     e.preventDefault();
     if (!modalSubjectId) return;
+    const subHasTopics = topics.some((t) => t.subject_id === modalSubjectId);
+    if (subHasTopics && modalSelectedTopicIds.length === 0) {
+      notify('Selecione o(s) tópico(s) estudado(s) nesta sessão.', 'error');
+      return;
+    }
     setSaving(true);
     const secs = (Number(modalHours) || 0) * 3600 + (Number(modalMinutes) || 0) * 60;
+    const totalQ = Number(modalTotalQ) || 0;
+    const correctQ = Math.min(totalQ, Number(modalCorrectQ) || 0);
     const selectedTopicObjs = modalSelectedTopicIds
       .map((id) => topics.find((t) => t.id === id))
       .filter((t): t is NonNullable<typeof t> => Boolean(t));
-    const notesText =
-      selectedTopicObjs.length > 1
-        ? `Tópicos estudados: ${selectedTopicObjs.map((t) => t.title).join(' | ')}`
-        : '';
 
-    await addStudyLog({
-      subject_id: modalSubjectId,
-      topic_id: modalSelectedTopicIds[0] || null,
-      duration_seconds: secs,
-      study_date: modalDate,
-      period: modalPeriod,
-      method: modalMethod,
-      questions_total: Number(modalTotalQ) || 0,
-      questions_correct: Math.min(Number(modalTotalQ) || 0, Number(modalCorrectQ) || 0),
-      stop_point: modalStopPoint.slice(0, 500),
-      notes: notesText,
-    });
+    if (selectedTopicObjs.length === 0) {
+      await addStudyLog({
+        subject_id: modalSubjectId,
+        topic_id: null,
+        duration_seconds: secs,
+        study_date: modalDate,
+        period: modalPeriod,
+        method: modalMethod,
+        questions_total: totalQ,
+        questions_correct: correctQ,
+        stop_point: modalStopPoint.slice(0, 500),
+        notes: '',
+      });
+    } else {
+      const count = selectedTopicObjs.length;
+      const baseSec = Math.floor(secs / count);
+      const remSec = secs % count;
+      const baseQ = Math.floor(totalQ / count);
+      const remQ = totalQ % count;
+      const baseCor = Math.floor(correctQ / count);
+      const remCor = correctQ % count;
+
+      for (let i = 0; i < count; i++) {
+        const tp = selectedTopicObjs[i];
+        await addStudyLog({
+          subject_id: modalSubjectId,
+          topic_id: tp.id,
+          duration_seconds: baseSec + (i === 0 ? remSec : 0),
+          study_date: modalDate,
+          period: modalPeriod,
+          method: modalMethod,
+          questions_total: baseQ + (i === 0 ? remQ : 0),
+          questions_correct: baseCor + (i === 0 ? remCor : 0),
+          stop_point: modalStopPoint.slice(0, 500),
+          notes: '',
+        });
+      }
+    }
 
     let markedCount = 0;
     if (markTopicsDone && selectedTopicObjs.length > 0) {
@@ -538,9 +573,9 @@ export default function CicloPage() {
                   isDragging ? 'opacity-40 scale-[0.98]' : ''
                 } ${isOver ? 'ring-2 ring-teal-500 bg-teal-500/10' : ''} ${
                   isStudyingThis
-                    ? 'ring-2 ring-teal-500 bg-teal-500/10'
+                    ? 'ring-2 ring-emerald-500 border-l-4 border-l-emerald-500 bg-emerald-500/12 shadow-md'
                     : isLockedOther
-                    ? 'opacity-65'
+                    ? 'opacity-60'
                     : ''
                 }`}
               >
@@ -575,9 +610,19 @@ export default function CicloPage() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className="font-bold text-base truncate">{s.name}</p>
                       {isStudyingThis && (
-                        <span className="text-[10px] font-extrabold px-2.5 py-0.5 rounded-full bg-teal-600 text-white inline-flex items-center gap-1 shrink-0">
-                          <span className={`w-1.5 h-1.5 rounded-full bg-white ${stopwatch.running ? 'animate-pulse' : ''}`} />
-                          {stopwatch.running ? 'Estudando agora' : 'Em pausa'}
+                        <span
+                          className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1.5 shrink-0 ${
+                            stopwatch.running
+                              ? 'bg-emerald-600 text-white shadow-xs'
+                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                          }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              stopwatch.running ? 'bg-white animate-ping' : 'bg-amber-400'
+                            }`}
+                          />
+                          {stopwatch.running ? 'Estudando agora' : 'Cronômetro pausado'}
                         </span>
                       )}
                     </div>
@@ -856,11 +901,13 @@ export default function CicloPage() {
               </div>
 
               {(() => {
-                const mainTopics = subjectTopics.filter((t) => !t.title.trim().startsWith('↳'));
-                const unstudiedMain = mainTopics.filter((t) => !t.studied);
-                const studiedMain = mainTopics.filter((t) => t.studied);
-                const orderedList = [...unstudiedMain, ...studiedMain];
-                const nextTwoIds = unstudiedMain.slice(0, 2).map((t) => t.id);
+                const unstudiedAll = subjectTopics.filter((t) => !t.studied);
+                const studiedAll = subjectTopics.filter((t) => t.studied);
+                const orderedList = [...unstudiedAll, ...studiedAll];
+                const nextTwoIds = unstudiedAll
+                  .filter((t) => !t.title.trim().startsWith('↳'))
+                  .slice(0, 2)
+                  .map((t) => t.id);
 
                 return (
                   <div className="space-y-2">
@@ -910,7 +957,7 @@ export default function CicloPage() {
                                 }
                                 className="rounded accent-teal-600 shrink-0"
                               />
-                              <span className={`flex-1 truncate ${t.studied ? 'line-through opacity-60' : ''}`}>
+                              <span className={`flex-1 truncate ${t.title.trim().startsWith('↳') ? 'pl-3 text-muted-theme' : ''} ${t.studied ? 'line-through opacity-60' : ''}`}>
                                 {t.title}
                               </span>
                               {isPlannedToday && (

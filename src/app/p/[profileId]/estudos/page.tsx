@@ -288,6 +288,7 @@ export default function ProgressoEditalPage() {
     updateTopicVideo,
     addHighlight,
     deleteHighlight,
+    stopwatch,
   } = useProfile();
   const aiName = useAiProviderName();
 
@@ -1599,6 +1600,22 @@ export default function ProgressoEditalPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-bold text-base truncate">{sub.name}</p>
+                        {stopwatch.subjectId === sub.id && (
+                          <span
+                            className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1.5 shrink-0 ${
+                              stopwatch.running
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                            }`}
+                          >
+                            <span
+                              className={`w-1.5 h-1.5 rounded-full ${
+                                stopwatch.running ? 'bg-white animate-pulse' : 'bg-amber-400'
+                              }`}
+                            />
+                            {stopwatch.running ? 'Estudando agora' : 'Pausado'}
+                          </span>
+                        )}
                         {isCompletedSubject && (
                           <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-600 text-white">
                             Concluída
