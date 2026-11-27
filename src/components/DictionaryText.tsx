@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useProfile } from './ProfileProvider';
 import { pushLeiSecaToCloud } from '@/lib/cloudSync';
-import { BookOpen, ExternalLink, Loader2, Scale, X } from 'lucide-react';
+import { BookOpen, Edit3, ExternalLink, Globe, Loader2, Scale, Search, X } from 'lucide-react';
 import { parseLeiSecaBlocks } from '@/lib/leiSecaParser';
 import { LegalBlocksView } from './LegalBlocksView';
 
@@ -132,7 +132,8 @@ function parseLawCitation(raw: string): { article: string; lawHint: string } {
   const article = numMatch ? `Art. ${numMatch[1]}` : raw.trim();
 
   let lawHint = '';
-  if (/\b(?:CRFB|CF)(?:\/\d{2,4})?\b|\bConstitui[çc][ãa]o/i.test(raw)) lawHint = 'CF/88';
+  if (/\bADCT\b|Ato\s+das\s+Disposi[çc][õo]es\s+Constitucionais\s+Transit[óo]rias/i.test(raw)) lawHint = 'ADCT';
+  else if (/\b(?:CRFB|CF)(?:\/\d{2,4})?\b|\bConstitui[çc][ãa]o/i.test(raw)) lawHint = 'CF/88';
   else if (/\bCLT\b|Consolida[çc][ãa]o\s+das\s+Leis\s+do\s+Trabalho/i.test(raw)) lawHint = 'CLT';
   else if (/\bCPC\b|C[óo]digo\s+de\s+Processo\s+Civil/i.test(raw)) lawHint = 'CPC';
   else if (/\bCPP\b|C[óo]digo\s+de\s+Processo\s+Penal/i.test(raw)) lawHint = 'CPP';
@@ -278,7 +279,7 @@ export function useDictionaryIndex(): DictIndex {
 type Segment =
   | { type: 'text'; value: string }
   | { type: 'term'; value: string; entry: DictEntryLite }
-  | { type: 'law'; value: string; article: string; lawHint: string; contextText: string };
+  | { type: 'law'; value: string; article: string; lawHint: string; contextText: string; afterText: string };
 
 type FloatingModalState =
   | { kind: 'dict'; entry: DictEntryLite }
@@ -293,6 +294,9 @@ type FloatingModalState =
       text?: string;
       savedId?: string;
       downloadedFromWeb?: boolean;
+      rawMatched?: string;
+      afterText?: string;
+      contextText?: string;
     };
 
 export function DictionaryText({
@@ -317,6 +321,11 @@ export function DictionaryText({
   } | null>(null);
 
   const [modal, setModal] = useState<FloatingModalState | null>(null);
+  const [showRefEditor, setShowRefEditor] = useState(false);
+  const [editArticle, setEditArticle] = useState('');
+  const [editLawHint, setEditLawHint] = useState('');
+  const [extendedLen, setExtendedLen] = useState(0);
+  const [savedLawsList, setSavedLawsList] = useState<string[]>([]);
 
   useEffect(() => {
     if (!modal) return;
@@ -333,7 +342,7 @@ export function DictionaryText({
     const lawRegex = new RegExp(LAW_ARTICLE_PATTERN, 'gi');
     const firstPass: Array<
       | { type: 'text'; value: string }
-      | { type: 'law'; value: string; article: string; lawHint: string; contextText: string }
+      | { type: 'law'; value: string; article: string; lawHint: string; contextText: string; afterText: string }
     > = [];
     let lastIdx = 0;
     let lawMatch: RegExpExecArray | null;
@@ -346,7 +355,8 @@ export function DictionaryText({
       const ctxStart = Math.max(0, lawMatch.index - 450);
       const ctxEnd = Math.min(text.length, lawMatch.index + rawMatched.length + 450);
       const contextText = text.slice(ctxStart, ctxEnd).trim();
-      firstPass.push({ type: 'law', value: rawMatched, article, lawHint, contextText });
+      const afterText = text.slice(lawMatch.index + rawMatched.length, Math.min(text.length, lawMatch.index + rawMatched.length + 140));
+      firstPass.push({ type: 'law', value: rawMatched, article, lawHint, contextText, afterText });
       lastIdx = lawMatch.index + rawMatched.length;
       if (rawMatched.length === 0) lawRegex.lastIndex++;
     }
@@ -418,7 +428,18 @@ export function DictionaryText({
     setHovered({ ...payload, x, y, below });
   };
 
-  async function openLawModal(article: string, lawHint: string, contextText = '') {
+  async function openLawModal(
+    article: string,
+    lawHint: string,
+    contextText = '',
+    opts?: {
+      rawMatched?: string;
+      afterText?: string;
+      forceWeb?: boolean;
+      forceLocal?: boolean;
+      skipAiResolve?: boolean;
+    }
+  ) {
     setHovered(null);
     const lsKey = `sf_lei_seca_${profile?.id || 'default'}`;
     let stored: LeiSecaStored[] = [];
@@ -429,21 +450,34 @@ export function DictionaryText({
     } catch {
       stored = [];
     }
+    const uniqueLaws = Array.from(
+      new Set(stored.map((s) => (s.lawName || '').trim()).filter(Boolean))
+    );
+    setSavedLawsList(uniqueLaws);
 
     let effectiveLawHint = (lawHint || '').trim();
     let effectiveArticle = article;
+    const rawMatched = opts?.rawMatched ?? article;
+    const afterText = opts?.afterText ?? '';
 
-    if (!effectiveLawHint && contextText) {
+    if (!opts?.forceWeb && !opts?.forceLocal) {
+      setShowRefEditor(false);
+      setExtendedLen(0);
+    }
+    setEditArticle(effectiveArticle);
+    setEditLawHint(effectiveLawHint);
+
+    if (!effectiveLawHint && contextText && !opts?.skipAiResolve && !opts?.forceLocal) {
       setModal({
         kind: 'law',
         article,
         lawHint: 'Identificando norma...',
         loading: true,
+        rawMatched,
+        afterText,
+        contextText,
       });
       try {
-        const savedLaws = Array.from(
-          new Set(stored.map((s) => (s.lawName || '').trim()).filter(Boolean))
-        );
         const res = await fetch('/api/gemini', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -451,13 +485,15 @@ export function DictionaryText({
             action: 'resolve_law_citation',
             article,
             contextText,
-            savedLaws,
+            savedLaws: uniqueLaws,
           }),
         });
         const json = await res.json();
         if (res.ok && json.ok && json.data?.lawName) {
           effectiveLawHint = String(json.data.lawName).trim();
           if (json.data.article) effectiveArticle = String(json.data.article).trim();
+          setEditArticle(effectiveArticle);
+          setEditLawHint(effectiveLawHint);
         }
       } catch {
         // segue se offline
@@ -474,57 +510,79 @@ export function DictionaryText({
       : null;
     const lawNorm = effectiveLawHint.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-    let existing: LeiSecaStored | undefined;
-    let existingSnippet: string | null = null;
+    if (!opts?.forceWeb) {
+      let existing: LeiSecaStored | undefined;
+      let existingSnippet: string | null = null;
 
-    for (const a of stored) {
-      const lawNameStr = (a.lawName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const lawOk =
-        !lawNorm ||
-        (Boolean(lawNameStr) && (lawNameStr.includes(lawNorm) || lawNorm.includes(lawNameStr)));
-      if (!lawOk || !a.rawText) continue;
+      for (const a of stored) {
+        const lawNameStr = (a.lawName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const lawOk =
+          !lawNorm ||
+          (Boolean(lawNameStr) && (lawNameStr.includes(lawNorm) || lawNorm.includes(lawNameStr)));
+        if (!lawOk || !a.rawText) continue;
 
-      if (isSumula) {
-        if (artRegex && (artRegex.test(a.title || '') || artRegex.test(a.rawText || ''))) {
+        if (isSumula) {
+          if (artRegex && (artRegex.test(a.title || '') || artRegex.test(a.rawText || ''))) {
+            existing = a;
+            existingSnippet = a.rawText.trim();
+            break;
+          }
+        } else if (artNum) {
+          const snippet = extractSingleArticleSnippet(a.rawText, artNum);
+          if (snippet) {
+            existing = a;
+            existingSnippet = snippet;
+            break;
+          }
+        } else if ((a.title || '').toLowerCase().includes(effectiveArticle.toLowerCase())) {
           existing = a;
           existingSnippet = a.rawText.trim();
           break;
         }
-      } else if (artNum) {
-        const snippet = extractSingleArticleSnippet(a.rawText, artNum);
-        if (snippet) {
-          existing = a;
-          existingSnippet = snippet;
-          break;
-        }
-      } else if ((a.title || '').toLowerCase().includes(article.toLowerCase())) {
-        existing = a;
-        existingSnippet = a.rawText.trim();
-        break;
+      }
+
+      if (existing && existingSnippet) {
+        setModal({
+          kind: 'law',
+          article: effectiveArticle,
+          lawHint: effectiveLawHint,
+          loading: false,
+          title: effectiveArticle,
+          lawName: existing.lawName || effectiveLawHint,
+          text: existingSnippet,
+          savedId: existing.id,
+          downloadedFromWeb: false,
+          rawMatched,
+          afterText,
+          contextText,
+        });
+        return;
+      }
+
+      if (opts?.forceLocal) {
+        setModal({
+          kind: 'law',
+          article: effectiveArticle,
+          lawHint: effectiveLawHint,
+          loading: false,
+          error: `Não encontrei "${effectiveArticle}"${effectiveLawHint ? ` em "${effectiveLawHint}"` : ''} na sua Lei Seca local. Clique em "Buscar na Internet" para baixar.`,
+          rawMatched,
+          afterText,
+          contextText,
+        });
+        return;
       }
     }
 
-    if (existing && existingSnippet) {
-      setModal({
-        kind: 'law',
-        article: effectiveArticle,
-        lawHint: effectiveLawHint,
-        loading: false,
-        title: effectiveArticle,
-        lawName: existing.lawName || effectiveLawHint,
-        text: existingSnippet,
-        savedId: existing.id,
-        downloadedFromWeb: false,
-      });
-      return;
-    }
-
-    // Não encontrou salvo: abre modal carregando e baixa da internet
+    // Não encontrou salvo (ou usuário pediu busca na internet): abre modal carregando e baixa
     setModal({
       kind: 'law',
       article: effectiveArticle,
       lawHint: effectiveLawHint,
       loading: true,
+      rawMatched,
+      afterText,
+      contextText,
     });
 
     try {
@@ -546,8 +604,8 @@ export function DictionaryText({
       const created: LeiSecaStored = {
         id: `ls_web_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         subjectId: '',
-        lawName: String(json.data.lawName || lawHint || '').trim(),
-        title: String(json.data.title || article).trim(),
+        lawName: String(json.data.lawName || effectiveLawHint || '').trim(),
+        title: String(json.data.title || effectiveArticle).trim(),
         rawText: String(json.data.rawText).trim(),
         note: 'Baixado automaticamente da internet via StudyFlow.',
         studied: false,
@@ -564,22 +622,28 @@ export function DictionaryText({
       }
       setModal({
         kind: 'law',
-        article,
-        lawHint,
+        article: effectiveArticle,
+        lawHint: effectiveLawHint,
         loading: false,
         title: created.title,
         lawName: created.lawName,
         text: created.rawText,
         savedId: created.id,
         downloadedFromWeb: true,
+        rawMatched,
+        afterText,
+        contextText,
       });
     } catch (err) {
       setModal({
         kind: 'law',
-        article,
-        lawHint,
+        article: effectiveArticle,
+        lawHint: effectiveLawHint,
         loading: false,
-        error: err instanceof Error ? err.message : 'Erro ao buscar artigo na internet.',
+        error: err instanceof Error ? err.message : 'Erro ao buscar artigo.',
+        rawMatched,
+        afterText,
+        contextText,
       });
     }
   }
@@ -608,13 +672,13 @@ export function DictionaryText({
               onMouseLeave={() => setHovered(null)}
               onClick={(e) => {
                 e.stopPropagation();
-                void openLawModal(seg.article, seg.lawHint, seg.contextText);
+                void openLawModal(seg.article, seg.lawHint, seg.contextText, { rawMatched: seg.value, afterText: seg.afterText });
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
                   e.stopPropagation();
-                  void openLawModal(seg.article, seg.lawHint, seg.contextText);
+                  void openLawModal(seg.article, seg.lawHint, seg.contextText, { rawMatched: seg.value, afterText: seg.afterText });
                 }
               }}
               className="border-b border-dotted border-indigo-500/80 dark:border-indigo-400/80 text-indigo-700 dark:text-indigo-300 font-semibold cursor-pointer rounded-sm px-0.5 hover:bg-indigo-500/15 hover:border-solid transition-colors"
@@ -742,15 +806,162 @@ export function DictionaryText({
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setModal(null)}
-                title="Fechar (Esc)"
-                className="p-2 rounded-xl subtle-surface hover:opacity-80 shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {modal.kind === 'law' && (
+                  <button
+                    type="button"
+                    onClick={() => setShowRefEditor((v) => !v)}
+                    title="Ajustar ou estender referência manualmente"
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold inline-flex items-center gap-1 border transition ${
+                      showRefEditor
+                        ? 'border-indigo-500 bg-indigo-500/15 text-indigo-600 dark:text-indigo-300'
+                        : 'border-theme subtle-surface hover:border-indigo-500/50'
+                    }`}
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Ajustar busca</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setModal(null)}
+                  title="Fechar (Esc)"
+                  className="p-2 rounded-xl subtle-surface hover:opacity-80"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
+
+            {/* Editor manual / extensão do hyperlink */}
+            {modal.kind === 'law' && showRefEditor && (
+              <div className="px-5 py-3.5 border-b border-theme bg-[var(--bg-subtle)]/50 space-y-2.5 text-xs">
+                {modal.afterText && (
+                  <div>
+                    <p className="text-[10px] font-bold text-muted-theme mb-1">
+                      Clique nas palavras seguintes para estender o link:
+                    </p>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 font-bold">
+                        {(modal.rawMatched || modal.article) +
+                          (extendedLen > 0 ? modal.afterText.slice(0, extendedLen) : '')}
+                      </span>
+                      {(() => {
+                        const tokens = Array.from(modal.afterText.matchAll(/\S+/g)).slice(0, 8);
+                        return tokens.map((tk, idx) => {
+                          const endOffset = (tk.index || 0) + tk[0].length;
+                          const isIncluded = endOffset <= extendedLen;
+                          return (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => {
+                                const nextLen = isIncluded ? (tk.index || 0) : endOffset;
+                                setExtendedLen(nextLen);
+                                const fullStr =
+                                  (modal.rawMatched || modal.article) +
+                                  (nextLen > 0 ? modal.afterText!.slice(0, nextLen) : '');
+                                const parsed = parseLawCitation(fullStr);
+                                setEditArticle(parsed.article || fullStr);
+                                if (parsed.lawHint) {
+                                  setEditLawHint(parsed.lawHint);
+                                } else {
+                                  const cleanedTail = modal.afterText!.slice(0, nextLen).replace(/^[,\s]+(?:d[aeo]|no|na)\s+/i, '').trim();
+                                  if (cleanedTail) setEditLawHint(cleanedTail);
+                                }
+                              }}
+                              className={`px-1.5 py-0.5 rounded-md border text-[11px] transition ${
+                                isIncluded
+                                  ? 'border-indigo-500/50 bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 font-semibold'
+                                  : 'border-theme subtle-surface text-muted-theme hover:border-indigo-500/50'
+                              }`}
+                            >
+                              {isIncluded ? tk[0] : `+ ${tk[0]}`}
+                            </button>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-muted-theme mb-0.5">
+                      Artigo / Súmula
+                    </label>
+                    <input
+                      type="text"
+                      value={editArticle}
+                      onChange={(e) => setEditArticle(e.target.value)}
+                      placeholder="Ex: Art. 3º"
+                      className="w-full rounded-xl subtle-surface border border-theme px-2.5 py-1.5 text-xs font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-muted-theme mb-0.5">
+                      Norma / Lei
+                    </label>
+                    <input
+                      type="text"
+                      list="sf-laws-datalist"
+                      value={editLawHint}
+                      onChange={(e) => setEditLawHint(e.target.value)}
+                      placeholder="Ex: ADCT, CF/88, Decreto-Lei 200/1967..."
+                      className="w-full rounded-xl subtle-surface border border-theme px-2.5 py-1.5 text-xs font-semibold"
+                    />
+                    <datalist id="sf-laws-datalist">
+                      {savedLawsList.map((lw) => (
+                        <option key={lw} value={lw} />
+                      ))}
+                    </datalist>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void openLawModal(
+                        editArticle.trim() || modal.article,
+                        editLawHint.trim(),
+                        modal.contextText || '',
+                        {
+                          rawMatched: modal.rawMatched,
+                          afterText: modal.afterText,
+                          forceLocal: true,
+                          skipAiResolve: true,
+                        }
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-[11px] font-bold inline-flex items-center gap-1"
+                  >
+                    <Search className="w-3.5 h-3.5 text-teal-600" />
+                    Procurar localmente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void openLawModal(
+                        editArticle.trim() || modal.article,
+                        editLawHint.trim(),
+                        modal.contextText || '',
+                        {
+                          rawMatched: modal.rawMatched,
+                          afterText: modal.afterText,
+                          forceWeb: true,
+                          skipAiResolve: true,
+                        }
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold inline-flex items-center gap-1"
+                  >
+                    <Globe className="w-3.5 h-3.5" />
+                    Buscar na internet
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Body */}
             <div className="p-5 overflow-y-auto space-y-3 text-sm leading-relaxed">
