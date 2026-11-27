@@ -8,6 +8,42 @@ import { BookOpen, Edit3, ExternalLink, Globe, Loader2, Scale, Search, X } from 
 import { parseLeiSecaBlocks } from '@/lib/leiSecaParser';
 import { LegalBlocksView } from './LegalBlocksView';
 
+export interface LawRefOverride {
+  phrase: string;
+  article: string;
+  lawHint: string;
+}
+
+const LAW_OVERRIDES_EVENT = 'sf-law-overrides-updated';
+
+function readLawOverrides(profileId: string): LawRefOverride[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(`sf_law_ref_overrides_${profileId || 'default'}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLawOverride(profileId: string, item: LawRefOverride) {
+  if (typeof window === 'undefined' || !item.phrase.trim()) return;
+  const key = `sf_law_ref_overrides_${profileId || 'default'}`;
+  const prev = readLawOverrides(profileId);
+  const normPhrase = item.phrase.trim().toLowerCase();
+  const next = [
+    item,
+    ...prev.filter((x) => (x.phrase || '').trim().toLowerCase() !== normPhrase),
+  ].slice(0, 300);
+  try {
+    localStorage.setItem(key, JSON.stringify(next));
+    window.dispatchEvent(new Event(LAW_OVERRIDES_EVENT));
+  } catch {
+    // ignore
+  }
+}
+
 export interface DictEntryLite {
   id: string;
   word: string;
@@ -100,7 +136,7 @@ function toAccentInsensitivePattern(word: string): string {
 }
 
 const LAW_ARTICLE_PATTERN =
-  '(?:\\b(?:(?:(?:(?:[ao]s?)\\s+)?(?:al[íi]neas?\\s+["“”\\x27]?[a-z]["“”\\x27]?|incisos?\\s+(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|§§?\\s*\\d+[º°oª]?|par[áa]grafos?\\s+[úu]nicos?)(?:\\s*(?:,|e|d[aeo]s?|n[ao]s?)\\s+)+)*art(?:igo)?s?\\.?\\s*\\d+(?:\\.\\d{3})*(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|al[íi]nea\\s+["“”\\x27]?[a-z]["“”\\x27]?|[a-z]\\)))*(?:,?\\s*(?:d[aeo]|no|na)\\s+(?:(?:CRFB(?:\\/\\d{2,4})?|CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CPC(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Penal|C[óo]digo\\s+Penal|CP|C[óo]digo\\s+Civil|CC(?:\\/\\d{2,4})?|CDC|CTN|ECA|LGPD|LINDB|EC(?:\\s*n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional(?:\\s*n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|DL(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Resolu[çc][ãa]o(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Portaria(?:\\s*n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?)\\b))?)|\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ|Orienta[çc][ãa]o\\s+Jurisprudencial)\\s*(?:n[º°]?\\s*)?\\d+(?:\\s*,\\s*(?:item\\s+)?(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b)*(?:\\s*,?\\s*(?:d[aeo]|na|no)\\s+(?:SDI-?[12]|SBDI-?[12]|TST|STF|STJ|TSE|TNU))*(?:\\s*,?\\s*(?:d[aeo])\\s+(?:TST|STF|STJ|TSE|TNU))?\\b)';
+  '(?:\\b(?:(?:(?:(?:[ao]s?)\\s+)?(?:al[íi]neas?\\s+["“”\\x27]?[a-z]["“”\\x27]?|incisos?\\s+(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|§§?\\s*\\d+[º°oª]?|par[áa]grafos?\\s+[úu]nicos?)(?:\\s*(?:,|e|d[aeo]s?|n[ao]s?)\\s+)+)*art(?:igo)?s?\\.?\\s*\\d+(?:\\.\\d{3})*(?:[º°oª])?(?:-[A-Za-z]+)?(?:\\s*,\\s*(?:caput|§\\s*\\d+[º°oª]?|par[áa]grafo\\s+[úu]nico|inc(?:iso)?\\.?\\s*(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b|al[íi]nea\\s+["“”\\x27]?[a-z]["“”\\x27]?|[a-z]\\)))*(?:,?\\s*(?:d[aeo]|no|na)\\s+(?:(?:ADCT|Ato\\s+das\\s+Disposi[çc][õo]es\\s+Constitucionais\\s+Transit[óo]rias|CRFB(?:\\/\\d{2,4})?|CF(?:\\/\\d{2,4})?|Constitui[çc][ãa]o(?:\\s+Federal)?(?:\\s+de\\s+\\d{4})?|CLT|Consolida[çc][ãa]o\\s+das\\s+Leis\\s+do\\s+Trabalho|CPC(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Civil|CPP(?:\\/\\d{2,4})?|C[óo]digo\\s+de\\s+Processo\\s+Penal|C[óo]digo\\s+Penal|CP|C[óo]digo\\s+Civil|CC(?:\\/\\d{2,4})?|CDC|CTN|ECA|LGPD|LINDB|EC\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|Emenda\\s+Constitucional\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\/\\d{2,4})?|MP\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Medida\\s+Provis[óo]ria\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto-Lei\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Decreto\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|DL\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Resolu[çc][ãa]o\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Portaria\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|Lei\\s+(?:Complementar\\s+|Ordin[áa]ria\\s+|n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?|LC\\s*(?:n\\.?[º°]?\\s*)?\\d[\\d.]*(?:\\/\\d{2,4})?)\\b))?)|\\b(?:S[úu]mula(?:\\s+Vinculante)?|OJ|Orienta[çc][ãa]o\\s+Jurisprudencial)\\s*(?:n\\.?[º°]?\\s*)?\\d+(?:\\s*,\\s*(?:item\\s+)?(?!(?:d[aeo]|no|na)\\b)[IVXLCDM]+\\b)*(?:\\s*,?\\s*(?:d[aeo]|na|no)\\s+(?:SDI-?[12]|SBDI-?[12]|TST|STF|STJ|TSE|TNU))*(?:\\s*,?\\s*(?:d[aeo])\\s+(?:TST|STF|STJ|TSE|TNU))?\\b)';
 
 function parseLawCitation(raw: string): { article: string; lawHint: string } {
   const sumMatch = raw.match(/\b(S[úu]mula(?:\s+Vinculante)?|OJ|Orienta[çc][ãa]o\s+Jurisprudencial)\s*(?:n[º°]?\s*)?(\d+)/i);
@@ -326,6 +362,15 @@ export function DictionaryText({
   const [editLawHint, setEditLawHint] = useState('');
   const [extendedLen, setExtendedLen] = useState(0);
   const [savedLawsList, setSavedLawsList] = useState<string[]>([]);
+  const [lawOverrides, setLawOverrides] = useState<LawRefOverride[]>([]);
+
+  useEffect(() => {
+    const pid = profile?.id || 'default';
+    const load = () => setLawOverrides(readLawOverrides(pid));
+    load();
+    window.addEventListener(LAW_OVERRIDES_EVENT, load);
+    return () => window.removeEventListener(LAW_OVERRIDES_EVENT, load);
+  }, [profile?.id]);
 
   useEffect(() => {
     if (!modal) return;
@@ -339,7 +384,25 @@ export function DictionaryText({
   const segments = useMemo(() => {
     if (!text) return null;
 
-    const lawRegex = new RegExp(LAW_ARTICLE_PATTERN, 'gi');
+    const sortedOverrides = [...lawOverrides]
+      .filter((o) => o.phrase && o.phrase.trim().length >= 3)
+      .sort((a, b) => b.phrase.length - a.phrase.length);
+    const overrideMap = new Map<string, LawRefOverride>();
+    const overridePatterns: string[] = [];
+    for (const ov of sortedOverrides) {
+      const k = ov.phrase.trim().toLowerCase();
+      if (!overrideMap.has(k)) {
+        overrideMap.set(k, ov);
+        overridePatterns.push(escapeRegExp(ov.phrase.trim()));
+      }
+    }
+
+    const combinedPattern =
+      overridePatterns.length > 0
+        ? `(?:${overridePatterns.join('|')}|${LAW_ARTICLE_PATTERN})`
+        : LAW_ARTICLE_PATTERN;
+
+    const lawRegex = new RegExp(combinedPattern, 'gi');
     const firstPass: Array<
       | { type: 'text'; value: string }
       | { type: 'law'; value: string; article: string; lawHint: string; contextText: string; afterText: string }
@@ -351,7 +414,10 @@ export function DictionaryText({
         firstPass.push({ type: 'text', value: text.slice(lastIdx, lawMatch.index) });
       }
       const rawMatched = lawMatch[0];
-      const { article, lawHint } = parseLawCitation(rawMatched);
+      const ov = overrideMap.get(rawMatched.trim().toLowerCase());
+      const { article, lawHint } = ov
+        ? { article: ov.article, lawHint: ov.lawHint }
+        : parseLawCitation(rawMatched);
       const ctxStart = Math.max(0, lawMatch.index - 450);
       const ctxEnd = Math.min(text.length, lawMatch.index + rawMatched.length + 450);
       const contextText = text.slice(ctxStart, ctxEnd).trim();
@@ -410,7 +476,7 @@ export function DictionaryText({
 
     const anySpecial = parts.some((p) => p.type !== 'text');
     return anySpecial ? parts : null;
-  }, [text, regex, map, stemMatchers]);
+  }, [text, regex, map, stemMatchers, lawOverrides]);
 
   if (!text) return null;
   if (!segments) {
@@ -921,19 +987,34 @@ export function DictionaryText({
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      const nextArt = editArticle.trim() || modal.article;
+                      const nextLaw = editLawHint.trim();
+                      const fullPhrase =
+                        (modal.rawMatched || modal.article) +
+                        (extendedLen > 0 && modal.afterText ? modal.afterText.slice(0, extendedLen) : '');
+                      if (extendedLen > 0 || nextLaw !== (modal.lawHint || '')) {
+                        saveLawOverride(profile?.id || 'default', {
+                          phrase: fullPhrase.trim(),
+                          article: nextArt,
+                          lawHint: nextLaw,
+                        });
+                      }
                       void openLawModal(
-                        editArticle.trim() || modal.article,
-                        editLawHint.trim(),
+                        nextArt,
+                        nextLaw,
                         modal.contextText || '',
                         {
-                          rawMatched: modal.rawMatched,
-                          afterText: modal.afterText,
+                          rawMatched: fullPhrase.trim(),
+                          afterText:
+                            extendedLen > 0 && modal.afterText
+                              ? modal.afterText.slice(extendedLen)
+                              : modal.afterText,
                           forceLocal: true,
                           skipAiResolve: true,
                         }
-                      )
-                    }
+                      );
+                    }}
                     className="px-3 py-1.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-[11px] font-bold inline-flex items-center gap-1"
                   >
                     <Search className="w-3.5 h-3.5 text-teal-600" />
@@ -941,19 +1022,34 @@ export function DictionaryText({
                   </button>
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      const nextArt = editArticle.trim() || modal.article;
+                      const nextLaw = editLawHint.trim();
+                      const fullPhrase =
+                        (modal.rawMatched || modal.article) +
+                        (extendedLen > 0 && modal.afterText ? modal.afterText.slice(0, extendedLen) : '');
+                      if (extendedLen > 0 || nextLaw !== (modal.lawHint || '')) {
+                        saveLawOverride(profile?.id || 'default', {
+                          phrase: fullPhrase.trim(),
+                          article: nextArt,
+                          lawHint: nextLaw,
+                        });
+                      }
                       void openLawModal(
-                        editArticle.trim() || modal.article,
-                        editLawHint.trim(),
+                        nextArt,
+                        nextLaw,
                         modal.contextText || '',
                         {
-                          rawMatched: modal.rawMatched,
-                          afterText: modal.afterText,
+                          rawMatched: fullPhrase.trim(),
+                          afterText:
+                            extendedLen > 0 && modal.afterText
+                              ? modal.afterText.slice(extendedLen)
+                              : modal.afterText,
                           forceWeb: true,
                           skipAiResolve: true,
                         }
-                      )
-                    }
+                      );
+                    }}
                     className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-bold inline-flex items-center gap-1"
                   >
                     <Globe className="w-3.5 h-3.5" />

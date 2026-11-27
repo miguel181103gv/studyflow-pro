@@ -606,6 +606,137 @@ function splitArtBlocks(
   return sections;
 }
 
+function extractHeadingTitle(block: string, kindRe: RegExp): string {
+  const lines = block
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return '';
+  const first = lines[0];
+  const m = first.match(kindRe);
+  if (!m) return first.slice(0, 80);
+  const head = m[1].replace(/\s+/g, ' ').trim();
+  const restSameLine = first.slice(m[0].length).replace(/^[\s\-–—:]+/, '').trim();
+  if (restSameLine) return `${head} — ${restSameLine}`.slice(0, 95);
+  const nextLine = lines[1] || '';
+  if (
+    nextLine &&
+    !/^(?:Art\.|CAP[ÍI]TULO|SE[ÇC][ÃA]O|SUBSE[ÇC][ÃA]O|T[ÍI]TULO|§|Par[áa]grafo|[IVX]+\s*[-–—])/i.test(
+      nextLine
+    ) &&
+    nextLine.length <= 95
+  ) {
+    return `${head} — ${nextLine}`.slice(0, 95);
+  }
+  return head;
+}
+
+function getArtRangeLabel(text: string): string {
+  const matches = Array.from(text.matchAll(/(?:^|\n)\s*Art\.\s*(\d+[º°o]?)/gi));
+  if (matches.length === 0) return '';
+  const first = `Art. ${matches[0][1]}`;
+  const last = `Art. ${matches[matches.length - 1][1]}`;
+  return first === last ? first : `${first} a ${last}`;
+}
+
+function splitByHeadingRegex(
+  chunk: string,
+  headingLineRe: RegExp
+): { preamble: string; items: { heading: string; body: string }[] } {
+  const matches = Array.from(chunk.matchAll(headingLineRe));
+  if (matches.length === 0) return { preamble: chunk.trim(), items: [] };
+  const preamble = chunk.slice(0, matches[0].index).trim();
+  const items: { heading: string; body: string }[] = [];
+  for (let i = 0; i < matches.length; i++) {
+    const start = matches[i].index!;
+    const end = i + 1 < matches.length ? matches[i + 1].index! : chunk.length;
+    const slice = chunk.slice(start, end).trim();
+    const heading = extractHeadingTitle(
+      slice,
+      /^((?:T[ÍI]TULO|CAP[ÍI]TULO|SUBSE[ÇC][ÃA]O|SE[ÇC][ÃA]O)\s+[IVXLCDM]+)/i
+    );
+    items.push({ heading, body: slice });
+  }
+  return { preamble, items };
+}
+
+function splitCfByTitlesAndSections(
+  chunk: string
+): { title: string; text: string; lawNameOverride?: string }[] {
+  const titleSplit = splitByHeadingRegex(
+    chunk,
+    /(?:^|\n)\s*T[ÍI]TULO\s+[IVXLCDM]+\b[^\n]*/gi
+  );
+  if (titleSplit.items.length < 2) {
+    return splitArtBlocks(chunk, 'CF/88');
+  }
+
+  const out: { title: string; text: string; lawNameOverride?: string }[] = [];
+
+  const pushCard = (label: string, text: string) => {
+    const cleanText = text.trim();
+    if (!cleanText) return;
+    const range = getArtRangeLabel(cleanText);
+    const fullTitle = range ? `CF/88 · ${label} (${range})` : `CF/88 · ${label}`;
+    out.push({ title: fullTitle, text: cleanText, lawNameOverride: 'CF/88' });
+  };
+
+  // 1. Preâmbulo em bloco próprio (se existir antes do Título I)
+  if (titleSplit.preamble && titleSplit.preamble.length > 20) {
+    pushCard('Preâmbulo', titleSplit.preamble);
+  }
+
+  // 2. Hierarquia Interna: Títulos -> Capítulos -> Seções -> Subseções -> Artigos
+  for (const t of titleSplit.items) {
+    const chSplit = splitByHeadingRegex(
+      t.body,
+      /(?:^|\n)\s*CAP[ÍI]TULO\s+[IVXLCDM]+\b[^\n]*/gi
+    );
+    if (chSplit.items.length === 0) {
+      pushCard(t.heading, t.body);
+      continue;
+    }
+    if (chSplit.preamble && /\bArt\.\s*\d+/i.test(chSplit.preamble)) {
+      pushCard(t.heading, chSplit.preamble);
+    }
+
+    for (const ch of chSplit.items) {
+      const chLabel = `${t.heading} · ${ch.heading}`;
+      const secSplit = splitByHeadingRegex(
+        ch.body,
+        /(?:^|\n)\s*SE[ÇC][ÃA]O\s+[IVXLCDM]+\b[^\n]*/gi
+      );
+      if (secSplit.items.length === 0) {
+        pushCard(chLabel, ch.body);
+        continue;
+      }
+      if (secSplit.preamble && /\bArt\.\s*\d+/i.test(secSplit.preamble)) {
+        pushCard(chLabel, secSplit.preamble);
+      }
+
+      for (const sc of secSplit.items) {
+        const scLabel = `${chLabel} · ${sc.heading}`;
+        const subSplit = splitByHeadingRegex(
+          sc.body,
+          /(?:^|\n)\s*SUBSE[ÇC][ÃA]O\s+[IVXLCDM]+\b[^\n]*/gi
+        );
+        if (subSplit.items.length === 0) {
+          pushCard(scLabel, sc.body);
+          continue;
+        }
+        if (subSplit.preamble && /\bArt\.\s*\d+/i.test(subSplit.preamble)) {
+          pushCard(scLabel, subSplit.preamble);
+        }
+        for (const sub of subSplit.items) {
+          pushCard(`${scLabel} · ${sub.heading}`, sub.body);
+        }
+      }
+    }
+  }
+
+  return out.length > 0 ? out : splitArtBlocks(chunk, 'CF/88');
+}
+
 function splitLawIntoSections(
   rawText: string,
   lawName: string
@@ -654,7 +785,7 @@ function splitLawIntoSections(
     if (!chunk) continue;
 
     if (cur.kind === 'CF') {
-      out.push(...splitArtBlocks(chunk, 'CF/88'));
+      out.push(...splitCfByTitlesAndSections(chunk));
     } else if (cur.kind === 'ADCT') {
       out.push(...splitArtBlocks(chunk, 'ADCT (CF/88)'));
     } else if (cur.kind === 'ECR') {
