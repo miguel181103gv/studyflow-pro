@@ -28,6 +28,7 @@ import type {
 import { addDaysISO, SUBJECT_COLORS, todayISO } from '@/lib/utils';
 import { useGlobal } from './GlobalProvider';
 import { createRestorePoint, shouldRunAutoBackup } from '@/lib/backupManager';
+import { loadOfflineSnapshot, saveOfflineSnapshot } from '@/lib/offlineCache';
 
 interface StopwatchState {
   running: boolean;
@@ -412,12 +413,41 @@ export function ProfileProvider({
     void syncStopwatchToCloud(null);
   };
 
+  const applyOfflineFallback = useCallback(() => {
+    const snap = loadOfflineSnapshot(profileId);
+    if (!snap) return false;
+    if (snap.profile) setProfile(snap.profile as Profile);
+    setSubjects((snap.subjects as Subject[]) || []);
+    setTopics((snap.topics as Topic[]) || []);
+    setHighlights((snap.highlights as TopicHighlight[]) || []);
+    setStudyLogs((snap.studyLogs as StudyLog[]) || []);
+    setReviews((snap.reviews as SpacedReview[]) || []);
+    setErrors((snap.errors as ErrorEntry[]) || []);
+    setSimulados((snap.simulados as Simulado[]) || []);
+    setReports((snap.reports as AIReport[]) || []);
+    setFlashcards((snap.flashcards as Flashcard[]) || []);
+    const savedTheme = (snap.theme as ThemeId) || 'clean';
+    setThemeState(savedTheme);
+    if (typeof document !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    }
+    setLoading(false);
+    return true;
+  }, [profileId]);
+
   const refreshAll = useCallback(async () => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      if (applyOfflineFallback()) return;
+    }
+    try {
     const supabase = createClient();
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      applyOfflineFallback();
+      return;
+    }
     setUserId(user.id);
     setUserEmail(user.email || '');
 
@@ -529,8 +559,28 @@ export function ProfileProvider({
       document.documentElement.setAttribute('data-theme', savedTheme);
     }
 
+    const filteredReports = allReports.filter((r) => !String(r.period_type || '').startsWith('__SYNC_'));
+    saveOfflineSnapshot(profileId, {
+      savedAt: Date.now(),
+      profile: profRes.data || null,
+      subjects: (subRes.data as Subject[]) || [],
+      topics: (topRes.data as Topic[]) || [],
+      highlights: (hlRes.data as TopicHighlight[]) || [],
+      studyLogs: (logRes.data as StudyLog[]) || [],
+      reviews: (revRes.data as SpacedReview[]) || [],
+      errors: (errRes.data as ErrorEntry[]) || [],
+      simulados: (simRes.data as Simulado[]) || [],
+      reports: filteredReports,
+      flashcards: (fcRes?.data as Flashcard[]) || [],
+      theme: savedTheme,
+    });
+
     setLoading(false);
-  }, [profileId]);
+    } catch {
+      applyOfflineFallback();
+      setLoading(false);
+    }
+  }, [profileId, applyOfflineFallback]);
 
   useEffect(() => {
     refreshAll();
