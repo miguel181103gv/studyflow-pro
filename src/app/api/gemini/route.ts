@@ -793,13 +793,51 @@ JSON:
       return NextResponse.json({ ok: true, data: parsed });
     }
 
+    if (action === 'resolve_law_citation') {
+      const { article = '', contextText = '', savedLaws = [] } = body;
+      if (!article || !String(article).trim()) {
+        return NextResponse.json({ error: 'Informe o artigo.' }, { status: 400 });
+      }
+      const artClean = String(article).trim();
+      const ctxClean = String(contextText || '').slice(0, 1500).trim();
+      const lawsList = Array.isArray(savedLaws) ? savedLaws.slice(0, 40).join(', ') : '';
+      const prompt = `Você é um especialista em Direito brasileiro.
+O estudante clicou na referência "${artClean}" dentro do texto abaixo. Leia TODO o contexto e use seu conhecimento jurídico para identificar EXATAMENTE a qual norma (lei, decreto, decreto-lei, código, constituição, súmula etc.) essa referência pertence.
+NUNCA chute "CF/88" se o contexto mencionar outra norma (como Decreto-Lei 200/1967, Lei 8.112/1990, Lei 14.133/2021, CLT, CPC etc.) ou se o conteúdo jurídico for claramente de outra lei.
+${lawsList ? `\nNORMAS JÁ SALVAS PELO ALUNO (se corresponder a alguma delas, use exatamente este nome): ${lawsList}\n` : ''}
+TEXTO DE CONTEXTO:
+${ctxClean || artClean}
+
+Retorne SOMENTE JSON válido:
+{
+  "lawName": "Nome oficial curto da norma (ex: Decreto-Lei 200/1967, CF/88, Lei 8.112/1990, CLT, CPC)",
+  "article": "Referência normalizada (ex: Art. 5º, I)"
+}`;
+      const raw = await callGemini([{ text: prompt }], true, false, false);
+      const data = extractJsonObject(raw);
+      return NextResponse.json({ ok: true, data });
+    }
+
     if (action === 'fetch_law_article') {
-      const { article = '', lawHint = '' } = body;
+      const { article = '', lawHint = '', contextText = '' } = body;
       if (!article || !String(article).trim()) {
         return NextResponse.json({ error: 'Informe o artigo para buscar.' }, { status: 400 });
       }
       const artClean = String(article).trim();
-      const lawClean = String(lawHint || '').trim();
+      let lawClean = String(lawHint || '').trim();
+      const ctxClean = String(contextText || '').slice(0, 1200).trim();
+
+      if (!lawClean && ctxClean) {
+        const idPrompt = `Identifique em 1 linha qual norma brasileira (ex: Decreto-Lei 200/1967, Lei 8.112/1990, CF/88, CLT) contém "${artClean}" no contexto abaixo. Retorne SOMENTE JSON: {"lawName":"..."}.\nCONTEXTO:\n${ctxClean}`;
+        try {
+          const idRaw = await callGemini([{ text: idPrompt }], true, false, false);
+          const idData = extractJsonObject(idRaw) as { lawName?: string };
+          if (idData?.lawName) lawClean = String(idData.lawName).trim();
+        } catch {
+          // ignore
+        }
+      }
+
       const isSumulaOrOj = /^(?:s[úu]mula|oj|orienta)/i.test(artClean);
       const q = isSumulaOrOj
         ? `${artClean} ${lawClean} texto oficial site:tst.jus.br OR site:stf.jus.br OR site:stj.jus.br`.trim()
@@ -809,10 +847,10 @@ JSON:
       const prompt = `Você é um assistente jurídico brasileiro. Extraia/forneça o TEXTO OFICIAL LITERAL E COMPLETO do "${artClean}"${
         lawClean ? ` da norma "${lawClean}"` : ''
       } (incluindo caput, parágrafos, incisos e alíneas, formatando cada elemento em sua própria linha para leitura em Lei Seca).
-${webHits ? `\nFONTES DA WEB (Planalto/Oficiais):\n${webHits.slice(0, 6000)}\n` : ''}
+${ctxClean ? `\nCONTEXTO ONDE FOI CITADO:\n${ctxClean}\n` : ''}${webHits ? `\nFONTES DA WEB (Planalto/Oficiais):\n${webHits.slice(0, 6000)}\n` : ''}
 Retorne SOMENTE JSON válido neste formato:
 {
-  "lawName": "${lawClean || 'CF/88 ou Norma identificada'}",
+  "lawName": "${lawClean || 'Norma identificada'}",
   "title": "${artClean}${lawClean ? ` (${lawClean})` : ''}",
   "rawText": "Art. ...\nI - ...\n§ 1º ..."
 }`;

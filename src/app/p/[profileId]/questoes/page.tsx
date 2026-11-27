@@ -480,6 +480,65 @@ export default function QuestoesPage() {
   const [quizRedos, setQuizRedos] = useState(0);
   const [quizDone, setQuizDone] = useState(false);
 
+  // Registro manual de questões feitas fora do app
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualSubjectId, setManualSubjectId] = useState('');
+  const [manualTopicId, setManualTopicId] = useState('');
+  const [manualDate, setManualDate] = useState(() => todayISO());
+  const [manualTotal, setManualTotal] = useState('10');
+  const [manualCorrect, setManualCorrect] = useState('8');
+  const [manualMinutes, setManualMinutes] = useState('0');
+  const [manualNote, setManualNote] = useState('');
+  const [savingManual, setSavingManual] = useState(false);
+
+  function openManualLogModal() {
+    const defaultSub =
+      selectedScope?.type === 'topic'
+        ? selectedScope.subjectId
+        : selectedScope?.type === 'subject'
+        ? selectedScope.subjectId
+        : subjects[0]?.id || '';
+    const defaultTop = selectedScope?.type === 'topic' ? selectedScope.topicId : '';
+    setManualSubjectId(defaultSub);
+    setManualTopicId(defaultTop);
+    setManualDate(todayISO());
+    setManualTotal('10');
+    setManualCorrect('8');
+    setManualMinutes('0');
+    setManualNote('');
+    setShowManualModal(true);
+  }
+
+  async function handleSaveManualQuestions(e: React.FormEvent) {
+    e.preventDefault();
+    if (!manualSubjectId) {
+      notify('Escolha a matéria.', 'error');
+      return;
+    }
+    const total = Math.max(1, parseInt(manualTotal, 10) || 0);
+    const correct = Math.min(total, Math.max(0, parseInt(manualCorrect, 10) || 0));
+    const minutes = Math.max(0, parseInt(manualMinutes, 10) || 0);
+    setSavingManual(true);
+    try {
+      await addStudyLog({
+        subject_id: manualSubjectId,
+        topic_id: manualTopicId || null,
+        duration_seconds: minutes * 60,
+        study_date: manualDate || todayISO(),
+        period: 'Manual',
+        method: 'Questões de Fora',
+        stop_point: '',
+        questions_total: total,
+        questions_correct: correct,
+        notes: manualNote.trim() || 'Questões registradas manualmente (fora do app)',
+      });
+      setShowManualModal(false);
+      notify(`${total} questões (${correct} acertos) registradas nas estatísticas!`, 'success');
+    } finally {
+      setSavingManual(false);
+    }
+  }
+
   useEffect(() => {
     try {
       const raw = localStorage.getItem(storageKey);
@@ -1218,6 +1277,16 @@ ${q.statement}`;
                   Criar Questões por Tópico
                 </button>
               )}
+              {subjects.length > 0 && (
+                <button
+                  type="button"
+                  onClick={openManualLogModal}
+                  className="px-4 py-2.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-bold inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4 text-teal-600" />
+                  Registrar Questões de Fora
+                </button>
+              )}
             </div>
           </div>
 
@@ -1583,6 +1652,16 @@ ${q.statement}`;
                 {showAddPanel ? <X className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
                 {showAddPanel ? 'Fechar' : 'Adicionar questões'}
               </button>
+              {subjects.length > 0 && (
+                <button
+                  type="button"
+                  onClick={openManualLogModal}
+                  className="px-4 py-2.5 rounded-xl subtle-surface border border-theme hover:border-teal-500/50 text-xs font-bold inline-flex items-center gap-1.5"
+                >
+                  <Plus className="w-4 h-4 text-teal-600" />
+                  Registrar de Fora
+                </button>
+              )}
             </div>
           </div>
 
@@ -2392,6 +2471,192 @@ ${q.statement}`;
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {showManualModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowManualModal(false)}
+        >
+          <form
+            onSubmit={handleSaveManualQuestions}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md card-surface rounded-3xl p-5 sm:p-6 shadow-2xl space-y-4 animate-fade-in-up"
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="font-bold text-base flex items-center gap-2">
+                  <ListChecks className="w-5 h-5 text-teal-600" />
+                  Registrar Questões de Fora
+                </h2>
+                <p className="text-xs text-muted-theme mt-0.5">
+                  Fez questões em PDF, QConcursos ou TEC? Registre aqui para contar na sua evolução.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowManualModal(false)}
+                className="p-2 rounded-xl subtle-surface hover:opacity-80"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                  Matéria *
+                </label>
+                <select
+                  value={manualSubjectId}
+                  onChange={(e) => {
+                    setManualSubjectId(e.target.value);
+                    setManualTopicId('');
+                  }}
+                  required
+                  className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-semibold"
+                >
+                  <option value="">Selecione...</option>
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                  Tópico (opcional)
+                </label>
+                <select
+                  value={manualTopicId}
+                  onChange={(e) => setManualTopicId(e.target.value)}
+                  className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                >
+                  <option value="">Geral da matéria</option>
+                  {topics
+                    .filter((t) => t.subject_id === manualSubjectId)
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.title}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                    Feitas *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={2000}
+                    required
+                    value={manualTotal}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setManualTotal(v);
+                      const nTot = parseInt(v, 10) || 0;
+                      const nCor = parseInt(manualCorrect, 10) || 0;
+                      if (nCor > nTot) setManualCorrect(String(Math.max(0, nTot)));
+                    }}
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                    Acertos *
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={Math.max(1, parseInt(manualTotal, 10) || 1)}
+                    required
+                    value={manualCorrect}
+                    onChange={(e) => setManualCorrect(e.target.value)}
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                    Tempo (min)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={600}
+                    value={manualMinutes}
+                    onChange={(e) => setManualMinutes(e.target.value)}
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                  />
+                </div>
+              </div>
+
+              {(() => {
+                const tot = Math.max(1, parseInt(manualTotal, 10) || 0);
+                const cor = Math.min(tot, Math.max(0, parseInt(manualCorrect, 10) || 0));
+                const pct = Math.round((cor / tot) * 100);
+                return (
+                  <div className="rounded-xl subtle-surface px-3 py-2 flex items-center justify-between text-xs">
+                    <span className="text-muted-theme">
+                      Erros: <strong className="text-rose-500">{tot - cor}</strong>
+                    </span>
+                    <span className="font-bold text-teal-600 dark:text-teal-400">
+                      Aproveitamento: {pct}%
+                    </span>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                    Data
+                  </label>
+                  <input
+                    type="date"
+                    value={manualDate}
+                    onChange={(e) => setManualDate(e.target.value)}
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-muted-theme mb-1">
+                    Origem / Nota (opcional)
+                  </label>
+                  <input
+                    type="text"
+                    value={manualNote}
+                    onChange={(e) => setManualNote(e.target.value)}
+                    placeholder="Ex: QConcursos / PDF"
+                    className="w-full rounded-xl subtle-surface border border-theme px-3 py-2 text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-theme">
+              <button
+                type="button"
+                onClick={() => setShowManualModal(false)}
+                className="px-4 py-2 rounded-xl subtle-surface text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={savingManual}
+                className="px-5 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold inline-flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {savingManual && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Salvar registro
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>
