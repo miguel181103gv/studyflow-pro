@@ -10,6 +10,7 @@ import { useAiProviderName } from '@/lib/useAiProvider';
 import {
   normalizeLegalOrdinalsAndSpaces,
   parseLeiSecaBlocks,
+  validateParsedLaw,
   type BlockKind,
   type HighlightTone,
   type LegalBlock,
@@ -1040,7 +1041,11 @@ export default function LeiSecaPage() {
     return m;
   }, [subjects]);
 
-  const previewBlocks = useMemo(() => parseLeiSecaBlocks(formRawText), [formRawText]);
+  const previewBlocks = useMemo(
+    () => parseLeiSecaBlocks(formRawText, formLawName || 'LEI'),
+    [formRawText, formLawName]
+  );
+  const previewValidation = useMemo(() => validateParsedLaw(previewBlocks), [previewBlocks]);
 
   const filteredArticles = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -2146,10 +2151,27 @@ export default function LeiSecaPage() {
 
               {showPreview && previewBlocks.length > 0 && (
                 <div className="rounded-2xl border border-teal-500/30 p-4 space-y-2.5 bg-teal-500/[0.03]">
-                  <p className="text-xs font-extrabold text-teal-700 dark:text-teal-300">
-                    Prévia formatada ({previewBlocks.length}{' '}
-                    {previewBlocks.length === 1 ? 'bloco' : 'blocos'})
-                  </p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-extrabold text-teal-700 dark:text-teal-300">
+                      Prévia formatada ({previewBlocks.length}{' '}
+                      {previewBlocks.length === 1 ? 'bloco' : 'blocos'} · {previewValidation.articleCount} art.)
+                    </p>
+                    {previewValidation.isClean ? (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                        ✓ Sequência validada
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                        ⚠ {[
+                          ...previewValidation.missingGaps,
+                          ...previewValidation.duplicates.map((d) => `Duplicado: ${d}`),
+                          ...previewValidation.outOfOrder,
+                          ...previewValidation.emptyArticles.map((e) => `Vazio: ${e}`),
+                          ...previewValidation.giantArticles.map((g) => `Muito longo: ${g}`),
+                        ].slice(0, 2).join(' · ')}
+                      </span>
+                    )}
+                  </div>
                   <div className="max-h-64 overflow-y-auto pr-1">
                     <LegalBlocksView blocks={previewBlocks} interactive={false} />
                   </div>
